@@ -1,1 +1,5 @@
-/target
+target/
+private/
+.idea/
+.fsw.yml
+
