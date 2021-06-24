@@ -1,6 +1,7 @@
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::io;
+use std::cell::Cell;
 
 use tokio::runtime::{Runtime, Builder, EnterGuard};
 use tokio::net::{TcpListener, TcpSocket};
@@ -10,6 +11,22 @@ use crate::riverdb::pg::PostgresSession;
 use crate::riverdb::common::{Result, Error};
 use std::net::{SocketAddr, IpAddr};
 
+thread_local! {
+    static CURRENT_WORKER: Cell<*mut Worker> = Cell::new(std::ptr::null_mut());
+}
+
+/// get_worker returns a mutable Worker reference to the thread-local Worker.
+/// it's undefined behavior to use it to create a reference to the Worker when
+/// any other reference to the same Worker is in scope.
+pub fn get_worker() -> &'static mut Worker {
+    CURRENT_WORKER.with(|ctx| {
+        let p = ctx.get();
+        if p.is_null() {
+            panic!("not on a worker thread");
+        }
+        unsafe { &mut *p }
+    })
+}
 
 /// Worker represents a Worker thread and serves as a thread-local storage
 /// for all the resources the worker thread accesses. This includes
@@ -31,7 +48,7 @@ impl Worker {
         })
     }
 
-    pub fn listener(&self, reuseport: bool, enter_tokio: bool) -> Result<&'static TcpListener> {
+    pub fn listener(&mut self, reuseport: bool, enter_tokio: bool) -> Result<&'static TcpListener> {
         let mut _guard = None;
         if enter_tokio {
             _guard = Some(self.tokio.enter());
@@ -64,6 +81,10 @@ impl Worker {
     }
 
     pub fn run_forever(mut self, postgres_listener: Option<&'static TcpListener>, worker_id: u32) {
+        CURRENT_WORKER.with(|ctx| {
+            ctx.set(&mut self as _);
+        });
+
         // If worker.run fails, create a new Worker and call run again
         // TODO catch panics and gracefully shutdown the process
         // The most common cause of a panic will be OOM, and that's best dealt with by
@@ -72,6 +93,7 @@ impl Worker {
         // necessarily leave the system in a good state, so restarting is the best we can hope for.
         loop {
             self.run(postgres_listener, worker_id);
+            // We don't change the address of self here, so no need to set CURRENT_WORKER again
             self = match Worker::new() {
                 Ok(worker) => worker,
                 Err(e) => {

@@ -9,6 +9,7 @@ use tracing::{info, info_span, Level};
 use crate::riverdb::worker::Worker;
 use crate::riverdb::config::{conf, load_config};
 
+// When glommio includes a single-threaded allocator, we may use that instead
 #[cfg(all(unix, target_arch = "x86_64"))]
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
