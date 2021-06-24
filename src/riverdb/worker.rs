@@ -44,7 +44,7 @@ impl Worker {
             }
             // If we're on linux, set TCP_DEFER_ACCEPT
             // The client always sends the first data after connecting.
-            if std::env::consts::OS == "linux" {
+            if cfg!(target_os = "linux") {
                 unsafe {
                     let optval: libc::c_int = 1;
                     let ret = libc::setsockopt(

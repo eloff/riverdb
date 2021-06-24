@@ -42,7 +42,8 @@ pub struct Postgres {
     /// host to connect to, defaults to localhost
     #[serde(default = "default_host")]
     pub host: String,
-    /// user to connect with
+    /// user to connect with.
+    /// This should usually be a superuser, if the login user is different we'll call SET ROLE to the login user.
     #[serde(default)]
     pub user: String,
     /// password if using password authentication

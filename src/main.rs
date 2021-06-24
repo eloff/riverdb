@@ -9,6 +9,9 @@ use tracing::{info, info_span, Level};
 use crate::riverdb::worker::Worker;
 use crate::riverdb::config::{conf, load_config};
 
+#[cfg(all(unix, target_arch = "x86_64"))]
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 fn main() {
     // TODO start a watchdog process (that won't die when this process dies!)
