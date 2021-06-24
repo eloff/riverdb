@@ -10,6 +10,8 @@ use tracing::{debug, error, info_span, Level};
 use crate::riverdb::pg::PostgresSession;
 use crate::riverdb::common::{Result, Error};
 use std::net::{SocketAddr, IpAddr};
+use bytes::BytesMut;
+use crate::riverdb::config::conf;
 
 thread_local! {
     static CURRENT_WORKER: Cell<*mut Worker> = Cell::new(std::ptr::null_mut());
@@ -32,6 +34,9 @@ pub fn get_worker() -> &'static mut Worker {
 /// for all the resources the worker thread accesses. This includes
 /// the tokio and glommio runtimes, random number generators, and
 /// sharded data structures.
+///
+/// All Worker methods take &mut self, because there should never be more than one reference to Worker.
+/// We do sometimes break this rule, which is undefined behavior, but every load or store are with sync::atomic in that case.
 pub struct Worker {
     tokio: Runtime,
     worker_id: u32,
@@ -80,9 +85,9 @@ impl Worker {
         Ok(&*Box::leak(Box::new(sock.listen(1024)?)))
     }
 
-    pub fn run_forever(mut self, postgres_listener: Option<&'static TcpListener>, worker_id: u32) {
+    pub fn run_forever(&mut self, postgres_listener: Option<&'static TcpListener>, worker_id: u32) {
         CURRENT_WORKER.with(|ctx| {
-            ctx.set(&mut self as _);
+            ctx.set(self as _);
         });
 
         // If worker.run fails, create a new Worker and call run again
@@ -94,7 +99,7 @@ impl Worker {
         loop {
             self.run(postgres_listener, worker_id);
             // We don't change the address of self here, so no need to set CURRENT_WORKER again
-            self = match Worker::new() {
+            *self = match Worker::new() {
                 Ok(worker) => worker,
                 Err(e) => {
                     error!(%e, worker_id, "cannot create worker");
@@ -121,6 +126,14 @@ impl Worker {
         }) {
             error!(%e, worker_id, "fatal error in accept_loop");
         }
+    }
+
+    pub fn get_recv_buffer(&mut self) -> BytesMut {
+        // TODO it would be nice to allocate BytesMut from a pool here
+        // We can do that once Vec::with_capacity_in (allocator API) lands in stable
+        // Then it would call free on the allocator, returning the buffer to the pool
+        // automatically once there are no more references.
+        BytesMut::with_capacity(conf().recv_buffer_size as usize)
     }
 }
 
