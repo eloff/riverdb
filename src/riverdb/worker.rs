@@ -8,6 +8,7 @@ use tracing::{debug, error, info_span, Level};
 
 use crate::riverdb::pg::PostgresSession;
 use crate::riverdb::common::{Result, Error};
+use std::net::{SocketAddr, IpAddr};
 
 
 /// Worker represents a Worker thread and serves as a thread-local storage
@@ -35,7 +36,6 @@ impl Worker {
         if enter_tokio {
             _guard = Some(self.tokio.enter());
         }
-
         let addr = "127.0.0.1:5433".parse()?;
         let sock = TcpSocket::new_v4()?;
         if cfg!(unix) {
