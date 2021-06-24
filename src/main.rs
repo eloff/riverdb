@@ -6,8 +6,8 @@ use tokio::net::TcpListener;
 use tracing_subscriber::FmtSubscriber;
 use tracing::{info, info_span, Level};
 
-use riverdb::worker::Worker;
-
+use crate::riverdb::worker::Worker;
+use crate::riverdb::config::{conf, load_config};
 
 
 fn main() {
@@ -27,20 +27,19 @@ fn main() {
 
     let _span = info_span!("startup");
 
-    let num_workers = 2u32; // num_cpus::get(); // TODO take this from config
-
-    let reuseport = false;
+    load_config().expect("could not load config");
 
     // If reuseport is false, we need a worker to create a TcpListener to share between
     // all the workers, which is why we create one worker outside of the loop like this.
     let mut worker = Worker::new().expect("could not create worker");
     let mut listener = None;
-    if !reuseport {
+    if !conf().reuseport {
         info!("create shared listener socket");
-        listener = Some(worker.listener(reuseport, true).expect("could not create tcp listener"))
+        listener = Some(worker.listener(false, true).expect("could not create tcp listener"))
     }
 
     info!("starting workers");
+    let num_workers = conf().num_workers;
     for i in 1..num_workers {
         thread::spawn(move || {
             info!(worker_id = i, "started worker thread");

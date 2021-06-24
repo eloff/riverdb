@@ -9,37 +9,50 @@ use tracing::{info_span, info, debug};
 use crate::riverdb::config::postgres::PostgresCluster;
 use crate::riverdb::common::{Error, Result};
 
+// Things that are not configurable, but might be one day
+const SMALL_BUFFER_SIZE: u32 = 1024;
+const CONNECT_TIMEOUT_SECONDS: u32 = 30;
+const CHECK_TIMEOUTS_INTERVAL: u32 = 5 * 60;
 
 #[derive(Deserialize)]
 pub struct Settings {
     /// config_path is the path of the loaded config file
-    config_path: PathBuf,
+    pub config_path: PathBuf,
     /// app_name is used as the application name to identify connected sessions to the Postgres databases if not provided by the client
     #[serde(default = "default_app_name")]
-    app_name: String,
+    pub app_name: String,
     /// host to listen on, defaults to 0.0.0.0
     #[serde(default = "default_host")]
-    host: String,
+    pub host: String,
     /// https_port is the port to listen on for HTTPS and WebSocket connections: default 443
     #[serde(default = "default_https_port")]
-    https_port: u16,
+    pub https_port: u16,
     /// disable_keepalives disables use of TCP Keep Alives with long-running client-facing connections to detect and close broken connections. Default false.
     /// If you disable this, use client_idle_timeout_seconds to avoid exhausting server connections when clients disconnect without closing the connection.
     #[serde(default)]
-    disable_keepalives: bool,
+    pub disable_keepalives: bool,
+    /// reuseport is unix only, if true we create a listening socket per worker thread with SO_REUSEPORT options.
+    /// this reduces lock contention in the kernel when calling accept. Default true.
+    #[serde(default = "default_reuseport")]
+    pub reuseport: bool,
+    /// num_workers is the number of worker threads. Default is the number of hardware threads (hyperthreads) for the host.
+    #[serde(default = "default_num_workers")]
+    pub num_workers: u32,
     /// recv_buffer_size is the default size for (user-space) buffers used to read from TCP sockets
     #[serde(default = "default_recv_buffer_size")]
-    recv_buffer_size: u32,
+    pub recv_buffer_size: u32,
     /// max_http_connections to allow before rejecting new connections. Important to introduce back-pressure. Default 100,000.
     #[serde(default = "default_max_http_connections")]
-    max_http_connections: u32,
+    pub max_http_connections: u32,
     /// web_socket_idle_timeout_seconds closes connections that have been idle longer than this. Defaults to 20 minutes. 0 is disabled.
     #[serde(default = "default_web_socket_idle_timeout_seconds")]
-    web_socket_idle_timeout_seconds: u32,
+    pub web_socket_idle_timeout_seconds: u32,
     /// postgres specific SETTINGS
-    postgres: PostgresCluster,
+    pub postgres: PostgresCluster,
 }
 
+fn default_num_workers() -> u32 { num_cpus::get() as u32 }
+fn default_reuseport() -> bool { cfg!(unix) }
 fn default_app_name() -> String { "riverdb".to_string() }
 fn default_host() -> String { "0.0.0.0".to_string() }
 const fn default_https_port() -> u16 { 443 }
@@ -49,7 +62,7 @@ const fn default_web_socket_idle_timeout_seconds() -> u32 { 20 * 60 }
 
 static mut SETTINGS: MaybeUninit<Settings> = MaybeUninit::uninit();
 
-pub fn config() -> &'static Settings {
+pub fn conf() -> &'static Settings {
     // TODO in tests return a thread-local Settings
     unsafe {
         &*SETTINGS.as_ptr()
