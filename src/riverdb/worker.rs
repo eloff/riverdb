@@ -5,7 +5,7 @@ use std::cell::Cell;
 
 use tokio::runtime::{Runtime, Builder, EnterGuard};
 use tokio::net::{TcpListener, TcpSocket};
-use tracing::{debug, error, info_span, Level};
+use tracing::{debug, error, info_span};
 
 use crate::riverdb::pg::PostgresSession;
 use crate::riverdb::common::{Result, Error};
@@ -165,7 +165,8 @@ async fn accept_loop(worker_id: u32, listener: &TcpListener) -> Result<()> {
             },
         };
         tokio.spawn(async move {
-            if let(Err(e)) = PostgresSession::new(sock).run().await {
+            let id = 0; // TODO
+            if let(Err(e)) = PostgresSession::new(sock, id).run().await {
                 error!(%e, "postgres session error");
             }
         });

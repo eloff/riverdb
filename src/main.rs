@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate enum_display_derive;
+
 mod riverdb;
 
 use std::thread;
@@ -9,10 +12,6 @@ use tracing::{info, info_span, Level};
 use crate::riverdb::worker::Worker;
 use crate::riverdb::config::{conf, load_config};
 
-// When glommio includes a single-threaded allocator, we'll use that instead
-#[cfg(all(unix, target_arch = "x86_64"))]
-#[global_allocator]
-static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 fn main() {
     // TODO start a watchdog process (that won't die when this process dies!)
@@ -45,11 +44,14 @@ fn main() {
         listener = Some(workers.last_mut().unwrap().listener(false, true).expect("could not create tcp listener"))
     }
 
+    // Unlike the multi-threaded Tokio engine, we don't implement work-stealing so we maintain
+    // the guarantee that tasks spawned on a worker stay with that worker.
+    // This eliminates the need for a lot of locking and complexity.
+    // It also means load won't be evenly distributed in some cases,
+    // and we can deal with that at the application level in way that doesn't add back the complexity.
     info!("starting workers");
     let mut workers_slice = workers.as_mut_slice();
     for i in 1..num_workers {
-        // TODO change this to a destructuring assignment once that's stable: https://github.com/rust-lang/rust/issues/71126
-        //     let r = workers_slice.split_first_mut().unwrap();
         let r = workers_slice.split_first_mut().unwrap();
         let mut worker = r.0;
         workers_slice = r.1;

@@ -22,8 +22,8 @@ serde = { version = "1.0.125", features = ["derive"] }
 serde_yaml = { version = "0.8.17" }
 async-trait = "0.1.50"
 bytes = "1.0.1"
-tracing = "0.1.26"
+tracing = { version = "0.1.26", features = ["max_level_trace", "release_max_level_warn"] }
 tracing-subscriber = { version = "0.2.18", default-features = false, features = ["fmt", "ansi", "env-filter", "chrono", "tracing-log"] }
 num_cpus = "1.13.0"
 libc = "0.2.97"
-jemallocator = "0.3.0"
+enum-display-derive = "0.1.1"
