@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{debug, error, info_span, Span};
+use tracing::{debug, error, info, instrument};
 
 use crate::riverdb::common::{Error, MaybeTlsStream, Result};
 use crate::riverdb::worker::{get_worker, Worker};
@@ -12,11 +12,11 @@ use crate::riverdb::pg::plugins;
 use crate::riverdb::pool::PostgresCluster;
 use crate::riverdb::coarse_monotonic_now;
 use crate::riverdb::pg::PostgresClientConnectionState;
+use std::fmt::{Debug, Formatter};
 
 pub struct PostgresSession {
     stream: MaybeTlsStream,
     // span is used for logging to identify a trail of messages associated with this session
-    span: Span,
     id: u32,
     // last-active is a course-grained monotonic clock that is advanced when data is received from the client
     last_active: AtomicU32,
@@ -27,10 +27,8 @@ pub struct PostgresSession {
 
 impl PostgresSession {
     pub fn new(stream: TcpStream, id: u32) -> PostgresSession {
-        let span = info_span!("postgres session", id);
         PostgresSession {
             stream: MaybeTlsStream::Plaintext(stream),
-            span,
             id,
             last_active: AtomicU32::default(),
             state: PostgresClientConnectionState::ClientConnectionStateInitial,
@@ -39,8 +37,9 @@ impl PostgresSession {
         }
     }
 
+    #[instrument]
     pub async fn run(&mut self) -> Result<()> {
-        self.span.enter();
+        info!(?self, "new session");
         let worker = get_worker();
 
         // There are up to four async operations that could potentially be happening concurrently
@@ -51,7 +50,7 @@ impl PostgresSession {
         //  - write to backend (if backend is not None, and its outbox is not empty)
         //
         // We can make this happen concurrently by calling each read_loop in a tokio task
-        // (on the same reactor so we don't have to worry about multi-threading.)
+        //
         // The writing can be tried optimistically. If inside of a read_loop we need to write,
         // write as much as possible until it would block, and if there is still more to write,
         // then spawn a tokio task to invoke the write_loop to drain the buffer. Any other writes
@@ -71,7 +70,7 @@ impl PostgresSession {
 
         let mut parser = MessageParser::new(worker.get_recv_buffer());
         while !self.closed.load(Relaxed) {
-            if let Some(msg) = parser.next(&mut self.stream)? {
+            if let Some(msg) = parser.next(&mut self.stream).await? {
                 let tag = msg.tag();
                 debug!(%tag, "recevied message from client");
                 if !self.state.msg_is_allowed(tag) {
@@ -101,5 +100,11 @@ impl PostgresSession {
 
     pub async fn client_connected(&mut self, _: &mut plugins::ClientConnectContext) -> Result<&'static PostgresCluster> {
         unimplemented!();
+    }
+}
+
+impl Debug for PostgresSession {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("pg::Session{{id: {}, state: {}}}", self.id, self.state))
     }
 }

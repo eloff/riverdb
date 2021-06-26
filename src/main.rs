@@ -1,3 +1,6 @@
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 #[macro_use]
 extern crate enum_display_derive;
 
@@ -41,7 +44,7 @@ fn main() {
     let mut listener = None;
     if !conf().reuseport {
         info!("create shared listener socket");
-        listener = Some(workers.last_mut().unwrap().listener(false, true).expect("could not create tcp listener"))
+        listener = Some(workers.last_mut().unwrap().listener(false).expect("could not create tcp listener"))
     }
 
     // Unlike the multi-threaded Tokio engine, we don't implement work-stealing so we maintain

@@ -53,11 +53,8 @@ impl Worker {
         })
     }
 
-    pub fn listener(&mut self, reuseport: bool, enter_tokio: bool) -> Result<&'static TcpListener> {
-        let mut _guard = None;
-        if enter_tokio {
-            _guard = Some(self.tokio.enter());
-        }
+    pub fn listener(&mut self, reuseport: bool) -> Result<&'static TcpListener> {
+        let mut _guard = self.tokio.enter();
         let addr = "127.0.0.1:5433".parse()?;
         let sock = TcpSocket::new_v4()?;
         if cfg!(unix) {
@@ -113,12 +110,11 @@ impl Worker {
     fn run(&mut self, postgres_listener: Option<&'static TcpListener>, worker_id: u32) {
         self.worker_id = worker_id;
 
-        let _guard = self.tokio.enter();
         // If we didn't get passed a listener, create a sharded listener using SO_REUSEPORT
         let listener = match postgres_listener {
             Some(listener) => listener,
             // panic is what we want here, we'll catch it in the caller and shutdown
-            None => self.listener(true, false).expect("could not create tcp listener"),
+            None => self.listener(true).expect("could not create tcp listener"),
         };
 
         if let Err(e) = self.tokio.block_on(async move {
