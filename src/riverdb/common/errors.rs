@@ -1,6 +1,7 @@
 use std::fmt::{Debug, Display};
 use std::{fmt, io, result};
 use std::net::AddrParseError;
+use std::sync::{TryLockError, MutexGuard, PoisonError};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Error {
@@ -26,10 +27,13 @@ pub enum ErrorKind {
     LowMemoryError,
     TooBusyError,
     Timeout,
+    PoisonError,
+    ClosedError,
     StringError(String),
     IOError(io::Error),
     //JSONError(serde_json::Error),
     YAMLError(serde_yaml::Error),
+    TlsError(rustls::Error),
     UTF8Error(std::str::Utf8Error),
     ArrayFromSliceError(std::array::TryFromSliceError),
     ScriptError(ScriptError),
@@ -53,6 +57,12 @@ impl Error {
     pub fn too_busy() -> Self {
         Error {
             err: Box::new(ErrorKind::TooBusyError),
+        }
+    }
+
+    pub fn closed() -> Self {
+        Error {
+            err: Box::new(ErrorKind::ClosedError),
         }
     }
 
@@ -129,6 +139,22 @@ impl From<AddrParseError> for Error {
     }
 }
 
+impl<Guard> From<PoisonError<Guard>> for Error {
+    fn from(err: PoisonError<Guard>) -> Self {
+        Error {
+            err: Box::new(ErrorKind::PoisonError),
+        }
+    }
+}
+
+impl From<rustls::Error> for Error {
+    fn from(err: rustls::Error) -> Self {
+        Error {
+            err: Box::new(ErrorKind::TlsError(err)),
+        }
+    }
+}
+
 impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         std::fmt::Display::fmt(&self.err, f)
@@ -146,10 +172,13 @@ impl Display for ErrorKind {
         match self {
             ErrorKind::LowMemoryError => f.write_str("not enough memory to handle this request"),
             ErrorKind::TooBusyError => f.write_str("server is too busy to handle this request"),
+            ErrorKind::ClosedError => f.write_str("socket/file is closed"),
+            ErrorKind::PoisonError => f.write_str("another thread panicked while holding the mutex"),
             ErrorKind::StringError(s) => f.write_str(&s),
             ErrorKind::IOError(e) => std::fmt::Display::fmt(&e, f),
             //ErrorKind::JSONError(e) => std::fmt::Display::fmt(&e, f),
             ErrorKind::YAMLError(e) => std::fmt::Display::fmt(&e, f),
+            ErrorKind::TlsError(e) => std::fmt::Display::fmt(&e, f),
             ErrorKind::UTF8Error(e) => std::fmt::Display::fmt(&e, f),
             ErrorKind::ArrayFromSliceError(e) => std::fmt::Display::fmt(&e, f),
             ErrorKind::ScriptError(e) => std::fmt::Display::fmt(&e, f),

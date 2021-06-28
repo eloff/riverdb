@@ -1,21 +1,23 @@
 use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::atomic::Ordering::Relaxed;
+use std::fmt::{Debug, Formatter};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, instrument};
+use rustls::{ClientConnection};
 
-use crate::riverdb::common::{Error, MaybeTlsStream, Result};
+use crate::riverdb::common::{Error, Result};
 use crate::riverdb::worker::{get_worker, Worker};
 use crate::riverdb::pg::protocol::MessageParser;
 use crate::riverdb::pg::plugins;
 use crate::riverdb::pool::PostgresCluster;
 use crate::riverdb::coarse_monotonic_now;
 use crate::riverdb::pg::PostgresClientConnectionState;
-use std::fmt::{Debug, Formatter};
+use crate::riverdb::server::Transport;
 
 pub struct PostgresSession {
-    stream: MaybeTlsStream,
+    stream: Transport<ClientConnection>,
     // span is used for logging to identify a trail of messages associated with this session
     id: u32,
     // last-active is a course-grained monotonic clock that is advanced when data is received from the client
@@ -28,7 +30,7 @@ pub struct PostgresSession {
 impl PostgresSession {
     pub fn new(stream: TcpStream, id: u32) -> PostgresSession {
         PostgresSession {
-            stream: MaybeTlsStream::Plaintext(stream),
+            stream: Transport::new(stream, false),
             id,
             last_active: AtomicU32::default(),
             state: PostgresClientConnectionState::ClientConnectionStateInitial,

@@ -21,15 +21,38 @@ pub struct PostgresCluster {
     /// Default false. If this is true, a BEGIN transaction may be deferred in READ COMMITTED or
     /// lower isolation levels until the first query that would modify the database or take locks.
     /// This means shorter duration transactions and allows SELECTs (but not SELECT FOR UPDATE) at
-    /// the start of the transaction to be executed on replicas. There are some small differences in
-    /// behavior, for example because datetime functions return the time as of the start of the transaction.
-    /// Also SELECt queries that invoke impure functions that modify the database need to be manually
-    /// tagged as being a write operation.
+    /// the start of the transaction to be executed on replicas or served from cache.
+    /// There are some small differences in behavior, for example because datetime functions return
+    /// the time as of the start of the transaction. Also SELECT queries that invoke impure functions
+    /// that modify the database need to be manually tagged as being a write operation.
     #[serde(default)]
     pub defer_begin: bool,
     /// max_connections to allow before rejecting new connections. Important to introduce back-pressure. Default 10,000.
     #[serde(default = "default_max_connections")]
-    pub max_connections: u32
+    pub max_connections: u32,
+    /// client_tls TLS preference between clients and River DB, defaults to disabled
+    #[serde(default)]
+    pub client_tls: TlsMode,
+    /// tls_client_certificate is the client authentication certificate sent from River DB to Postgres
+    /// The value can be the inlined certificate, or a file path from which to load it.
+    #[serde(default)]
+    pub tls_client_certificate: String,
+    /// tls_client_key is the client private key used with a TLS connection from River DB to Postgres
+    /// The value can be the inlined certificate, or a file path from which to load it.
+    #[serde(default)]
+    pub tls_client_key: String,
+    /// tls_root_certificate are additional certificates to add to the trusted certificate roots for validating the Postgres server certificate
+    /// The value can be the inlined key, or a file path from which to load it.
+    #[serde(default)]
+    pub tls_root_certificate: String,
+    /// tls_server_certificate is the certificate chain used for tls connections between the clients and River DB
+    /// The value can be the inlined certificate, or a file path from which to load it.
+    #[serde(default)]
+    pub tls_server_certificate: String,
+    /// tls_server_key is the server private key used with a TLS connection from the clients to River DB
+    /// The value can be the inlined key, or a file path from which to load it.
+    #[serde(default)]
+    pub tls_server_key: String,
 }
 
 const fn default_port() -> u16 { 5432 }
@@ -49,12 +72,15 @@ pub struct Postgres {
     /// password if using password authentication
     #[serde(default)]
     pub password: String,
+    /// tls_host is the hostname expected in the server's certificate, if different from host.
+    #[serde(default)]
+    pub tls_host: String,
+    /// backend_tls TLS preference between River DB and PostgreSQL, defaults to disabled
+    #[serde(default)]
+    pub backend_tls: TlsMode,
     /// Port to connect to, defaults to 5432
     #[serde(default = "default_port")]
     pub port: u16,
-    /// backend_tls TLS preference between River DB and PostgreSQL, defaults to prefer
-    #[serde(default)]
-    pub backend_tls: TlsMode,
     /// is_master is set to true if this isn't inside a replicas vec
     #[serde(skip_deserializing)]
     pub is_master: bool,
@@ -101,7 +127,7 @@ impl Postgres {
         if let TlsMode::Invalid = self.backend_tls {
             self.backend_tls = defaults.backend_tls;
             if let TlsMode::Invalid = self.backend_tls {
-                return Err(Error::new("tls mode not set"));
+                self.backend_tls = TlsMode::Disabled;
             }
         }
         if self.max_connections == 0 {

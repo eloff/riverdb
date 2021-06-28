@@ -2,16 +2,16 @@
 use std::os::unix::io::AsRawFd;
 use std::io;
 use std::cell::Cell;
+use std::net::{SocketAddr, IpAddr};
 
 use tokio::runtime::{Runtime, Builder, EnterGuard};
 use tokio::net::{TcpListener, TcpSocket};
 use tracing::{debug, error, info_span};
+use bytes::BytesMut;
 
 use crate::riverdb::pg::PostgresSession;
 use crate::riverdb::common::{Result, Error};
-use std::net::{SocketAddr, IpAddr};
-use bytes::BytesMut;
-use crate::riverdb::config::conf;
+use crate::riverdb::config::{conf, LISTEN_BACKLOG};
 
 thread_local! {
     static CURRENT_WORKER: Cell<*mut Worker> = Cell::new(std::ptr::null_mut());
@@ -57,29 +57,29 @@ impl Worker {
         let mut _guard = self.tokio.enter();
         let addr = "127.0.0.1:5433".parse()?;
         let sock = TcpSocket::new_v4()?;
-        if cfg!(unix) {
+        #[cfg(unix)]
+        {
             if reuseport {
                 sock.set_reuseport(true)?;
             }
             // If we're on linux, set TCP_DEFER_ACCEPT
             // The client always sends the first data after connecting.
-            if cfg!(target_os = "linux") {
-                unsafe {
-                    let optval: libc::c_int = 1;
-                    let ret = libc::setsockopt(
-                        sock.as_raw_fd(),
-                        libc::SOL_SOCKET,
-                        libc::TCP_DEFER_ACCEPT,
-                        &optval as *const _ as *const libc::c_void,
-                        std::mem::size_of_val(&optval) as libc::socklen_t);
-                    if ret != 0 {
-                        return Err(Error::from(io::Error::last_os_error()));
-                    }
+            #[cfg(target_os = "linux")]
+            unsafe {
+                let optval: libc::c_int = 1;
+                let ret = libc::setsockopt(
+                    sock.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::TCP_DEFER_ACCEPT,
+                    &optval as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&optval) as libc::socklen_t);
+                if ret != 0 {
+                    return Err(Error::from(io::Error::last_os_error()));
                 }
             }
         }
         sock.bind(addr)?;
-        Ok(&*Box::leak(Box::new(sock.listen(1024)?)))
+        Ok(&*Box::leak(Box::new(sock.listen(LISTEN_BACKLOG)?)))
     }
 
     pub fn run_forever(&mut self, postgres_listener: Option<&'static TcpListener>, worker_id: u32) {
@@ -162,7 +162,7 @@ async fn accept_loop(worker_id: u32, listener: &TcpListener) -> Result<()> {
         };
         tokio.spawn(async move {
             let id = 0; // TODO
-            if let(Err(e)) = PostgresSession::new(sock, id).run().await {
+            if let Err(e) = PostgresSession::new(sock, id).run().await {
                 error!(%e, "postgres session error");
             }
         });

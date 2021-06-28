@@ -10,9 +10,10 @@ use crate::riverdb::config::postgres::PostgresCluster;
 use crate::riverdb::common::{Error, Result};
 
 // Things that are not configurable, but might be one day
-const SMALL_BUFFER_SIZE: u32 = 1024;
-const CONNECT_TIMEOUT_SECONDS: u32 = 30;
-const CHECK_TIMEOUTS_INTERVAL: u32 = 5 * 60;
+pub const SMALL_BUFFER_SIZE: u32 = 1024;
+pub const CONNECT_TIMEOUT_SECONDS: u32 = 30;
+pub const CHECK_TIMEOUTS_INTERVAL: u32 = 5 * 60;
+pub const LISTEN_BACKLOG: u32 = 1024;
 
 #[derive(Deserialize)]
 pub struct Settings {
