@@ -33,7 +33,7 @@ impl TransportStream {
 
     pub async fn readable(&self) -> Result<()> {
         match self {
-            TransportStream::TcpStream(s) => s.readable().await,
+            TransportStream::TcpStream(s) => s.readable().await.map_err(Error::from),
             #[cfg(unix)]
             TransportStream::UnixSocket(s) => unimplemented!(),
         }
@@ -41,7 +41,7 @@ impl TransportStream {
 
     pub async fn writable(&self) -> Result<()> {
         match self {
-            TransportStream::TcpStream(s) => s.writable().await,
+            TransportStream::TcpStream(s) => s.writable().await.map_err(Error::from),
             #[cfg(unix)]
             TransportStream::UnixSocket(s) => unimplemented!(),
         }
@@ -49,7 +49,7 @@ impl TransportStream {
 
     pub fn try_read(&self, buf: &mut [u8]) -> Result<usize> {
         match self {
-            TransportStream::TcpStream(s) => s.try_read(buf),
+            TransportStream::TcpStream(s) => s.try_read(buf).map_err(Error::from),
             #[cfg(unix)]
             TransportStream::UnixSocket(s) => unimplemented!(),
         }
@@ -57,7 +57,7 @@ impl TransportStream {
 
     pub fn try_write(&self, buf: &[u8]) -> Result<usize> {
         match self {
-            TransportStream::TcpStream(s) => s.try_write(buf),
+            TransportStream::TcpStream(s) => s.try_write(buf).map_err(Error::from),
             #[cfg(unix)]
             TransportStream::UnixSocket(s) => unimplemented!(),
         }
