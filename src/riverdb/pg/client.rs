@@ -14,10 +14,10 @@ use crate::riverdb::pg::plugins;
 use crate::riverdb::pool::PostgresCluster;
 use crate::riverdb::coarse_monotonic_now;
 use crate::riverdb::pg::PostgresClientConnectionState;
-use crate::riverdb::server::Transport;
+use crate::riverdb::server::ClientTransport;
 
 pub struct PostgresSession {
-    stream: Transport<ClientConnection>,
+    stream: ClientTransport,
     // span is used for logging to identify a trail of messages associated with this session
     id: u32,
     // last-active is a course-grained monotonic clock that is advanced when data is received from the client
@@ -30,7 +30,7 @@ pub struct PostgresSession {
 impl PostgresSession {
     pub fn new(stream: TcpStream, id: u32) -> PostgresSession {
         PostgresSession {
-            stream: Transport::new(stream, false),
+            stream: ClientTransport::new(stream, false),
             id,
             last_active: AtomicU32::default(),
             state: PostgresClientConnectionState::ClientConnectionStateInitial,
@@ -72,7 +72,7 @@ impl PostgresSession {
 
         let mut parser = MessageParser::new(worker.get_recv_buffer());
         while !self.closed.load(Relaxed) {
-            if let Some(msg) = parser.next(&mut self.stream).await? {
+            if let Some(msg) = parser.next().await? {
                 let tag = msg.tag();
                 debug!(%tag, "recevied message from client");
                 if !self.state.msg_is_allowed(tag) {
