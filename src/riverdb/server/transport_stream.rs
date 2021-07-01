@@ -1,12 +1,14 @@
 use std::io::{Read, Write};
 #[cfg(unix)]
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::marker::PhantomData;
 
 use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::{UnixStream};
 
 use crate::riverdb::common::{Result, Error};
+
 
 pub(crate) enum TransportStream {
     TcpStream(TcpStream),
@@ -64,49 +66,74 @@ impl TransportStream {
     }
 }
 
-pub(crate) struct TransportStreamReader<'a>(pub &'a TransportStream);
+enum Stream {
+    Empty,
+    Tcp(std::net::TcpStream),
+    #[cfg(unix)]
+    Unix(std::os::unix::net::UnixStream),
+}
 
-impl<'a> Read for TransportStreamReader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self.0 {
-            TransportStream::TcpStream(s) => {
-                let mut ss = unsafe {
-                    std::net::TcpStream::from_raw_fd(s.as_raw_fd())
-                };
-                ss.read(buf)
+impl Default for Stream {
+    fn default() -> Self {
+        Stream::Empty
+    }
+}
+
+pub(crate) struct StreamReaderWriter<'a>{
+    stream: Stream,
+    _phantom: PhantomData<&'a TransportStream>
+}
+
+impl<'a> StreamReaderWriter<'a> {
+    pub fn new(transport: &'a TransportStream) -> Self {
+        StreamReaderWriter {
+            stream: match transport {
+                TransportStream::TcpStream(s) => unsafe {
+                    Stream::Tcp(std::net::TcpStream::from_raw_fd(s.as_raw_fd()))
+                },
+                TransportStream::UnixSocket(s) => unsafe {
+                    Stream::Unix(std::os::unix::net::UnixStream::from_raw_fd(s.as_raw_fd()))
+                },
             },
-            #[cfg(unix)]
-            TransportStream::UnixSocket(s) => unimplemented!(),
+            _phantom: PhantomData,
         }
     }
 }
 
-pub(crate) struct TransportStreamWriter<'a>(pub &'a TransportStream);
+impl<'a> Drop for StreamReaderWriter<'a> {
+    /// drop here just moves the underlying socket out so dropping it does not close it
+    fn drop(&mut self) {
+        std::mem::ManuallyDrop::new(std::mem::take(&mut self.stream));
+    }
+}
 
-impl<'a> Write for TransportStreamWriter<'a> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self.0 {
-            TransportStream::TcpStream(s) => {
-                let mut ss = unsafe {
-                    std::net::TcpStream::from_raw_fd(s.as_raw_fd())
-                };
-                ss.write(buf)
-            },
+impl<'a> Read for StreamReaderWriter<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match &mut self.stream {
+            Stream::Tcp(s) => s.read(buf),
             #[cfg(unix)]
-            TransportStream::UnixSocket(s) => unimplemented!(),
+            Stream::Unix(s) => s.read(buf),
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl<'a> Write for StreamReaderWriter<'a> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match &mut self.stream {
+            Stream::Tcp(s) => s.write(buf),
+            #[cfg(unix)]
+            Stream::Unix(s) => s.write(buf),
+            _ => unreachable!(),
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        match self.0 {
-            TransportStream::TcpStream(s) => {
-                let mut ss = unsafe {
-                    std::net::TcpStream::from_raw_fd(s.as_raw_fd())
-                };
-                ss.flush()
-            },
+        match &mut self.stream {
+            Stream::Tcp(s) => s.flush(),
             #[cfg(unix)]
-            TransportStream::UnixSocket(s) => unimplemented!(),
+            Stream::Unix(s) => s.flush(),
+            _ => unreachable!(),
         }
     }
 }

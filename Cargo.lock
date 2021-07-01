@@ -27,6 +27,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb031dd78e28731d87d56cc8ffef4a8f36ca26c38fe2de700543e627f8a464a"
 
 [[package]]
+name = "base64"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "904dfeac50f3cdaba28fc6f57fdcddb75f49ed61346676a78c4ffe55877802fd"
+
+[[package]]
 name = "bitflags"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -466,6 +472,7 @@ dependencies = [
  "libc",
  "num_cpus",
  "rustls",
+ "rustls-pemfile",
  "serde",
  "serde_yaml",
  "tokio",
@@ -478,12 +485,21 @@ dependencies = [
 [[package]]
 name = "rustls"
 version = "0.20.0-beta1"
-source = "git+https://github.com/ctz/rustls.git?rev=4c30556ef6a2baf54021f175e2d858e9e5051161#4c30556ef6a2baf54021f175e2d858e9e5051161"
+source = "git+https://github.com/ctz/rustls.git?rev=98d087e7939f5c098a80b0e0f21982c050a053cd#98d087e7939f5c098a80b0e0f21982c050a053cd"
 dependencies = [
  "log",
  "ring",
  "sct",
  "webpki",
+]
+
+[[package]]
+name = "rustls-pemfile"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eebeaeb360c87bfb72e84abdb3447159c0eaececf1bef2aecd65a8be949d1c9"
+dependencies = [
+ "base64",
 ]
 
 [[package]]

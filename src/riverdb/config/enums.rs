@@ -11,6 +11,9 @@ pub enum TlsMode {
     Prefer,
     // Required requires TLS and verifies the issuing CA is trusted, and the hostname matches
     Required,
+    // DangerouslyUnverifiedCertificates requires TLS but does not verify the issuing CA or hostname.
+    // DO NOT USE in production! This only exists for facilitating testing/troubleshooting.
+    DangerouslyUnverifiedCertificates,
 }
 
 impl Default for TlsMode {

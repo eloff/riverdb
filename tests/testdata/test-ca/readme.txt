@@ -1,0 +1,1 @@
+This directory, including openssl.cnf and build-a-pki.sh is copied from rustls/test-ca.

@@ -1,9 +1,10 @@
 use std::io;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::pin::Pin;
 use std::sync::{Mutex, Arc};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
+use std::convert::TryFrom;
 
 use tokio::net::{TcpStream};
 #[cfg(unix)]
@@ -13,8 +14,7 @@ use rustls::{ClientConfig, ServerConfig, ClientConnection, ServerConnection, Con
 
 use crate::riverdb::common::{Result, Error};
 use crate::riverdb::config::{TlsMode};
-use crate::riverdb::server::transport_stream::{TransportStream, TransportStreamReader, TransportStreamWriter};
-use std::convert::TryFrom;
+use crate::riverdb::server::transport_stream::{TransportStream, StreamReaderWriter};
 
 pub struct Transport<TlsSession: Connection> {
     stream: TransportStream,
@@ -58,11 +58,18 @@ impl<TlsSession> Transport<TlsSession>
         !self.is_localhost
     }
 
-    pub async fn readable(&self) -> Result<()> {
-        if self.want_read.load(Relaxed) {
-            return Ok(());
+    /// is_handshaking is for testing only, it returns true if the TLS session is performing the handshake
+    pub fn is_handshaking(&self) -> bool {
+        let _guard = self.tls.lock().unwrap();
+        if _guard.is_some() {
+            _guard.as_ref().unwrap().is_handshaking()
+        } else {
+            false
         }
-        self.stream.readable().await
+    }
+
+    pub async fn readable(&self) -> Result<()> {
+        self.stream.readable().await.map_err(Error::from)
     }
 
     pub async fn writable(&self) -> Result<()> {
@@ -76,12 +83,16 @@ impl<TlsSession> Transport<TlsSession>
         self.want_write.load(Relaxed)
     }
 
+    pub fn wants_read(&self) -> bool {
+        self.want_read.load(Relaxed)
+    }
+
     pub fn try_read(&self, buf: &mut [u8]) -> Result<usize> {
         if self.is_tls.load(Relaxed) {
             let mut _guard = self.tls.lock().map_err(Error::from)?;
             let mut session = _guard.as_mut().unwrap();
-            if !session.wants_read() {
-                match session.read_tls(&mut TransportStreamReader(&self.stream)) {
+            if session.wants_read() {
+                match session.read_tls(&mut StreamReaderWriter::new(&self.stream)) {
                     Err(e) => {
                         if e.kind() == io::ErrorKind::WouldBlock {
                             return Ok(0);
@@ -104,13 +115,23 @@ impl<TlsSession> Transport<TlsSession>
                     }
                 }
             }
-            // Having read some TLS data, and processed any new messages,
-            // we might have new plaintext as a result.
-            let result = session.reader().read(buf).map_err(Error::from);
+
             // mirror this value while we hold the mutex
             // relaxed because the mutex release below is a global barrier
             self.want_read.store(session.wants_read(), Relaxed);
-            return result;
+
+            // Having read some TLS data, and processed any new messages,
+            // we might have new plaintext as a result.
+            return match session.reader().read(buf) {
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::WouldBlock {
+                        return Ok(0);
+                    }
+                    warn!(?e, "plaintext read error");
+                    Err(Error::from(e))
+                },
+                Ok(n) => Ok(n),
+            };
         }
 
         self.stream.try_read(buf)
@@ -120,7 +141,15 @@ impl<TlsSession> Transport<TlsSession>
         if self.is_tls.load(Relaxed) {
             let mut _guard = self.tls.lock().map_err(Error::from)?;
             let mut session = _guard.as_mut().unwrap();
-            let n = match session.write_tls(&mut TransportStreamWriter(&self.stream)) {
+            return self.do_write(session, buf);
+        }
+
+        self.stream.try_write(buf)
+    }
+
+    fn do_write(&self, session: &mut TlsSession, buf: &[u8]) -> Result<usize> {
+        if session.wants_write() {
+            let n = match session.write_tls(&mut StreamReaderWriter::new(&self.stream)) {
                 Err(e) => {
                     if e.kind() == io::ErrorKind::WouldBlock {
                         return Ok(0);
@@ -130,13 +159,45 @@ impl<TlsSession> Transport<TlsSession>
                 },
                 Ok(n) => n,
             };
-            // mirror this value while we hold the mutex
-            // relaxed because the mutex release below is a global barrier
-            self.want_write.store(session.wants_write(), Relaxed);
-            return Ok(n);
         }
 
-        self.stream.try_write(buf)
+        let result = match session.writer().write(buf) {
+            Err(e) => {
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    return Ok(0);
+                }
+                warn!(?e, "plaintext write error");
+                Err(Error::from(e))
+            },
+            Ok(n) => Ok(n),
+        };
+        // mirror this value while we hold the mutex
+        // relaxed because the mutex release below is a global barrier
+        self.want_write.store(session.wants_write(), Relaxed);
+        result
+    }
+
+    async fn do_complete_io(&self, session: &mut TlsSession) -> Result<()> {
+        let mut rdwr = StreamReaderWriter::new(&self.stream);
+        loop {
+            return match session.complete_io(&mut rdwr) {
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::WouldBlock {
+                        if session.wants_read() {
+                            self.readable().await?;
+                        } else if session.wants_write() {
+                            self.writable().await?;
+                        } else {
+                            unreachable!();
+                        }
+                        continue;
+                    }
+                    warn!(?e, "io error");
+                    Err(Error::from(e))
+                },
+                Ok(..) => Ok(()),
+            };
+        }
     }
 }
 
@@ -147,7 +208,8 @@ impl Transport<ClientConnection> {
             panic!("cannot use tls over a unix socket");
         }
         let server_name = ServerName::try_from("hostname").map_err(|_|Error::new("invalid dns name"))?;
-        let conn = ClientConnection::new(config, server_name).map_err(Error::new)?;
+        let mut conn = ClientConnection::new(config, server_name).map_err(Error::new)?;
+        self.do_complete_io(&mut conn).await?;
         // relaxed because the mutex acquire/release below is a global barrier
         self.is_tls.store(true, Relaxed);
         *self.tls.lock().map_err(Error::from)? = Some(conn);
@@ -161,7 +223,8 @@ impl Transport<ServerConnection> {
         if self.stream.is_unix() {
             panic!("cannot use tls over a unix socket");
         }
-        let conn = ServerConnection::new(config).map_err(Error::new)?;
+        let mut conn = ServerConnection::new(config).map_err(Error::new)?;
+        self.do_complete_io(&mut conn).await?;
         // relaxed because the mutex acquire/release below is a global barrier
         self.is_tls.store(true, Relaxed);
         *self.tls.lock().map_err(Error::from)? = Some(conn);
