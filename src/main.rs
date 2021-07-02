@@ -9,11 +9,14 @@ mod riverdb;
 use std::thread;
 
 use tokio::net::TcpListener;
+use tokio::runtime::Builder;
 use tracing_subscriber::FmtSubscriber;
 use tracing::{info, info_span, Level};
 
 use crate::riverdb::worker::Worker;
 use crate::riverdb::config::{conf, load_config};
+use crate::riverdb::pg::PostgresService;
+use crate::riverdb::worker::init_workers;
 
 
 fn main() {
@@ -31,39 +34,70 @@ fn main() {
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
 
-    let _span = info_span!("startup");
+    let _span = info_span!("startup").entered();
 
-    load_config().expect("could not load config");
+    let conf = load_config().expect("could not load config");
 
-    let num_workers = conf().num_workers as usize;
-    let mut workers = Box::leak(Box::new(Vec::with_capacity(num_workers)));
-    workers.resize_with(num_workers, ||Worker::new().expect("could not create worker"));
-
-    // If reuseport is false, we need a worker to create a TcpListener to share between
-    // all the workers, which is why we create one worker outside of the loop like this.
-    let mut listener = None;
-    if !conf().reuseport {
-        info!("create shared listener socket");
-        listener = Some(workers.last_mut().unwrap().listener(false).expect("could not create tcp listener"))
+    // This is unsafe to call after the server starts. It's safe here.
+    unsafe {
+        init_workers(conf.num_workers);
     }
 
-    // Unlike the multi-threaded Tokio engine, we don't implement work-stealing so we maintain
-    // the guarantee that tasks spawned on a worker stay with that worker.
-    // This eliminates the need for a lot of locking and complexity.
-    // It also means load won't be evenly distributed in some cases,
-    // and we can deal with that at the application level in way that doesn't add back the complexity.
-    info!("starting workers");
-    let mut workers_slice = workers.as_mut_slice();
-    for i in 1..num_workers {
-        let r = workers_slice.split_first_mut().unwrap();
-        let mut worker = r.0;
-        workers_slice = r.1;
-        thread::spawn(move || {
-            info!(worker_id = i, "started worker thread");
-            worker.run_forever(listener.clone(), i as u32);
-        });
-    }
+    let tokio = Builder::new_multi_thread()
+        .worker_threads(conf.num_workers as usize)
+        .enable_all()
+        // Eagerly assign a thread-local worker to each original tokio worker thread
+        // (this is a no-op later for additional tokio threads for blocking tasks)
+        .on_thread_start(|| { Worker::try_get(); })
+        .build()
+        .expect("could not create tokio runtime");
 
-    info!(worker_id = num_workers, "started worker");
-    workers_slice.first_mut().unwrap().run_forever(listener, num_workers as u32);
+    // TODO catch panics and gracefully shutdown the process
+    // The most common cause of a panic will be OOM, and that's best dealt with by
+    // restarting gracefully to eliminate any memory fragmentation.
+    // The next most common causes would be bugs and hardware errors. Neither of those
+    // necessarily leave the system in a good state, so restarting is the best we can hope for.
+    // std::panic::set_hook();
+
+    tokio.block_on(async move {
+        let mut handles = Vec::new();
+        // If reuseport is false, we create a single TcpListener.
+        // Otherwise we create one per tokio worker. This reduces contention sharing accepted
+        // sockets between worker threads (less work stealing) and reduces kernel lock contention
+        // in accept. The downside is it won't error if you assign a port that is in use.
+        // (hopefully these end up distributed nicely across tokio worker threads,
+        // but I don't see a way to control that.)
+        let num_listeners = if conf.reuseport { conf.num_workers } else { 1 };
+
+        // Postgres service
+        if conf.postgres.port != 0 {
+            handles.push(tokio::spawn(async move {
+                let service = PostgresService::new(conf.postgres_listen_address(), conf.reuseport);
+                service.run().await
+            }));
+        }
+
+        // // HTTP service
+        // if conf.http_port != 0 {
+        //     handles.push(tokio::spawn(async {
+        //         let service = HttpService::new(conf.http_listen_address(), conf.reuseport);
+        //         service.run().await
+        //     }));
+        // }
+        //
+        // // HTTPS service
+        // if conf.https_port != 0 {
+        //     handles.push(tokio::spawn(async {
+        //         let service = HttpsService::new(conf.https_listen_address(), conf.reuseport);
+        //         service.run().await
+        //     }));
+        // }
+
+        // Wait for all listener tasks to shutdown
+        for handle in handles.drain(..) {
+            handle.await;
+        }
+    });
+
+    // TODO wait for shutdown to complete
 }

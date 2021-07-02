@@ -8,6 +8,8 @@ use tracing::{info_span, info, debug};
 
 use crate::riverdb::config::postgres::PostgresCluster;
 use crate::riverdb::common::{Error, Result};
+use std::net::{SocketAddr, IpAddr};
+use std::str::FromStr;
 
 // Things that are not configurable, but might be one day
 pub const SMALL_BUFFER_SIZE: u32 = 1024;
@@ -75,7 +77,7 @@ pub fn conf() -> &'static Settings {
 //     // TODO in tests return a thread-local Settings
 // }
 
-pub fn load_config() -> Result<()> {
+pub fn load_config() -> Result<&'static Settings> {
     let _span = info_span!("loading config file");
     let config_path = find_config_file("riverdb.yaml")?;
     info!(config_path = %config_path.to_string_lossy().into_owned(), "found config file");
@@ -83,7 +85,8 @@ pub fn load_config() -> Result<()> {
 
     let config = unsafe { &mut *SETTINGS.as_mut_ptr() };
     *config = serde_yaml::from_reader(file)?;
-    config.load(config_path)
+    config.load(config_path)?;
+    Ok(&*config)
 }
 
 impl Settings {
@@ -97,6 +100,14 @@ impl Settings {
         }
         self.recv_buffer_size = self.recv_buffer_size.next_power_of_two();
         self.postgres.load()
+    }
+
+    pub fn listen_address(&self) -> String {
+        format!("{}:{}", self.host, self.https_port)
+    }
+
+    pub fn postgres_listen_address(&self) -> String {
+        format!("{}:{}", self.host, self.postgres.port)
     }
 }
 

@@ -1,47 +1,46 @@
 use async_trait::async_trait;
 
-use crate::riverdb::pg::PostgresSession;
 use crate::riverdb::pool::PostgresCluster;
 use crate::riverdb::common::Result;
 
-static mut CLIENT_CONNECT_PLUGINS: Vec<Box<dyn ClientConnectPlugin + Sync + Send>> = Vec::new();
-
-pub struct ClientConnectContext {
-    plugins: &'static [Box<dyn ClientConnectPlugin + Sync + Send>],
-    index: usize,
-}
-
-impl ClientConnectContext {
-    pub fn new() -> Self {
-        Self {
-            plugins: unsafe { &CLIENT_CONNECT_PLUGINS[..] },
-            index: 0,
-        }
-    }
-
-    pub async fn next(&mut self, client: &mut PostgresSession) -> Result<&'static PostgresCluster> {
-        let i = self.index;
-        if i < self.plugins.len() {
-            self.index += 1;
-            self.plugins[i].client_connected(self, client).await
-        } else {
-            if i != self.plugins.len() {
-                panic!("called next too many times");
-            }
-            self.index = usize::MAX;
-            client.client_connected(self).await
-        }
-    }
-}
-
-#[async_trait]
-pub trait ClientConnectPlugin {
-    async fn client_connected(&self, ctx: &mut ClientConnectContext, client: &mut PostgresSession) -> Result<&'static PostgresCluster>;
-}
-
-pub async fn run_client_connect_plugins(client: &mut PostgresSession) -> Result<&'static PostgresCluster> {
-    ClientConnectContext::new().next(client).await
-}
+// static mut CLIENT_CONNECT_PLUGINS: Vec<Box<dyn ClientConnectPlugin + Sync + Send>> = Vec::new();
+//
+// pub struct ClientConnectContext {
+//     plugins: &'static [Box<dyn ClientConnectPlugin + Sync + Send>],
+//     index: usize,
+// }
+//
+// impl ClientConnectContext {
+//     pub fn new() -> Self {
+//         Self {
+//             plugins: unsafe { &CLIENT_CONNECT_PLUGINS[..] },
+//             index: 0,
+//         }
+//     }
+//
+//     pub async fn next(&mut self, client: &mut PostgresSession) -> Result<&'static PostgresCluster> {
+//         let i = self.index;
+//         if i < self.plugins.len() {
+//             self.index += 1;
+//             self.plugins[i].client_connected(self, client).await
+//         } else {
+//             if i != self.plugins.len() {
+//                 panic!("called next too many times");
+//             }
+//             self.index = usize::MAX;
+//             client.client_connected(self).await
+//         }
+//     }
+// }
+//
+// #[async_trait]
+// pub trait ClientConnectPlugin {
+//     async fn client_connected(&self, ctx: &mut ClientConnectContext, client: &mut PostgresSession) -> Result<&'static PostgresCluster>;
+// }
+//
+// pub async fn run_client_connect_plugins(client: &mut PostgresSession) -> Result<&'static PostgresCluster> {
+//     ClientConnectContext::new().next(client).await
+// }
 
 // Plugins is a list of River DB plugins. Plugins are invoked in order.
 // If a plugin needs to be in a different order depending on the hook, split it into multiple plugins.

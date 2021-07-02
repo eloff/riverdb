@@ -1,6 +1,7 @@
 mod transport;
 mod transport_stream;
 mod certificate_verifier;
+mod listener;
 
 /// ClientTransport is used to establish an optionally TLS encrypted TCP session to a remote server
 pub type ClientTransport = transport::Transport<rustls::ClientConnection>;
@@ -8,3 +9,4 @@ pub type ClientTransport = transport::Transport<rustls::ClientConnection>;
 pub type ServerTransport = transport::Transport<rustls::ServerConnection>;
 
 pub use certificate_verifier::DangerousCertificateNonverifier;
+pub use listener::Listener;

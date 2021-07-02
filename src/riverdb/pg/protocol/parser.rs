@@ -11,7 +11,7 @@ pub struct MessageParser {
 }
 
 impl MessageParser {
-    pub fn new(buf: BytesMut) -> Self {
+    pub fn new() -> Self {
         Self {
             last_bytes_read: 0,
         }

@@ -8,7 +8,7 @@ use tracing::{debug, error, info, instrument};
 use rustls::{ClientConnection};
 
 use crate::riverdb::common::{Error, Result};
-use crate::riverdb::worker::{get_worker, Worker};
+use crate::riverdb::worker::{Worker};
 use crate::riverdb::pg::protocol::MessageParser;
 use crate::riverdb::pg::plugins;
 use crate::riverdb::pool::PostgresCluster;
@@ -42,7 +42,6 @@ impl PostgresSession {
     #[instrument]
     pub async fn run(&mut self) -> Result<()> {
         info!(?self, "new session");
-        let worker = get_worker();
 
         // There are up to four async operations that could potentially be happening concurrently
         //
@@ -61,16 +60,16 @@ impl PostgresSession {
         // When the write buffer is completely flushed, the write loop task can exit.
         // The write buffer can be a simple Deque<Bytes>, as there is no multi-threading involved.
 
-        let _cluster = plugins::run_client_connect_plugins(self).await?;
+        //let _cluster = plugins::run_client_connect_plugins(self).await?;
 
-        self.read_loop(worker).await
+        self.read_loop().await
     }
 
-    async fn read_loop(&mut self, worker: &mut Worker) -> Result<()> {
+    async fn read_loop(&mut self) -> Result<()> {
         // This code is very similar to PostgresBackend::read_loop.
         // If you change this, check if you need to change that too.
 
-        let mut parser = MessageParser::new(worker.get_recv_buffer());
+        let mut parser = MessageParser::new();
         while !self.closed.load(Relaxed) {
             if let Some(msg) = parser.next().await? {
                 let tag = msg.tag();
@@ -100,9 +99,9 @@ impl PostgresSession {
         Ok(())
     }
 
-    pub async fn client_connected(&mut self, _: &mut plugins::ClientConnectContext) -> Result<&'static PostgresCluster> {
-        unimplemented!();
-    }
+    // pub async fn client_connected(&mut self, _: &mut plugins::ClientConnectContext) -> Result<&'static PostgresCluster> {
+    //     unimplemented!();
+    // }
 }
 
 impl Debug for PostgresSession {
