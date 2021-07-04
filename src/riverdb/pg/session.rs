@@ -113,85 +113,25 @@ impl Session {
     }
 
     /// client_read_and_send_backlog reads from client() and optionally writes() pending data to backend()
-    /// these two steps are combined in a single task to reduce synchronization and scheduling overhead.
     pub async fn client_read_and_send_backlog(&self, buf: &mut BytesMut) -> Result<(usize, usize)> {
-        if buf.remaining_mut() == 0 {
-            return Ok((0, 0));
-        }
+        read_and_flush_backlog(
+            buf,
+            unsafe { self.client() },
+            &self.backend_send_backlog, 
+            &self.backend_has_send_backlog,
+            self.get_backend(),
+        ).await
+    }
 
-        let client = unsafe { self.client() };
-        let maybe_backend = self.get_backend();
-
-        // Check if we need to write
-        let mut interest = Interest::READABLE;
-        let has_backlog = self.backend_has_send_backlog.load(Relaxed);
-        if has_backlog {
-            interest.add(Interest::WRITABLE);
-        } else if let Some(backend) = maybe_backend {
-            // If backend.is_tls(), then it may have data buffered internally too
-            if backend.wants_write() {
-                interest.add(Interest::WRITABLE);
-            }
-        }
-
-        // Note that once something is ready, it stays ready (this method returns instantly)
-        // until it's reset by encountering a WouldBlock error. From mio examples, this
-        // seems to apply even if we've never attempted to read or write on the socket.
-        let ready = if client.wants_read() {
-            // We already have buffered plaintext data waiting on our TLS session, just read it
-            Ready::READABLE
-        } else {
-            client.ready(interest).await.map_err(Error::from)?
-        };
-
-        let mut read_bytes = 0;
-        if ready.is_readable() {
-            let maybe_uninit = buf.chunk_mut();
-            let bytes = unsafe {
-                std::slice::from_raw_parts_mut(maybe_uninit.as_mut_ptr(), maybe_uninit.len())
-            };
-            let mut n = client.try_read(bytes)?;
-            read_bytes += n;
-            if n > 0 && n < bytes.len() {
-                // If we read some data, but didn't fill buffer, reading again should return 0 (WouldBlock)
-                // We don't have to try again here, it will happen anyway on the next call to this method.
-                // However, doing it here is slightly more efficient as we skip all the code.
-                // Reading until WouldBlock rearms the READABLE interest, so ready will block until more data arrives.
-                n = client.try_read(&mut bytes[n..])?;
-                read_bytes += n;
-            }
-        }
-
-        let mut write_bytes = 0;
-        if ready.is_writable() {
-            let backend = maybe_backend.unwrap();
-            if has_backlog {
-                let mut backlog = self.backend_send_backlog.lock().map_err(Error::from)?;
-                loop {
-                    // If !backend.is_tls() && backlog.len() > 1 we may want to use try_write_vectored
-                    // However, that's not worth the effort yet, and it should be completely pointless once we're
-                    // using io_uring through mio. I'm betting on the latter eventually making it unnecessary.
-                    if let Some(bytes) = backlog.front_mut() {
-                        let n = backend.try_write(bytes.chunk())?;
-                        write_bytes += n;
-                        if n == 0 {
-                            break;
-                        } else if n < bytes.remaining() {
-                            bytes.advance(n);
-                        } else {
-                            // n == bytes.remaining()
-                            backlog.pop_front();
-                        }
-                    } else {
-                        // Relaxed because the mutex release below is a global barrier
-                        self.backend_has_send_backlog.store(false, Relaxed);
-                        break;
-                    }
-                }
-            }
-        }
-
-        return Ok((read_bytes, write_bytes))
+    /// backend_read_and_send_backlog reads from backend() and optionally writes() pending data to client()
+    pub async fn backend_read_and_send_backlog(&self, buf: &mut BytesMut) -> Result<(usize, usize)> {
+        read_and_flush_backlog(
+            buf,
+            unsafe { self.backend() },
+            &self.client_send_backlog,
+            &self.client_has_send_backlog,
+            self.get_client(),
+        ).await
     }
 
     // backend_send writes all the bytes in buf to backend() without blocking or buffers it
@@ -205,6 +145,79 @@ impl Session {
     pub fn client_send(&self, buf: Bytes) -> Result<()> {
         backlog_send(buf, &self.client_send_backlog, &self.client_has_send_backlog, self.get_client())
     }
+}
+
+/// read_and_flush_backlog reads from transport and optionally flushes pending data from backlog to maybe_send_transport.
+/// these two steps are combined in a single task to reduce synchronization and scheduling overhead.
+async fn read_and_flush_backlog<T: Connection, U: Connection>(
+    buf: &mut BytesMut,
+    transport: &Transport<T>,
+    backlog: &Mutex<VecDeque<Bytes>>,
+    has_backlog: &AtomicBool,
+    maybe_send_transport: Option<&Transport<U>>
+) -> Result<(usize, usize)> {
+    if buf.remaining_mut() == 0 {
+        return Ok((0, 0));
+    }
+
+    // Check if we need to write
+    let mut interest = Interest::READABLE;
+    let flush = has_backlog.load(Relaxed);
+    if flush {
+        interest.add(Interest::WRITABLE);
+    } else if let Some(backend) = maybe_send_transport {
+        // If backend.is_tls(), then it may have data buffered internally too
+        if backend.wants_write() {
+            interest.add(Interest::WRITABLE);
+        }
+    }
+
+    // Note that once something is ready, it stays ready (this method returns instantly)
+    // until it's reset by encountering a WouldBlock error. From mio examples, this
+    // seems to apply even if we've never attempted to read or write on the socket.
+    let ready = if transport.wants_read() {
+        // We already have buffered plaintext data waiting on our TLS session, just read it
+        Ready::READABLE
+    } else {
+        transport.ready(interest).await.map_err(Error::from)?
+    };
+
+    let read_bytes = if ready.is_readable() {
+        try_read(buf, transport)?;
+    } else {
+        0
+    };
+
+    let mut write_bytes = 0;
+    if ready.is_writable() {
+        let backend = maybe_send_transport.unwrap();
+        if flush {
+            let mut backlog = backlog.lock().map_err(Error::from)?;
+            loop {
+                // If !backend.is_tls() && backlog.len() > 1 we may want to use try_write_vectored
+                // However, that's not worth the effort yet, and it should be completely pointless once we're
+                // using io_uring through mio. I'm betting on the latter eventually making it unnecessary.
+                if let Some(bytes) = backlog.front_mut() {
+                    let n = backend.try_write(bytes.chunk())?;
+                    write_bytes += n;
+                    if n == 0 {
+                        break;
+                    } else if n < bytes.remaining() {
+                        bytes.advance(n);
+                    } else {
+                        // n == bytes.remaining()
+                        backlog.pop_front();
+                    }
+                } else {
+                    // Relaxed because the mutex release below is a global barrier
+                    has_backlog.store(false, Relaxed);
+                    break;
+                }
+            }
+        }
+    }
+
+    return Ok((read_bytes, write_bytes))
 }
 
 fn backlog_send<T: Connection>(mut buf: Bytes, backlog: &Mutex<VecDeque<Bytes>>, has_backlog: &AtomicBool, transport: Option<&Transport<T>>) -> Result<()> {
@@ -228,5 +241,24 @@ fn backlog_send<T: Connection>(mut buf: Bytes, backlog: &Mutex<VecDeque<Bytes>>,
     // Relaxed because the mutex release below is a global barrier
     has_backlog.store(true, Relaxed);
     Ok(())
+}
+
+fn try_read<T: Connection>(buf: &mut BytesMut, transport: &Transport<T>) -> Result<usize> {
+    let mut read_bytes = 0;
+    let maybe_uninit = buf.chunk_mut();
+    let bytes = unsafe {
+        std::slice::from_raw_parts_mut(maybe_uninit.as_mut_ptr(), maybe_uninit.len())
+    };
+    let mut n = transport.try_read(bytes)?;
+    read_bytes += n;
+    if n > 0 && n < bytes.len() {
+        // If we read some data, but didn't fill buffer, reading again should return 0 (WouldBlock)
+        // We don't have to try again here, it will happen anyway on the next call.
+        // However, doing it here is more efficient as we skip all the code between invocations.
+        // Reading until WouldBlock rearms the READABLE interest, so ready will block until more data arrives.
+        n = transport.try_read(&mut bytes[n..])?;
+        read_bytes += n;
+    }
+    Ok(read_bytes)
 }
 
