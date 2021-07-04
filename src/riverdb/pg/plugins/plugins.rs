@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::riverdb::pool::PostgresCluster;
-use crate::riverdb::common::Result;
+use crate::riverdb::Result;
 
 // static mut CLIENT_CONNECT_PLUGINS: Vec<Box<dyn ClientConnectPlugin + Sync + Send>> = Vec::new();
 //

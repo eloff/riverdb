@@ -9,3 +9,4 @@ pub mod http;
 mod coarse_clock;
 
 pub use coarse_clock::coarse_monotonic_now;
+pub use common::{Error, Result};

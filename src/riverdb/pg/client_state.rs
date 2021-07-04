@@ -3,7 +3,7 @@ use std::fmt::{Debug, Display};
 use strum_macros::Display;
 
 use crate::riverdb::pg::protocol::Tag;
-use crate::riverdb::common::{Result, Error};
+use crate::riverdb::{Error, Result};
 
 #[derive(Display, Debug)]
 pub enum ClientConnState {

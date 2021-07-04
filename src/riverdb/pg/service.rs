@@ -4,7 +4,7 @@ use std::os::unix::io::AsRawFd;
 use tokio::net::TcpStream;
 use tracing::{info, warn};
 
-use crate::riverdb::common::Result;
+use crate::riverdb::Result;
 use crate::riverdb::worker::Worker;
 use crate::riverdb::server::Listener;
 

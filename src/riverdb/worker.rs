@@ -9,7 +9,7 @@ use tokio::net::{TcpListener, TcpSocket};
 use tracing::{debug, error, info_span};
 use bytes::BytesMut;
 
-use crate::riverdb::common::{Result, Error};
+use crate::riverdb::{Error, Result};
 use crate::riverdb::config::{conf, LISTEN_BACKLOG};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;

@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 use tokio::net::{UnixStream};
 use tokio::io::{Interest, Ready};
 
-use crate::riverdb::common::{Result, Error};
+use crate::riverdb::{Error, Result};
 
 
 pub(crate) enum TransportStream {

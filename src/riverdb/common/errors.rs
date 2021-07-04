@@ -15,9 +15,10 @@ custom_error!{pub ErrorKind
     StringError{msg: String} = "{msg}",
     StrError{msg: &'static str} = "{msg}",
     Io{source: io::Error} = "io error",
-    AddrParseError{source: net::AddrParseError} = "address parse error",
-    Yaml{source: serde_yaml::Error} = "yaml error",
-    Tls{source: rustls::Error} = "rustls error",
+    Utf8Error{source: std::str::Utf8Error} = "utf8 error {source}",
+    AddrParseError{source: net::AddrParseError} = "address parse error {source}",
+    Yaml{source: serde_yaml::Error} = "yaml error {source}",
+    Tls{source: rustls::Error} = "rustls error {source}",
     PosionError = "poison error",
 }
 
@@ -49,6 +50,12 @@ impl Error {
 impl From<&'static str> for Error {
     fn from(s: &'static str) -> Self {
         Error(Box::new(ErrorKind::StrError { msg: s }))
+    }
+}
+
+impl From<std::str::Utf8Error> for Error {
+    fn from(e: std::str::Utf8Error) -> Self {
+        Error(Box::new(ErrorKind::Utf8Error { source: e }))
     }
 }
 

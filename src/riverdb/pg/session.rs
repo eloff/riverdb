@@ -12,7 +12,7 @@ use bytes::{Bytes, BytesMut, BufMut, Buf};
 use rustls::Connection;
 
 use crate::riverdb::server::{Transport};
-use crate::riverdb::common::{Result, Error};
+use crate::riverdb::{Error, Result};
 
 pub enum SessionSide {
     Client,

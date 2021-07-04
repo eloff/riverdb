@@ -13,7 +13,7 @@ use tokio::io::{Interest, Ready};
 use tracing::{warn, info};
 use rustls::{ClientConfig, ServerConfig, ClientConnection, ServerConnection, Connection, ServerName};
 
-use crate::riverdb::common::{Result, Error};
+use crate::riverdb::{Error, Result};
 use crate::riverdb::config::{TlsMode};
 use crate::riverdb::server::transport_stream::{TransportStream, StreamReaderWriter, convert_io_result};
 use crate::riverdb::server::transport_tls::TransportTls;

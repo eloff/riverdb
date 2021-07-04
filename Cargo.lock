@@ -274,6 +274,9 @@ name = "memchr"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b16bd47d9e329435e309c58469fe0791c2d0d1ba96ec0954152a5ae2b04387dc"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "mio"
@@ -467,6 +470,7 @@ dependencies = [
  "fnv",
  "futures",
  "libc",
+ "memchr",
  "num_cpus",
  "rustls",
  "rustls-pemfile",

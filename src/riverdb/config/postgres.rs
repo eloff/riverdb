@@ -1,7 +1,7 @@
 use serde::{Deserialize};
 
 use crate::riverdb::config::enums::TlsMode;
-use crate::riverdb::common::{Error, Result};
+use crate::riverdb::{Error, Result};
 
 #[derive(Deserialize)]
 pub struct PostgresCluster {

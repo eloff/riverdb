@@ -30,3 +30,4 @@ libc = "0.2.97"
 strum = "0.21.0"
 strum_macros = "0.21.0"
 custom_error = "1.9.2"
+memchr = { version = "2.4.0", features = ["libc"] }

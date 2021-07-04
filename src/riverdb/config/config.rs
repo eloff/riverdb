@@ -7,7 +7,7 @@ use serde::{Deserialize};
 use tracing::{info_span, info, debug};
 
 use crate::riverdb::config::postgres::PostgresCluster;
-use crate::riverdb::common::{Error, Result};
+use crate::riverdb::{Error, Result};
 use std::net::{SocketAddr, IpAddr};
 use std::str::FromStr;
 

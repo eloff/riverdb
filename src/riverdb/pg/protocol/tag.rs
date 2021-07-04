@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter};
 
-use crate::riverdb::common::{Result, Error};
+use crate::riverdb::{Error, Result};
 
 pub const SSL_ALLOWED: u8 = 'S' as u8;
 pub const SSL_NOT_ALLOWED: u8 = 'N' as u8;

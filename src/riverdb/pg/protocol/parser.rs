@@ -4,7 +4,7 @@ use std::convert::TryInto;
 
 use rustls::Connection;
 
-use crate::riverdb::common::{Result, Error};
+use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::protocol::Message;
 use crate::riverdb::config::conf;
 use crate::riverdb::pg::protocol::Tag;
