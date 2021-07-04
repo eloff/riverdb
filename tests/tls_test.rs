@@ -9,6 +9,7 @@ use std::sync::Arc;
 use riverdb::config::TlsMode;
 use riverdb::server::{ClientTransport, DangerousCertificateNonverifier, ServerTransport};
 use rustls::{PrivateKey, Certificate};
+use tokio::io::Interest;
 
 const SSL_REQUEST: &[u8] = &[0, 0, 0, 8, 4, 210, 22, 47];
 
@@ -18,7 +19,7 @@ async fn test_tls_client_handshake() -> Result<(), Box<dyn Error>> {
     let t = ClientTransport::new(s, false);
     let n = t.try_write(SSL_REQUEST)?;
     assert_eq!(n, 8);
-    t.readable().await?;
+    t.ready(Interest::READABLE).await?;
     let mut buf = [0u8; 1];
     let n = t.try_read(&mut buf[..])?;
     assert_eq!(n, 1);
@@ -28,7 +29,7 @@ async fn test_tls_client_handshake() -> Result<(), Box<dyn Error>> {
         .with_custom_certificate_verifier(DangerousCertificateNonverifier::new())
         .with_no_client_auth();
 
-    t.upgrade(Arc::new(conf), TlsMode::DangerouslyUnverifiedCertificates, "localhost").await?;
+    t.upgrade_client(Arc::new(conf), TlsMode::DangerouslyUnverifiedCertificates, "localhost").await?;
     assert!(!t.is_handshaking());
     Ok(())
 }
@@ -41,7 +42,7 @@ async fn test_tls_server_handshake() -> Result<(), Box<dyn Error>> {
     let (s, _) = listener.accept().await?;
     let t = ServerTransport::new(s, false);
 
-    t.readable().await?;
+    t.ready(Interest::READABLE).await?;
     let mut buf = [0u8; 8];
     let n = t.try_read(&mut buf[..])?;
     assert_eq!(n, 8);
@@ -67,7 +68,7 @@ async fn test_tls_server_handshake() -> Result<(), Box<dyn Error>> {
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
 
-    t.upgrade(Arc::new(conf), TlsMode::DangerouslyUnverifiedCertificates).await?;
+    t.upgrade_server(Arc::new(conf), TlsMode::DangerouslyUnverifiedCertificates).await?;
     assert!(!t.is_handshaking());
     psql.kill().await?;
     Ok(())

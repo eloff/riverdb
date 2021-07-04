@@ -11,7 +11,7 @@ use tokio::io::{Interest, Ready};
 use bytes::{Bytes, BytesMut, BufMut, Buf};
 use rustls::Connection;
 
-use crate::riverdb::server::{ClientTransport, ServerTransport, Transport};
+use crate::riverdb::server::{Transport};
 use crate::riverdb::common::{Result, Error};
 
 pub enum SessionSide {
@@ -20,8 +20,8 @@ pub enum SessionSide {
 }
 
 pub struct Session {
-    /// client_stream is a possibly uninitialized ServerTransport, may check if client_id != 0 first
-    client_stream: UnsafeCell<MaybeUninit<ServerTransport>>,
+    /// client_stream is a possibly uninitialized Transport, may check if client_id != 0 first
+    client_stream: UnsafeCell<MaybeUninit<Transport>>,
     /// client_id is set once and then read-only. If not used, it's 0.
     pub client_id: AtomicU32,
     /// backend_id is set once and then read-only. If not used, it's 0.
@@ -29,8 +29,8 @@ pub struct Session {
     pub client_has_send_backlog: AtomicBool,
     pub backend_has_send_backlog: AtomicBool,
     pub client_send_backlog: Mutex<VecDeque<Bytes>>,
-    /// backend_stream is a possibly uninitialized ClientTransport, may check if backend_id != 0 first
-    backend_stream: UnsafeCell<MaybeUninit<ClientTransport>>,
+    /// backend_stream is a possibly uninitialized Transport, may check if backend_id != 0 first
+    backend_stream: UnsafeCell<MaybeUninit<Transport>>,
     pub backend_send_backlog: Mutex<VecDeque<Bytes>>,
     /// client_last-active is a course-grained monotonic clock that is advanced when data is received from the client
     pub client_last_active: AtomicU32,
@@ -54,7 +54,7 @@ impl Session {
         })
     }
 
-    pub fn new_with_client(stream: ServerTransport, conn_id: u32) -> Arc<Self> {
+    pub fn new_with_client(stream: Transport, conn_id: u32) -> Arc<Self> {
         let s = Self::new();
         unsafe {
             s.set_client(stream, conn_id);
@@ -62,7 +62,7 @@ impl Session {
         s
     }
 
-    pub fn new_with_backend(stream: ClientTransport, conn_id: u32) -> Arc<Self> {
+    pub fn new_with_backend(stream: Transport, conn_id: u32) -> Arc<Self> {
         let s = Self::new();
         unsafe {
             s.set_backend(stream, conn_id);
@@ -70,32 +70,32 @@ impl Session {
         s
     }
 
-    pub unsafe fn set_client(&self, stream: ServerTransport, conn_id: u32) {
+    pub unsafe fn set_client(&self, stream: Transport, conn_id: u32) {
         assert_eq!(self.client_id.load(Relaxed), 0);
         *(&mut *self.client_stream.get()).as_mut_ptr() = stream;
         self.client_id.store(conn_id, Release);
     }
 
-    pub unsafe fn set_backend(&self, stream: ClientTransport, conn_id: u32) {
+    pub unsafe fn set_backend(&self, stream: Transport, conn_id: u32) {
         assert_eq!(self.backend_id.load(Relaxed), 0);
         *(&mut *self.backend_stream.get()).as_mut_ptr() = stream;
         self.backend_id.store(conn_id, Release);
     }
 
-    /// client unsafely returns a reference to the ServerTransport for the client-facing connection.
+    /// client unsafely returns a reference to the Transport for the client-facing connection.
     /// This is safe if you know it's been initialized, e.g. from ClientConn or ClientSend.
-    pub unsafe fn client(&self) -> &ServerTransport {
+    pub unsafe fn client(&self) -> &Transport {
         &*(&*self.client_stream.get()).as_ptr()
     }
 
-    /// backend unsafely returns a reference to the ClientTransport for the backend-facing connection.
+    /// backend unsafely returns a reference to the Transport for the backend-facing connection.
     /// This is safe if you know it's been initialized, e.g. from BackendConn or BackendSend.
-    pub unsafe fn backend(&self) -> &ClientTransport {
+    pub unsafe fn backend(&self) -> &Transport {
         &*(&*self.backend_stream.get()).as_ptr()
     }
 
-    /// get_client returns Some(&ServerTransport) if the client-facing connection has been initialized.
-    pub fn get_client(&self) -> Option<&ServerTransport> {
+    /// get_client returns Some(&Transport) if the client-facing connection has been initialized.
+    pub fn get_client(&self) -> Option<&Transport> {
         if self.client_id.load(Acquire) != 0 {
             Some(unsafe { self.client() })
         } else {
@@ -103,8 +103,8 @@ impl Session {
         }
     }
 
-    /// get_backend returns Some(&ClientTransport) if the client-facing connection has been initialized.
-    pub fn get_backend(&self) -> Option<&ClientTransport> {
+    /// get_backend returns Some(&Transport) if the client-facing connection has been initialized.
+    pub fn get_backend(&self) -> Option<&Transport> {
         if self.backend_id.load(Acquire) != 0 {
             Some(unsafe { self.backend() })
         } else {
@@ -149,12 +149,12 @@ impl Session {
 
 /// read_and_flush_backlog reads from transport and optionally flushes pending data from backlog to maybe_send_transport.
 /// these two steps are combined in a single task to reduce synchronization and scheduling overhead.
-async fn read_and_flush_backlog<T: Connection, U: Connection>(
+async fn read_and_flush_backlog(
     buf: &mut BytesMut,
-    transport: &Transport<T>,
+    transport: &Transport,
     backlog: &Mutex<VecDeque<Bytes>>,
     has_backlog: &AtomicBool,
-    maybe_send_transport: Option<&Transport<U>>
+    maybe_send_transport: Option<&Transport>
 ) -> Result<(usize, usize)> {
     if buf.remaining_mut() == 0 {
         return Ok((0, 0));
@@ -183,7 +183,7 @@ async fn read_and_flush_backlog<T: Connection, U: Connection>(
     };
 
     let read_bytes = if ready.is_readable() {
-        try_read(buf, transport)?;
+        try_read(buf, transport)?
     } else {
         0
     };
@@ -220,7 +220,7 @@ async fn read_and_flush_backlog<T: Connection, U: Connection>(
     return Ok((read_bytes, write_bytes))
 }
 
-fn backlog_send<T: Connection>(mut buf: Bytes, backlog: &Mutex<VecDeque<Bytes>>, has_backlog: &AtomicBool, transport: Option<&Transport<T>>) -> Result<()> {
+fn backlog_send(mut buf: Bytes, backlog: &Mutex<VecDeque<Bytes>>, has_backlog: &AtomicBool, transport: Option<&Transport>) -> Result<()> {
     // We always have to acquire the mutex, otherwise, even if the backlog appears empty,
     // we can't be certain another thread won't try to write the backlog and overlap write()
     // calls with us here. Essentially the backlog mutex must always be held when writing
@@ -243,7 +243,7 @@ fn backlog_send<T: Connection>(mut buf: Bytes, backlog: &Mutex<VecDeque<Bytes>>,
     Ok(())
 }
 
-fn try_read<T: Connection>(buf: &mut BytesMut, transport: &Transport<T>) -> Result<usize> {
+fn try_read(buf: &mut BytesMut, transport: &Transport) -> Result<usize> {
     let mut read_bytes = 0;
     let maybe_uninit = buf.chunk_mut();
     let bytes = unsafe {

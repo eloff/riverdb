@@ -15,7 +15,7 @@ use crate::riverdb::pg::{plugins, SessionSide};
 use crate::riverdb::pool::PostgresCluster;
 use crate::riverdb::coarse_monotonic_now;
 use crate::riverdb::pg::ClientConnState;
-use crate::riverdb::server::{ServerTransport};
+use crate::riverdb::server::{Transport};
 use crate::riverdb::pg::Session;
 
 
@@ -26,7 +26,7 @@ pub struct ClientConn {
 
 impl ClientConn {
     pub fn new(stream: TcpStream, conn_id: u32, session: Option<Arc<Session>>) -> Self {
-        let transport = ServerTransport::new(stream);
+        let transport = Transport::new(stream);
         ClientConn {
             session: session
                 .clone()
