@@ -1,3 +1,4 @@
+use std::io;
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
@@ -6,6 +7,7 @@ use std::marker::PhantomData;
 use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::{UnixStream};
+use tokio::io::{Interest, Ready};
 
 use crate::riverdb::common::{Result, Error};
 
@@ -33,36 +35,45 @@ impl TransportStream {
         }
     }
 
-    pub async fn readable(&self) -> Result<()> {
+    pub async fn ready(&self, interest: Interest) -> Result<Ready> {
         match self {
-            TransportStream::TcpStream(s) => s.readable().await.map_err(Error::from),
+            TransportStream::TcpStream(s) => s.ready(interest).await.map_err(Error::from),
             #[cfg(unix)]
-            TransportStream::UnixSocket(s) => unimplemented!(),
-        }
-    }
-
-    pub async fn writable(&self) -> Result<()> {
-        match self {
-            TransportStream::TcpStream(s) => s.writable().await.map_err(Error::from),
-            #[cfg(unix)]
-            TransportStream::UnixSocket(s) => unimplemented!(),
+            TransportStream::UnixSocket(s) => s.ready(interest).await.map_err(Error::from),
         }
     }
 
     pub fn try_read(&self, buf: &mut [u8]) -> Result<usize> {
-        match self {
-            TransportStream::TcpStream(s) => s.try_read(buf).map_err(Error::from),
+        convert_io_result(match self {
+            TransportStream::TcpStream(s) => s.try_read(buf),
             #[cfg(unix)]
             TransportStream::UnixSocket(s) => unimplemented!(),
-        }
+        })
     }
 
     pub fn try_write(&self, buf: &[u8]) -> Result<usize> {
-        match self {
-            TransportStream::TcpStream(s) => s.try_write(buf).map_err(Error::from),
+        convert_io_result(match self {
+            TransportStream::TcpStream(s) => s.try_write(buf),
             #[cfg(unix)]
             TransportStream::UnixSocket(s) => unimplemented!(),
-        }
+        })
+    }
+}
+
+/// convert_result converts an io::Result from read/write to a Result
+/// where WouldBlock errors are converted to Ok(0) and Ok(0) is converted to Error::closed().
+pub(crate) fn convert_io_result(result: io::Result<usize>) -> Result<usize> {
+    match result {
+        Err(e) => {
+            if e.kind() == io::ErrorKind::WouldBlock {
+                return Ok(0);
+            }
+            Err(Error::from(e))
+        },
+        Ok(0) => {
+            Err(Error::closed()) // EOF
+        },
+        Ok(n) => Ok(n),
     }
 }
 

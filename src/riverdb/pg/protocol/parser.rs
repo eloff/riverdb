@@ -17,7 +17,11 @@ impl MessageParser {
         }
     }
 
-    pub async fn next<'a>(&'a mut self) -> Result<Option<Message<'a>>> {
+    pub fn next<'a>(&'a mut self) -> Option<Result<Message<'a>>> {
         todo!()
+    }
+
+    pub fn bytes_mut(&mut self) -> &mut BytesMut {
+        todo!();
     }
 }
