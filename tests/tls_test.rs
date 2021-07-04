@@ -7,7 +7,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use riverdb::config::TlsMode;
-use riverdb::server::{ClientTransport, DangerousCertificateNonverifier, ServerTransport};
+use riverdb::server::{DangerousCertificateNonverifier, Transport};
 use rustls::{PrivateKey, Certificate};
 use tokio::io::Interest;
 
@@ -16,7 +16,7 @@ const SSL_REQUEST: &[u8] = &[0, 0, 0, 8, 4, 210, 22, 47];
 #[tokio::test]
 async fn test_tls_client_handshake() -> Result<(), Box<dyn Error>> {
     let s = TcpStream::connect("127.0.0.1:5432").await?;
-    let t = ClientTransport::new(s, false);
+    let t = Transport::new(s);
     let n = t.try_write(SSL_REQUEST)?;
     assert_eq!(n, 8);
     t.ready(Interest::READABLE).await?;
@@ -40,7 +40,7 @@ async fn test_tls_server_handshake() -> Result<(), Box<dyn Error>> {
     let mut psql = common::psql(format!("host=localhost port={}", listener.local_addr().unwrap().port()).as_str());
 
     let (s, _) = listener.accept().await?;
-    let t = ServerTransport::new(s, false);
+    let t = Transport::new(s);
 
     t.ready(Interest::READABLE).await?;
     let mut buf = [0u8; 8];

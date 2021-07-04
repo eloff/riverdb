@@ -31,7 +31,7 @@ impl ClientConn {
             session: session
                 .clone()
                 .unwrap_or_else(|| Session::new_with_client(transport, conn_id)),
-            state: ClientConnState::ClientConnectionStateInitial,
+            state: ClientConnState::StateInitial,
         }
     }
 
