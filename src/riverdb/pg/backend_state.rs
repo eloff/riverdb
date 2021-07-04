@@ -1,5 +1,7 @@
 use std::fmt::{Debug, Display};
 
+use strum_macros::Display;
+
 use crate::riverdb::pg::protocol::Tag;
 use crate::riverdb::common::{Result, Error};
 
@@ -14,7 +16,6 @@ pub enum BackendConnState {
     FailedTransaction,
     Listen,
     InPool,
-    SetRole,
     Closed,
 }
 

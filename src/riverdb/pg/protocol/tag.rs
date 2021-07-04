@@ -7,52 +7,57 @@ pub const SSL_NOT_ALLOWED: u8 = 'N' as u8;
 pub const SSL_REQUEST: i32 = 80877103;
 
 // Tag defines the Postgres protocol message type tag bytes
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Tag(u8);
 
-const UNTAGGED: Tag = Tag(0); // includes Startup, CancelRequest, SSLRequest, GSSENCRequest
-// Frontend
-const BIND: Tag = Tag::new_unchecked('B');
-const CLOSE: Tag = Tag::new_unchecked('C'); // close prepared statement or portal
-const COPY_FAIL: Tag = Tag::new_unchecked('f');
-const DESCRIBE: Tag = Tag::new_unchecked('D');
-const EXECUTE: Tag = Tag::new_unchecked('E');
-const FLUSH: Tag = Tag::new_unchecked('H');
-const FUNCTION_CALL: Tag = Tag::new_unchecked('F');
-const PARSE: Tag = Tag::new_unchecked('P');
-const PASSWORD_MESSAGE: Tag = Tag::new_unchecked('p'); // also used for GSSAPI, SSPI and SASL
-const QUERY: Tag = Tag::new_unchecked('Q');
-const SYNC: Tag = Tag::new_unchecked('S');
-const TERMINATE: Tag = Tag::new_unchecked('X');
-// Frontend + Backend
-const COPY_DATA: Tag = Tag::new_unchecked('d');
-const COPY_DONE: Tag = Tag::new_unchecked('c');
-// Backend
-const AUTHENTICATION_OK: Tag = Tag::new_unchecked('R'); // one of AuthenticationKerberosV5, AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationSCMCredential, AuthenticationGSS, AuthenticationSSPI, AuthenticationGSSContinue, AuthenticationSASL, AuthenticationSASLContinue, AuthenticationSASLFinal
-const BACKEND_KEY_DATA: Tag = Tag::new_unchecked('K');
-const BIND_COMPLETE: Tag = Tag::new_unchecked('2');
-const CLOSE_COMPLETE: Tag = Tag::new_unchecked('3');
-const COMMAND_COMPLETE: Tag = Tag::new_unchecked('C');
-const COPY_IN_RESPONSE: Tag = Tag::new_unchecked('G');
-const COPY_OUT_RESPONSE: Tag = Tag::new_unchecked('H');
-const COPY_BOTH_RESPONSE: Tag = Tag::new_unchecked('W');
-const DATA_ROW: Tag = Tag::new_unchecked('D');
-const EMPTY_QUERY: Tag = Tag::new_unchecked('I');
-const FUNCTION_CALL_RESPONSE: Tag = Tag::new_unchecked('V');
-const NEGOTIATE_PROTOCOL_VERSION: Tag = Tag::new_unchecked('v');
-const NO_DATA: Tag = Tag::new_unchecked('n');
-const PARAMETER_DESCRIPTION: Tag = Tag::new_unchecked('t');
-const PARSE_COMPLETE: Tag = Tag::new_unchecked('1');
-const PORTAL: Tag = Tag::new_unchecked('s');
-const READY_FOR_QUERY: Tag = Tag::new_unchecked('Z');
-const ROW_DESCRIPTION: Tag = Tag::new_unchecked('T');
-// Backend Async Messages (can also be synchronous, depending on context)
-const ERROR_RESPONSE: Tag = Tag::new_unchecked('E'); // can be sent async e.g. if server is shutdown gracefully
-const PARAMETER_STATUS: Tag = Tag::new_unchecked('S');
-const NOTICE_RESPONSE: Tag = Tag::new_unchecked('N');
-const NOTIFICATION_RESPONSE: Tag = Tag::new_unchecked('A');
-
 impl Tag {
+    pub const UNTAGGED: Tag = Tag(0);
+    // includes Startup, CancelRequest, SSLRequest, GSSENCRequest
+    // Frontend
+    pub const BIND: Tag = Tag::new_unchecked('B');
+    pub const CLOSE: Tag = Tag::new_unchecked('C');
+    // close prepared statement or portal
+    pub const COPY_FAIL: Tag = Tag::new_unchecked('f');
+    pub const DESCRIBE: Tag = Tag::new_unchecked('D');
+    pub const EXECUTE: Tag = Tag::new_unchecked('E');
+    pub const FLUSH: Tag = Tag::new_unchecked('H');
+    pub const FUNCTION_CALL: Tag = Tag::new_unchecked('F');
+    pub const PARSE: Tag = Tag::new_unchecked('P');
+    pub const PASSWORD_MESSAGE: Tag = Tag::new_unchecked('p');
+    // also used for GSSAPI, SSPI and SASL
+    pub const QUERY: Tag = Tag::new_unchecked('Q');
+    pub const SYNC: Tag = Tag::new_unchecked('S');
+    pub const TERMINATE: Tag = Tag::new_unchecked('X');
+    // Frontend + Backend
+    pub const COPY_DATA: Tag = Tag::new_unchecked('d');
+    pub const COPY_DONE: Tag = Tag::new_unchecked('c');
+    // Backend
+    pub const AUTHENTICATION_OK: Tag = Tag::new_unchecked('R');
+    // one of AuthenticationKerberosV5, AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationSCMCredential, AuthenticationGSS, AuthenticationSSPI, AuthenticationGSSContinue, AuthenticationSASL, AuthenticationSASLContinue, AuthenticationSASLFinal
+    pub const BACKEND_KEY_DATA: Tag = Tag::new_unchecked('K');
+    pub const BIND_COMPLETE: Tag = Tag::new_unchecked('2');
+    pub const CLOSE_COMPLETE: Tag = Tag::new_unchecked('3');
+    pub const COMMAND_COMPLETE: Tag = Tag::new_unchecked('C');
+    pub const COPY_IN_RESPONSE: Tag = Tag::new_unchecked('G');
+    pub const COPY_OUT_RESPONSE: Tag = Tag::new_unchecked('H');
+    pub const COPY_BOTH_RESPONSE: Tag = Tag::new_unchecked('W');
+    pub const DATA_ROW: Tag = Tag::new_unchecked('D');
+    pub const EMPTY_QUERY: Tag = Tag::new_unchecked('I');
+    pub const FUNCTION_CALL_RESPONSE: Tag = Tag::new_unchecked('V');
+    pub const NEGOTIATE_PROTOCOL_VERSION: Tag = Tag::new_unchecked('v');
+    pub const NO_DATA: Tag = Tag::new_unchecked('n');
+    pub const PARAMETER_DESCRIPTION: Tag = Tag::new_unchecked('t');
+    pub const PARSE_COMPLETE: Tag = Tag::new_unchecked('1');
+    pub const PORTAL: Tag = Tag::new_unchecked('s');
+    pub const READY_FOR_QUERY: Tag = Tag::new_unchecked('Z');
+    pub const ROW_DESCRIPTION: Tag = Tag::new_unchecked('T');
+    // Backend Async Messages (can also be synchronous, depending on context)
+    pub const ERROR_RESPONSE: Tag = Tag::new_unchecked('E');
+    // can be sent async e.g. if server is shutdown gracefully
+    pub const PARAMETER_STATUS: Tag = Tag::new_unchecked('S');
+    pub const NOTICE_RESPONSE: Tag = Tag::new_unchecked('N');
+    pub const NOTIFICATION_RESPONSE: Tag = Tag::new_unchecked('A');
+
     pub fn new(b: u8) -> Result<Self> {
         if let Some(name) = TAG_NAMES.get(b as usize) {
             if name.is_empty() {

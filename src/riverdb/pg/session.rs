@@ -112,7 +112,10 @@ impl Session {
         }
     }
 
-    /// client_read_and_send_backlog reads from client() and optionally writes() pending data to backend()
+    /// client_read_and_send_backlog reads from client() and appends the data to buf (not overwriting existing data)
+    /// and optionally writes() pending data to backend(). It returns the number of bytes read and written,
+    /// at least one of the return values will be non-zero if an no error occurred. If either underlying
+    /// stream is closed (or half-closed) this will return Error::closed, and subsequent calls will return the same.
     pub async fn client_read_and_send_backlog(&self, buf: &mut BytesMut) -> Result<(usize, usize)> {
         read_and_flush_backlog(
             buf,
@@ -123,7 +126,10 @@ impl Session {
         ).await
     }
 
-    /// backend_read_and_send_backlog reads from backend() and optionally writes() pending data to client()
+    /// backend_read_and_send_backlog reads from backend() and appends the data to buf (not overwriting existing data)
+    /// and optionally writes() pending data to client(). It returns the number of bytes read and written,
+    /// at least one of the return values will be non-zero if an no error occurred. If either underlying
+    /// stream is closed (or half-closed) this will return Error::closed, and subsequent calls will return the same.
     pub async fn backend_read_and_send_backlog(&self, buf: &mut BytesMut) -> Result<(usize, usize)> {
         read_and_flush_backlog(
             buf,
@@ -160,9 +166,9 @@ async fn read_and_flush_backlog(
         return Ok((0, 0));
     }
 
-    // Check if we need to write
+    // Check if we need to write data to maybe_send_transport
     let mut interest = Interest::READABLE;
-    let flush = has_backlog.load(Relaxed);
+    let flush = maybe_send_transport.is_some() && has_backlog.load(Relaxed);
     if flush {
         interest.add(Interest::WRITABLE);
     } else if let Some(backend) = maybe_send_transport {
@@ -188,34 +194,12 @@ async fn read_and_flush_backlog(
         0
     };
 
-    let mut write_bytes = 0;
-    if ready.is_writable() {
+    let write_bytes = if ready.is_writable() {
         let backend = maybe_send_transport.unwrap();
-        if flush {
-            let mut backlog = backlog.lock().map_err(Error::from)?;
-            loop {
-                // If !backend.is_tls() && backlog.len() > 1 we may want to use try_write_vectored
-                // However, that's not worth the effort yet, and it should be completely pointless once we're
-                // using io_uring through mio. I'm betting on the latter eventually making it unnecessary.
-                if let Some(bytes) = backlog.front_mut() {
-                    let n = backend.try_write(bytes.chunk())?;
-                    write_bytes += n;
-                    if n == 0 {
-                        break;
-                    } else if n < bytes.remaining() {
-                        bytes.advance(n);
-                    } else {
-                        // n == bytes.remaining()
-                        backlog.pop_front();
-                    }
-                } else {
-                    // Relaxed because the mutex release below is a global barrier
-                    has_backlog.store(false, Relaxed);
-                    break;
-                }
-            }
-        }
-    }
+        flush_backlog(backlog, has_backlog, backend)?
+    } else {
+        0
+    };
 
     return Ok((read_bytes, write_bytes))
 }
@@ -243,13 +227,42 @@ fn backlog_send(mut buf: Bytes, backlog: &Mutex<VecDeque<Bytes>>, has_backlog: &
     Ok(())
 }
 
+fn flush_backlog(backlog: &Mutex<VecDeque<Bytes>>, has_backlog: &AtomicBool, transport: &Transport) -> Result<usize> {
+    let mut write_bytes = 0;
+    let mut backlog = backlog.lock().map_err(Error::from)?;
+    loop {
+        // If !backend.is_tls() && backlog.len() > 1 we may want to use try_write_vectored
+        // However, that's not worth the effort yet, and it should be completely pointless once we're
+        // using io_uring through mio. I'm betting on the latter eventually making it unnecessary.
+        if let Some(bytes) = backlog.front_mut() {
+            let n = transport.try_write(bytes.chunk())?;
+            write_bytes += n;
+            if n == 0 {
+                break;
+            } else if n < bytes.remaining() {
+                bytes.advance(n);
+            } else {
+                // n == bytes.remaining()
+                backlog.pop_front();
+            }
+        } else {
+            // Relaxed because the mutex release below is a global barrier
+            has_backlog.store(false, Relaxed);
+            break;
+        }
+    }
+    Ok(write_bytes)
+}
+
+/// try_read attempts to read some bytes without blocking from transport into buf.
+/// appends to buf, does not overwrite existing data.
 fn try_read(buf: &mut BytesMut, transport: &Transport) -> Result<usize> {
     let mut read_bytes = 0;
     let maybe_uninit = buf.chunk_mut();
     let bytes = unsafe {
         std::slice::from_raw_parts_mut(maybe_uninit.as_mut_ptr(), maybe_uninit.len())
     };
-    let mut n = transport.try_read(bytes)?;
+    let mut n = transport.try_read(&mut bytes[buf.len()..])?;
     read_bytes += n;
     if n > 0 && n < bytes.len() {
         // If we read some data, but didn't fill buffer, reading again should return 0 (WouldBlock)
@@ -259,6 +272,7 @@ fn try_read(buf: &mut BytesMut, transport: &Transport) -> Result<usize> {
         n = transport.try_read(&mut bytes[n..])?;
         read_bytes += n;
     }
+    unsafe { buf.set_len(buf.len() + read_bytes); }
     Ok(read_bytes)
 }
 

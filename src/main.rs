@@ -1,9 +1,6 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
-#[macro_use]
-extern crate enum_display_derive;
-
 mod riverdb;
 
 use std::thread;

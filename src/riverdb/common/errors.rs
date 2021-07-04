@@ -11,6 +11,7 @@ use std::fmt::Formatter;
 
 custom_error!{pub ErrorKind
     ClosedError = "resource is closed",
+    ProtocolError{msg: String} = "{msg}",
     StringError{msg: String} = "{msg}",
     StrError{msg: &'static str} = "{msg}",
     Io{source: io::Error} = "io error",
@@ -34,6 +35,10 @@ pub struct Error(Box<ErrorKind>);
 impl Error {
     pub fn new<S: ToString>(s: S) -> Self {
         Error(Box::new(ErrorKind::StringError{msg: s.to_string()}))
+    }
+
+    pub fn protocol_error<S: ToString>(s: S) -> Self {
+        Error(Box::new(ErrorKind::ProtocolError{msg: s.to_string()}))
     }
 
     pub fn closed() -> Self {
