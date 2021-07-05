@@ -1,4 +1,4 @@
-use std::fmt::{Display, Formatter};
+use strum::Display;
 
 use crate::riverdb::{Error, Result};
 
@@ -7,206 +7,96 @@ pub const SSL_NOT_ALLOWED: u8 = 'N' as u8;
 pub const SSL_REQUEST: i32 = 80877103;
 
 // Tag defines the Postgres protocol message type tag bytes
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub struct Tag(u8);
+#[derive(Display, Copy, Clone, Eq, PartialEq)]
+#[repr(u8)]
+#[non_exhaustive]
+pub enum Tag {
+    Untagged = 0, // includes Startup, CancelRequest, SSLRequest, GSSENCRequest
+    // Frontend
+    Bind = 'B' as u8,
+    // close prepared statement or portal
+    CopyFail = 'f' as u8,
+    FunctionCall = 'F' as u8,
+    Parse = 'P' as u8,
+    PasswordMessage = 'p' as u8,
+    // also used for GSSAPI, SSPI and SASL
+    Query = 'Q' as u8,
+    Terminate = 'X' as u8,
+    // Frontend + Backend
+    CopyData = 'd' as u8,
+    CopyDone = 'c' as u8,
+    DescribeOrDataRow = 'D' as u8,
+    ExecuteOrError = 'E' as u8,
+    SyncOrParameterStatus = 'S' as u8,
+    CloseOrCommandComplete = 'C' as u8,
+    FlushOrCopyOutResponse = 'H' as u8,
+    // Backend
+    AuthenticationOk = 'R' as u8,
+    // one of AuthenticationKerberosV5, AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationSCMCredential, AuthenticationGSS, AuthenticationSSPI, AuthenticationGSSContinue, AuthenticationSASL, AuthenticationSASLContinue, AuthenticationSASLFinal
+    BackendKeyData = 'K' as u8,
+    BindComplete = '2' as u8,
+    CloseComplete = '3' as u8,
+    CopyInResponse = 'G' as u8,
+    CopyBothResponse = 'W' as u8,
+    EmptyQuery = 'I' as u8,
+    FunctionCallResponse = 'V' as u8,
+    NegotiateProtocolVersion = 'v' as u8,
+    NoData = 'n' as u8,
+    ParameterDescription = 't' as u8,
+    ParseComplete = '1' as u8,
+    Portal = 's' as u8,
+    ReadyForQuery = 'Z' as u8,
+    RowDescription = 'T' as u8,
+    // Backend Async Messages (can also be synchronous, depending on context)
+    // ExecuteOrError 'E' as u8
+    // can be sent async e.g. if server is shutdown gracefully
+    NoticeResponse = 'N' as u8,
+    NotificationResponse = 'A' as u8,
+}
 
 impl Tag {
-    pub const UNTAGGED: Tag = Tag(0);
-    // includes Startup, CancelRequest, SSLRequest, GSSENCRequest
-    // Frontend
-    pub const BIND: Tag = Tag::new_unchecked('B');
-    pub const CLOSE: Tag = Tag::new_unchecked('C');
-    // close prepared statement or portal
-    pub const COPY_FAIL: Tag = Tag::new_unchecked('f');
-    pub const DESCRIBE: Tag = Tag::new_unchecked('D');
-    pub const EXECUTE: Tag = Tag::new_unchecked('E');
-    pub const FLUSH: Tag = Tag::new_unchecked('H');
-    pub const FUNCTION_CALL: Tag = Tag::new_unchecked('F');
-    pub const PARSE: Tag = Tag::new_unchecked('P');
-    pub const PASSWORD_MESSAGE: Tag = Tag::new_unchecked('p');
-    // also used for GSSAPI, SSPI and SASL
-    pub const QUERY: Tag = Tag::new_unchecked('Q');
-    pub const SYNC: Tag = Tag::new_unchecked('S');
-    pub const TERMINATE: Tag = Tag::new_unchecked('X');
-    // Frontend + Backend
-    pub const COPY_DATA: Tag = Tag::new_unchecked('d');
-    pub const COPY_DONE: Tag = Tag::new_unchecked('c');
-    // Backend
-    pub const AUTHENTICATION_OK: Tag = Tag::new_unchecked('R');
-    // one of AuthenticationKerberosV5, AuthenticationCleartextPassword, AuthenticationMD5Password, AuthenticationSCMCredential, AuthenticationGSS, AuthenticationSSPI, AuthenticationGSSContinue, AuthenticationSASL, AuthenticationSASLContinue, AuthenticationSASLFinal
-    pub const BACKEND_KEY_DATA: Tag = Tag::new_unchecked('K');
-    pub const BIND_COMPLETE: Tag = Tag::new_unchecked('2');
-    pub const CLOSE_COMPLETE: Tag = Tag::new_unchecked('3');
-    pub const COMMAND_COMPLETE: Tag = Tag::new_unchecked('C');
-    pub const COPY_IN_RESPONSE: Tag = Tag::new_unchecked('G');
-    pub const COPY_OUT_RESPONSE: Tag = Tag::new_unchecked('H');
-    pub const COPY_BOTH_RESPONSE: Tag = Tag::new_unchecked('W');
-    pub const DATA_ROW: Tag = Tag::new_unchecked('D');
-    pub const EMPTY_QUERY: Tag = Tag::new_unchecked('I');
-    pub const FUNCTION_CALL_RESPONSE: Tag = Tag::new_unchecked('V');
-    pub const NEGOTIATE_PROTOCOL_VERSION: Tag = Tag::new_unchecked('v');
-    pub const NO_DATA: Tag = Tag::new_unchecked('n');
-    pub const PARAMETER_DESCRIPTION: Tag = Tag::new_unchecked('t');
-    pub const PARSE_COMPLETE: Tag = Tag::new_unchecked('1');
-    pub const PORTAL: Tag = Tag::new_unchecked('s');
-    pub const READY_FOR_QUERY: Tag = Tag::new_unchecked('Z');
-    pub const ROW_DESCRIPTION: Tag = Tag::new_unchecked('T');
-    // Backend Async Messages (can also be synchronous, depending on context)
-    pub const ERROR_RESPONSE: Tag = Tag::new_unchecked('E');
-    // can be sent async e.g. if server is shutdown gracefully
-    pub const PARAMETER_STATUS: Tag = Tag::new_unchecked('S');
-    pub const NOTICE_RESPONSE: Tag = Tag::new_unchecked('N');
-    pub const NOTIFICATION_RESPONSE: Tag = Tag::new_unchecked('A');
-
     pub fn new(b: u8) -> Result<Self> {
-        if let Some(name) = TAG_NAMES.get(b as usize) {
-            if name.is_empty() {
-                return Ok(Tag(b));
-            }
+        let tag = Self::new_unchecked(b as char);
+        match tag {
+            Tag::Untagged |
+            Tag::Bind |
+            Tag::CopyFail |
+            Tag::FunctionCall |
+            Tag::Parse |
+            Tag::PasswordMessage |
+            Tag::Query |
+            Tag::Terminate |
+            Tag::CopyData |
+            Tag::CopyDone |
+            Tag::DescribeOrDataRow |
+            Tag::ExecuteOrError |
+            Tag::SyncOrParameterStatus |
+            Tag::AuthenticationOk |
+            Tag::BackendKeyData |
+            Tag::BindComplete |
+            Tag::CloseComplete |
+            Tag::CopyInResponse |
+            Tag::CopyBothResponse |
+            Tag::EmptyQuery |
+            Tag::FunctionCallResponse |
+            Tag::NegotiateProtocolVersion |
+            Tag::NoData |
+            Tag::ParameterDescription |
+            Tag::ParseComplete |
+            Tag::Portal |
+            Tag::ReadyForQuery |
+            Tag::RowDescription |
+            Tag::NoticeResponse |
+            Tag::NotificationResponse => Ok(tag),
+            _ => Err(Error::new(format!("Unknown message tag '{}'", b as char))),
         }
-        Err(Error::new(format!("Unknown message tag '{}'", b as char)))
     }
 
-    pub const fn new_unchecked(c: char) -> Self {
-        Tag(c as u8)
+    pub fn new_unchecked(c: char) -> Self {
+        unsafe { std::mem::transmute(c as u8) }
     }
 
     pub fn as_u8(&self) -> u8 {
-        self.0
-    }
-}
-
-static TAG_NAMES: [&'static str; ('z' as usize) + 1] = [
-    "Untagged",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "ParseComplete",
-    "BindComplete",
-    "CloseComplete",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "NotificationResponse",
-    "",
-    "CommandComplete",
-    "DataRow", // also Describe
-    "ErrorResponse",
-    "FunctionCall",
-    "CopyInResponse",
-    "CopyOutResponse",
-    "EmptyQuery",
-    "",
-    "BackendKeyData",
-    "",
-    "",
-    "NoticeResponse",
-    "",
-    "Parse",
-    "Query",
-    "AuthenticationOk",
-    "ParameterStatus",
-    "RowDescription",
-    "",
-    "FunctionCallResponse",
-    "CopyBothResponse",
-    "Terminate",
-    "",
-    "ReadyForQuery",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "CopyDone",
-    "CopyData",
-    "",
-    "CopyFail",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "NoData",
-    "",
-    "PasswordMessage",
-    "",
-    "",
-    "Portal",
-    "ParameterDescription",
-    "",
-    "NegotiateProtocolVersion",
-    "",
-    "",
-    "",
-    "",
-];
-
-impl Display for Tag {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if let Some(name) = TAG_NAMES.get(self.0 as usize) {
-            return f.write_str(name);
-        }
-        f.write_fmt(format_args!("Unknown message tag '{}'", self.0))
+        *self as u8
     }
 }

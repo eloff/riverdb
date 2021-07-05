@@ -31,7 +31,7 @@ impl Header {
 
     pub fn len(&self) -> u32 {
         let len = self.length.get();
-        if self.tag == Tag::UNTAGGED {
+        if self.tag == Tag::Untagged {
             len
         } else {
             len + 1

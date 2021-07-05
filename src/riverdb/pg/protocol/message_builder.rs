@@ -64,7 +64,7 @@ impl MessageBuilder {
         }
         unsafe {
             let mut pos = self.start + 1;
-            if *self.data.get_unchecked(self.start) == Tag::UNTAGGED.as_u8() {
+            if *self.data.get_unchecked(self.start) == Tag::Untagged.as_u8() {
                 pos = self.start;
             } else {
                 len -= 1;
