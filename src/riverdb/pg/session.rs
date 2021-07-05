@@ -13,6 +13,7 @@ use rustls::Connection;
 
 use crate::riverdb::server::{Transport};
 use crate::riverdb::{Error, Result};
+use crate::riverdb::common::bytes_to_slice_mut;
 
 pub enum SessionSide {
     Client,
@@ -221,6 +222,12 @@ fn backlog_send(mut buf: Bytes, backlog: &Mutex<VecDeque<Bytes>>, has_backlog: &
             }
         }
     }
+    // TODO there is no unsplit on Bytes https://github.com/tokio-rs/bytes/issues/503
+    // if let Some(last) = backlog.back() {
+    //     // If the last buffer and this one are actually contiguous, then combine them instead of adding them separately.
+    //     // MessageParser often produces a run of contiguous messages, and recombining them here will mean fewer syscalls to write().
+    //
+    // }
     backlog.push_back(buf);
     // Relaxed because the mutex release below is a global barrier
     has_backlog.store(true, Relaxed);
@@ -258,11 +265,10 @@ fn flush_backlog(backlog: &Mutex<VecDeque<Bytes>>, has_backlog: &AtomicBool, tra
 /// appends to buf, does not overwrite existing data.
 fn try_read(buf: &mut BytesMut, transport: &Transport) -> Result<usize> {
     let mut read_bytes = 0;
-    let maybe_uninit = buf.chunk_mut();
-    let bytes = unsafe {
-        std::slice::from_raw_parts_mut(maybe_uninit.as_mut_ptr(), maybe_uninit.len())
-    };
-    let mut n = transport.try_read(&mut bytes[buf.len()..])?;
+    // Safe because we don't attempt to read from any possibly uninitialized bytes
+    let start = buf.len();
+    let bytes = unsafe { bytes_to_slice_mut(buf) };
+    let mut n = transport.try_read(&mut bytes[start..])?;
     read_bytes += n;
     if n > 0 && n < bytes.len() {
         // If we read some data, but didn't fill buffer, reading again should return 0 (WouldBlock)

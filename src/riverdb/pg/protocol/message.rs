@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter, Debug};
 use bytes::{Bytes, Buf};
 
 use crate::riverdb::pg::protocol::Tag;
-use crate::riverdb::pg::protocol::parser::Header;
+use crate::riverdb::pg::protocol::message_parser::Header;
 
 
 pub struct Message(Bytes);

@@ -70,6 +70,10 @@ impl Tag {
     pub const fn new_unchecked(c: char) -> Self {
         Tag(c as u8)
     }
+
+    pub fn as_u8(&self) -> u8 {
+        self.0
+    }
 }
 
 static TAG_NAMES: [&'static str; ('z' as usize) + 1] = [

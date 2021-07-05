@@ -9,7 +9,7 @@ use crate::riverdb::pg::protocol::Message;
 use crate::riverdb::config::conf;
 use crate::riverdb::pg::protocol::Tag;
 
-const MIN_MESSAGE_LEN: u32 = 5;
+pub const MIN_MESSAGE_LEN: u32 = 5;
 
 pub struct Header {
     pub tag: Tag,
