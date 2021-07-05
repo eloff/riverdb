@@ -3,21 +3,26 @@ use std::cell::Cell;
 
 use crate::riverdb::pg::protocol::Message;
 use crate::riverdb::{Error, Result};
+use std::mem::swap;
 
 
-pub struct MessageReader {
-    pub msg: Message,
+pub struct MessageReader<'a> {
+    pub msg: &'a Message,
     pos: Cell<u32>, // track position for read_xxx methods
     read_past_end: Cell<bool>, // true if we tried to read past the end of the message
 }
 
-impl MessageReader {
-    pub fn new(msg: Message) -> Self {
+impl<'a> MessageReader<'a> {
+    pub fn new(msg: &'a Message) -> Self {
         MessageReader{
             msg,
             pos: Cell::new(0),
             read_past_end: Cell::new(false),
         }
+    }
+
+    pub fn len(&self) -> u32 {
+        self.msg.len()
     }
 
     /// error returns an Error if has_error() is true
@@ -112,5 +117,16 @@ impl MessageReader {
         let bytes = &self.msg.as_slice()[pos as usize..new_pos as usize];
         self.pos.set(new_pos);
         Ok(bytes)
+    }
+
+    pub fn seek(&self, pos: u32) -> u32 {
+        if pos > self.len() {
+            panic!("cannot seek beyond end");
+        }
+        self.pos.replace(pos)
+    }
+
+    pub fn tell(&self) -> u32 {
+        self.pos.get()
     }
 }

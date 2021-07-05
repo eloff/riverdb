@@ -1,5 +1,6 @@
 use strum::{Display, EnumString};
 
+use crate::riverdb::{Error, Result};
 
 /// ErrorCode is an enum of known Postgres error codes
 #[derive(Display, EnumString)]
@@ -543,6 +544,7 @@ pub enum ErrorSeverity {
 #[repr(u8)]
 #[non_exhaustive]
 pub enum ErrorFieldTag {
+    NullTerminator = 0,
     LocalizedSeverity = 'S' as u8,
     Severity = 'V' as u8,
     Code = 'C' as u8,
@@ -564,8 +566,38 @@ pub enum ErrorFieldTag {
 }
 
 impl ErrorFieldTag {
-    pub fn new_unchecked(c: char) -> Self {
-        unsafe { std::mem::transmute(c as u8) }
+    pub fn new(b: u8) -> Result<Self> {
+        let tag = unsafe { Self::new_unchecked(b) };
+        tag.check().map(tag)
+    }
+
+    pub unsafe fn new_unchecked(b: u8) -> Self {
+        std::mem::transmute(b)
+    }
+
+    pub fn check(&self) -> Result<()> {
+        match self {
+            ErrorFieldTag::NullTerminator |
+            ErrorFieldTag::LocalizedSeverity |
+            ErrorFieldTag::Severity |
+            ErrorFieldTag::Code |
+            ErrorFieldTag::Message |
+            ErrorFieldTag::MessageDetail |
+            ErrorFieldTag::MessageHint |
+            ErrorFieldTag::Position |
+            ErrorFieldTag::InternalPosition |
+            ErrorFieldTag::InternalQuery |
+            ErrorFieldTag::Where |
+            ErrorFieldTag::SchemaName |
+            ErrorFieldTag::TableName |
+            ErrorFieldTag::ColumnName |
+            ErrorFieldTag::DataTypeName |
+            ErrorFieldTag::ConstraintName |
+            ErrorFieldTag::File |
+            ErrorFieldTag::Line |
+            ErrorFieldTag::Routine => Ok(tag),
+            _ => Err(Error::protocol_error(format!("unknown error field tag '{}'", b as char))),
+        }
     }
 
     pub fn as_u8(&self) -> u8 {

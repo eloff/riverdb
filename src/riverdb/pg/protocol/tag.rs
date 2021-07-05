@@ -56,8 +56,17 @@ pub enum Tag {
 
 impl Tag {
     pub fn new(b: u8) -> Result<Self> {
-        let tag = Self::new_unchecked(b as char);
-        match tag {
+        // Safe because we check it exhaustively in the match statement below
+        let tag = unsafe { Self::new_unchecked(b) };
+        tag.check().map(tag)
+    }
+
+    pub unsafe fn new_unchecked(b: u8) -> Self {
+        std::mem::transmute(b)
+    }
+
+    pub fn check(&self) -> Result<()> {
+        match self {
             Tag::Untagged |
             Tag::Bind |
             Tag::CopyFail |
@@ -88,12 +97,8 @@ impl Tag {
             Tag::RowDescription |
             Tag::NoticeResponse |
             Tag::NotificationResponse => Ok(tag),
-            _ => Err(Error::new(format!("Unknown message tag '{}'", b as char))),
+            _ => Err(Error::protocol_error(format!("unknown message tag '{}'", b as char))),
         }
-    }
-
-    pub fn new_unchecked(c: char) -> Self {
-        unsafe { std::mem::transmute(c as u8) }
     }
 
     pub fn as_u8(&self) -> u8 {

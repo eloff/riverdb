@@ -3,6 +3,7 @@ use std::fmt::{Display, Formatter, Debug};
 
 use bytes::{Bytes, Buf};
 
+use crate::riverdb::Result;
 use crate::riverdb::pg::protocol::Tag;
 use crate::riverdb::pg::protocol::message_parser::Header;
 
@@ -15,8 +16,11 @@ impl Message {
     }
 
     /// tag returns the message Tag or panics if self.is_empty()
+    /// it does not validate if the tag byte is a valid Postgres message
+    /// which depends not just on if the tag byte is one of the predefined set,
+    /// but if it's appearing at the correct order in the message flow.
     pub fn tag(&self) -> Tag {
-        Tag::new_unchecked(*self.0.get(0).expect("empty Message") as char)
+        Tag::new_unchecked(*self.0.get(0).expect("empty Message"))
     }
 
     /// is_empty returns true if Message was initialized with an empty buffer

@@ -15,6 +15,7 @@ custom_error!{pub ErrorKind
     ProtocolError{msg: String} = "{msg}",
     StringError{msg: String} = "{msg}",
     StrError{msg: &'static str} = "{msg}",
+    ParseError = "matching variant not found",
     Io{source: io::Error} = "io error",
     Utf8Error{source: std::str::Utf8Error} = "utf8 error {source}",
     AddrParseError{source: net::AddrParseError} = "address parse error {source}",
@@ -69,6 +70,12 @@ impl From<io::Error> for Error {
 impl From<net::AddrParseError> for Error {
     fn from(e: net::AddrParseError) -> Self {
         Error(Box::new(ErrorKind::from(e)))
+    }
+}
+
+impl From<strum::ParseError> for Error {
+    fn from(e: strum::ParseError) -> Self {
+        Error(Box::new(ErrorKind::ParseError))
     }
 }
 
