@@ -1,5 +1,4 @@
-pub struct ErrorCode(i32);
-pub struct ErrorSeverity(i32);
+pub use crate::riverdb::pg::protocol::{ErrorSeverity, ErrorCode, ErrorFieldTag};
 
 pub struct PostgresError {
     pub code: ErrorCode,

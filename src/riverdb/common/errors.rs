@@ -4,6 +4,7 @@ use std::fmt;
 use std::net;
 
 use serde_yaml;
+use strum::EnumString;
 
 use custom_error::custom_error;
 use std::sync::PoisonError;

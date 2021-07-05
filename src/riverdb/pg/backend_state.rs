@@ -1,11 +1,12 @@
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug};
 
-use strum_macros::Display;
+use strum::Display;
 
 use crate::riverdb::pg::protocol::Tag;
 use crate::riverdb::{Error, Result};
 
 #[derive(Display, Debug)]
+#[non_exhaustive]
 pub enum BackendConnState {
     StateInitial,
     SSLHandshake,
