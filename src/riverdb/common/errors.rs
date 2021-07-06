@@ -2,26 +2,28 @@ use std::io;
 use std::sync;
 use std::fmt;
 use std::net;
-
-use serde_yaml;
-use strum::EnumString;
-
-use custom_error::custom_error;
 use std::sync::PoisonError;
 use std::fmt::Formatter;
+
+use serde_yaml;
+use custom_error::custom_error;
+
+use crate::riverdb::pg::protocol::PostgresError;
+
 
 custom_error!{pub ErrorKind
     ClosedError = "resource is closed",
     ProtocolError{msg: String} = "{msg}",
     StringError{msg: String} = "{msg}",
     StrError{msg: &'static str} = "{msg}",
-    ParseError = "matching variant not found",
-    Io{source: io::Error} = "io error",
-    Utf8Error{source: std::str::Utf8Error} = "utf8 error {source}",
-    AddrParseError{source: net::AddrParseError} = "address parse error {source}",
-    Yaml{source: serde_yaml::Error} = "yaml error {source}",
-    Tls{source: rustls::Error} = "rustls error {source}",
+    StrumParseError = "matching variant not found",
     PosionError = "poison error",
+    PostgresError{source: PostgresError} = "{source}",
+    Io{source: io::Error} = "io error",
+    Utf8Error{source: std::str::Utf8Error} = "{source}",
+    AddrParseError{source: net::AddrParseError} = "{source}",
+    Yaml{source: serde_yaml::Error} = "{source}",
+    Tls{source: rustls::Error} = "{source}",
 }
 
 impl PartialEq for ErrorKind {
@@ -32,6 +34,8 @@ impl PartialEq for ErrorKind {
 
 impl Eq for ErrorKind {}
 
+/// Error type that boxes errors for performance.
+/// Having a large error type means copying large Result objects around everywhere.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Error(Box<ErrorKind>);
 
@@ -75,7 +79,7 @@ impl From<net::AddrParseError> for Error {
 
 impl From<strum::ParseError> for Error {
     fn from(e: strum::ParseError) -> Self {
-        Error(Box::new(ErrorKind::ParseError))
+        Error(Box::new(ErrorKind::StrumParseError))
     }
 }
 
@@ -87,6 +91,12 @@ impl From<serde_yaml::Error> for Error {
 
 impl From<rustls::Error> for Error {
     fn from(e: rustls::Error) -> Self {
+        Error(Box::new(ErrorKind::from(e)))
+    }
+}
+
+impl From<PostgresError> for Error {
+    fn from(e: PostgresError) -> Self {
         Error(Box::new(ErrorKind::from(e)))
     }
 }

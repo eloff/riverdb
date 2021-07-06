@@ -1,7 +1,7 @@
 mod client;
 mod plugins;
 mod sql;
-mod protocol;
+pub mod protocol;
 mod client_state;
 mod service;
 mod session;

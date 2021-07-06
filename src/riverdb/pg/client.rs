@@ -8,12 +8,11 @@ use tokio::net::TcpStream;
 use tracing::{debug, error, info, instrument};
 use rustls::{ClientConnection};
 
-use crate::riverdb::{Error, Result};
+use crate::riverdb::{Error, Result, common};
 use crate::riverdb::worker::{Worker};
 use crate::riverdb::pg::protocol::MessageParser;
 use crate::riverdb::pg::{plugins, SessionSide};
 use crate::riverdb::pool::PostgresCluster;
-use crate::riverdb::coarse_monotonic_now;
 use crate::riverdb::pg::ClientConnState;
 use crate::riverdb::server::{Transport};
 use crate::riverdb::pg::Session;

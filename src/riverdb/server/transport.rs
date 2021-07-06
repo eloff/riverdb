@@ -17,7 +17,7 @@ use crate::riverdb::{Error, Result};
 use crate::riverdb::config::{TlsMode};
 use crate::riverdb::server::transport_stream::{TransportStream, StreamReaderWriter, convert_io_result};
 use crate::riverdb::server::transport_tls::TransportTls;
-use crate::riverdb::coarse_monotonic_now;
+use crate::riverdb::common;
 
 
 pub struct Transport {
@@ -111,7 +111,7 @@ impl Transport
                 info!("EOF reading from socket (remote end is closed)");
                 self.is_closing.store(true, Release);
             } else {
-                self.last_active.store(coarse_monotonic_now(), Relaxed);
+                self.last_active.store(common::coarse_monotonic_now(), Relaxed);
             }
         }
         result
@@ -140,7 +140,7 @@ impl Transport
                 info!("EOF writing to socket (remote end is closed)");
                 self.is_closing.store(true, Release);
             } else {
-                self.last_active.store(coarse_monotonic_now(), Relaxed);
+                self.last_active.store(common::coarse_monotonic_now(), Relaxed);
             }
         }
         result

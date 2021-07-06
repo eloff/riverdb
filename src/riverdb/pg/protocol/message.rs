@@ -16,9 +16,10 @@ impl Message {
     }
 
     /// tag returns the message Tag or panics if self.is_empty()
-    /// it does not validate if the tag byte is a valid Postgres message
+    /// it does not validate if the tag byte is a know Postgres message tag
     /// which depends not just on if the tag byte is one of the predefined set,
     /// but if it's appearing at the correct order in the message flow.
+    /// This allows for extensions to the protocol.
     pub fn tag(&self) -> Tag {
         Tag::new_unchecked(*self.0.get(0).expect("empty Message"))
     }

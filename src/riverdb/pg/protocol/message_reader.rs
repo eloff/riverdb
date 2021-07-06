@@ -89,13 +89,13 @@ impl<'a> MessageReader<'a> {
     }
 
     /// read_str reads and returns a null-terminated utf-8 string
-    pub fn read_str(&self) -> Result<&str> {
+    pub fn read_str(&self) -> Result<&'a str> {
         let bytes = self.read_null_terminated_bytes()?;
         std::str::from_utf8(bytes).map_err(Error::from)
     }
 
     /// read_null_terminated_bytes reads and returns a null-terminated slice of bytes
-    pub fn read_null_terminated_bytes(&self) -> Result<&[u8]> {
+    pub fn read_null_terminated_bytes(&self) -> Result<&'a [u8]> {
         let bytes = &self.msg.as_slice()[self.pos.get() as usize..];
         if let Some(i) = memchr::memchr(0, bytes) {
             Ok(&bytes[..i])
@@ -106,7 +106,7 @@ impl<'a> MessageReader<'a> {
     }
 
     /// read_bytes reads and returns a slice of bytes of the specified length
-    pub fn read_bytes(&self, len: u32) -> Result<&[u8]> {
+    pub fn read_bytes(&self, len: u32) -> Result<&'a [u8]> {
         let pos = self.pos.get();
         let new_pos = pos + len;
         if new_pos > self.msg.len() {
