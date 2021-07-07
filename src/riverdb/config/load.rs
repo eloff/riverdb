@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use tracing::{info_span, info, debug};
 use std::env;
+use regex::{Regex, Captures};
 
 use crate::riverdb::{Error, Result};
 use crate::riverdb::config::config;
@@ -11,11 +12,11 @@ pub fn load_config() -> Result<&'static config::Settings> {
     let config_path = find_config_file("riverdb.yaml")?;
     info!(config_path = %config_path.to_string_lossy().into_owned(), "found config file");
     let raw_yaml = std::fs::read_to_string(&config_path)?;
-    let yaml_text = replace_env_vars(&raw_yaml);
+    let yaml_text = replace_env_vars(&raw_yaml)?;
 
     let config = unsafe { &mut *config::SETTINGS.as_mut_ptr() };
     *config = serde_yaml::from_str(&yaml_text)?;
-    config.load(config_path)?;
+    config.load(config_path,);
     Ok(&*config)
 }
 
@@ -70,6 +71,35 @@ fn find_config_file(config_name: &str) -> Result<PathBuf> {
     Err(Error::new(format!("config file {} not found", config_name)))
 }
 
-fn replace_env_vars(raw_yaml: &str) -> Cow<str> {
-    Cow::Borrowed(raw_yaml)
+fn replace_env_vars(raw_yaml: &str) -> Result<Cow<str>> {
+    // We only call this function once and then never again, so don't keep the regex
+    let re_var = Regex::new(r"\$\{([a-zA-Z_][0-9a-zA-Z_]*)(?::([^}]+?))?\}").unwrap();
+
+    let mut errors = Vec::<String>::new();
+
+    let replaced_text = re_var.replace_all(&raw_yaml, |caps: &Captures| {
+        match env::var(&caps[1]) {
+            Ok(val) => val,
+            Err(_) => {
+                if let Some(default) = caps.get(2) {
+                    let s = default.as_str();
+                    if s.starts_with("?") {
+                        errors.push((&s[1..]).to_string());
+                        ""
+                    } else {
+                        default.as_str()
+                    }.to_string()
+                } else {
+                    errors.push(format!("environment variable {} is required but not defined", &caps[1]));
+                    "".to_string()
+                }
+            }
+        }
+    });
+
+    if errors.is_empty() {
+        Ok(replaced_text)
+    } else {
+        Err(Error::new(errors.join("\n")))
+    }
 }

@@ -29,4 +29,5 @@ num_cpus = "1.13.0"
 libc = "0.2.97"
 strum = { version = "0.21.0", features = ["derive"] }
 custom_error = "1.9.2"
-memchr = { version = "2.4.0", features = ["libc"] }
+memchr = { version = "2.4.0", features = ["libc"] } # We use libc anyway, so may as well use libc memchr
+regex = "1.5.4"
