@@ -1,7 +1,5 @@
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
-use std::fs::File;
-use std::env;
 
 use serde::{Deserialize};
 use tracing::{info_span, info, debug};
@@ -63,7 +61,7 @@ const fn default_recv_buffer_size() -> u32 { 32 * 1024 }
 const fn default_max_http_connections() -> u32 { 100000 }
 const fn default_web_socket_idle_timeout_seconds() -> u32 { 20 * 60 }
 
-static mut SETTINGS: MaybeUninit<Settings> = MaybeUninit::uninit();
+pub(crate) static mut SETTINGS: MaybeUninit<Settings> = MaybeUninit::uninit();
 
 pub fn conf() -> &'static Settings {
     // TODO in tests return a thread-local Settings
@@ -77,20 +75,8 @@ pub fn conf() -> &'static Settings {
 //     // TODO in tests return a thread-local Settings
 // }
 
-pub fn load_config() -> Result<&'static Settings> {
-    let _span = info_span!("loading config file");
-    let config_path = find_config_file("riverdb.yaml")?;
-    info!(config_path = %config_path.to_string_lossy().into_owned(), "found config file");
-    let file = File::open(&config_path)?;
-
-    let config = unsafe { &mut *SETTINGS.as_mut_ptr() };
-    *config = serde_yaml::from_reader(file)?;
-    config.load(config_path)?;
-    Ok(&*config)
-}
-
 impl Settings {
-    fn load(&mut self, path: PathBuf) -> Result<()> {
+    pub(crate) fn load(&mut self, path: PathBuf) -> Result<()> {
         self.config_path = path;
         if self.recv_buffer_size < 4096 {
             self.recv_buffer_size = default_recv_buffer_size();
@@ -110,60 +96,3 @@ impl Settings {
         format!("{}:{}", self.host, self.postgres.port)
     }
 }
-
-fn find_config_file(config_name: &str) -> Result<PathBuf> {
-    // Use the full path given as the first command line argument
-    if let Some(path) = env::args().skip(1).next() {
-        debug!("using config_path passed on command line");
-        return Ok(PathBuf::from(path));
-    }
-
-    // Check the current directory or any of its parents for config_name
-    if let Ok(start) = env::current_dir() {
-        let mut dir = start.as_path();
-        while !dir.as_os_str().is_empty() {
-            debug!("checking for config file in {}", dir.to_string_lossy());
-            let fp = Path::join(dir, config_name);
-            if fp.exists() {
-                return Ok(fp);
-            }
-            if let Some(parent) = dir.parent() {
-                dir = parent;
-            } else {
-                break;
-            }
-        }
-    }
-
-    // Check  ~/.config/riverdb/{config_name}
-    let mut conf_path = Path::join(Path::new(".config/riverdb"), config_name);
-    // HOME is required to be set on POSIX systems, but if it's not set we'll try ~/
-    let home = env::var("HOME").unwrap_or_else(|_| "~/".to_string());
-    conf_path = Path::join(Path::new(&home), conf_path);
-    debug!("checking for config file in {}", conf_path.to_string_lossy());
-    if conf_path.exists() {
-        return Ok(conf_path);
-    }
-
-    // Check ~/.{config_name}
-    conf_path = Path::join(Path::new(&home), ".".to_string() + config_name);
-    debug!("checking for config file in {}", conf_path.to_string_lossy());
-    if conf_path.exists() {
-        return Ok(conf_path);
-    }
-
-    // Check /etc/riverdb/{config_name}
-    conf_path = Path::join(Path::new("/etc/riverdb"), config_name);
-    debug!("checking for config file in {}", conf_path.to_string_lossy());
-    if conf_path.exists() {
-        return Ok(conf_path);
-    }
-
-    Err(Error::new(format!("config file {} not found", config_name)))
-}
-
-
-
-
-
-

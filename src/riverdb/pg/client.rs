@@ -72,9 +72,9 @@ impl ClientConn {
         Ok(())
     }
 
-    // pub async fn client_connected(&mut self, _: &mut plugins::ClientConnectContext) -> Result<&'static PostgresCluster> {
-    //     unimplemented!();
-    // }
+    pub async fn client_connected(&mut self, _: &mut plugins::ClientConnectContext) -> Result<&'static PostgresCluster> {
+        unimplemented!();
+    }
 }
 
 impl Debug for ClientConn {
