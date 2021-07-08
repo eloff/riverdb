@@ -1,13 +1,21 @@
 use async_trait::async_trait;
 
-use crate::riverdb::pool::PostgresCluster;
+
 use crate::riverdb::Result;
+
+use crate::riverdb::pool::PostgresCluster;
 use crate::riverdb::pg::ClientConn;
 
-static mut CLIENT_CONNECT_PLUGINS: Vec<Box<dyn ClientConnectPlugin + Sync + Send>> = Vec::new();
+pub fn register_client_connect_plugin(plugin: &'static (dyn ClientConnectPlugin + Sync + Send)) {
+    unsafe {
+        CLIENT_CONNECT_PLUGINS.push(plugin);
+    }
+}
+
+static mut CLIENT_CONNECT_PLUGINS: Vec<&'static (dyn ClientConnectPlugin + Sync + Send)> = Vec::new();
 
 pub struct ClientConnectContext {
-    plugins: &'static [Box<dyn ClientConnectPlugin + Sync + Send>],
+    plugins: &'static [&'static (dyn ClientConnectPlugin + Sync + Send)],
     index: usize,
 }
 

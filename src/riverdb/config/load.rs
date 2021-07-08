@@ -1,11 +1,12 @@
 use std::path::{Path, PathBuf};
 use tracing::{info_span, info, debug};
 use std::env;
+use std::borrow::Cow;
 use regex::{Regex, Captures};
 
 use crate::riverdb::{Error, Result};
 use crate::riverdb::config::config;
-use std::borrow::Cow;
+
 
 pub fn load_config() -> Result<&'static config::Settings> {
     let _span = info_span!("loading config file");

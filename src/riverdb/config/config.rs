@@ -8,6 +8,7 @@ use crate::riverdb::config::postgres::PostgresCluster;
 use crate::riverdb::{Error, Result};
 use std::net::{SocketAddr, IpAddr};
 use std::str::FromStr;
+use fnv::FnvHashMap;
 
 // Things that are not configurable, but might be one day
 pub const SMALL_BUFFER_SIZE: u32 = 1024;
@@ -48,8 +49,10 @@ pub struct Settings {
     /// web_socket_idle_timeout_seconds closes connections that have been idle longer than this. Defaults to 20 minutes. 0 is disabled.
     #[serde(default = "default_web_socket_idle_timeout_seconds")]
     pub web_socket_idle_timeout_seconds: u32,
-    /// postgres specific SETTINGS
+    /// postgres specific settings
     pub postgres: PostgresCluster,
+    /// plugin settings
+    pub plugins: FnvHashMap<String, serde_yaml::Value>,
 }
 
 fn default_num_workers() -> u32 { num_cpus::get() as u32 }
