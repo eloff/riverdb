@@ -1,5 +1,4 @@
 mod client;
-mod plugins;
 mod sql;
 pub mod protocol;
 mod client_state;

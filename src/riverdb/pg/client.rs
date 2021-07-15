@@ -8,20 +8,20 @@ use tokio::net::TcpStream;
 use tracing::{debug, error, info, instrument};
 use rustls::{ClientConnection};
 
+use crate::define_plugin;
 use crate::riverdb::{Error, Result, common};
 use crate::riverdb::worker::{Worker};
 use crate::riverdb::pg::protocol::MessageParser;
-use crate::riverdb::pg::{plugins, SessionSide};
+use crate::riverdb::pg::{Session, SessionSide, ClientConnState};
 use crate::riverdb::pool::PostgresCluster;
-use crate::riverdb::pg::ClientConnState;
 use crate::riverdb::server::{Transport};
-use crate::riverdb::pg::Session;
-
 
 pub struct ClientConn {
     pub session: Arc<Session>, // shared session data
     state: ClientConnState,
 }
+
+define_plugin!(client_connected, (client: &'a mut ClientConn) -> Result<&'static PostgresCluster>);
 
 impl ClientConn {
     pub fn new(stream: TcpStream, conn_id: u32, session: Option<Arc<Session>>) -> Self {
@@ -72,7 +72,7 @@ impl ClientConn {
         Ok(())
     }
 
-    pub async fn client_connected(&mut self, _: &mut plugins::ClientConnectContext) -> Result<&'static PostgresCluster> {
+    pub async fn client_connected(&mut self, _: &mut client_connected::Event) -> Result<&'static PostgresCluster> {
         unimplemented!();
     }
 }
