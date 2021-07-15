@@ -1,20 +1,25 @@
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
+use std::net::{SocketAddr, IpAddr};
+use std::str::FromStr;
+use std::collections::hash_map::Entry;
 
 use serde::{Deserialize};
+use serde_yaml::Value;
+use fnv::FnvHashMap;
 use tracing::{info_span, info, debug};
 
 use crate::riverdb::config::postgres::PostgresCluster;
 use crate::riverdb::{Error, Result};
-use std::net::{SocketAddr, IpAddr};
-use std::str::FromStr;
-use fnv::FnvHashMap;
+
 
 // Things that are not configurable, but might be one day
 pub const SMALL_BUFFER_SIZE: u32 = 1024;
 pub const CONNECT_TIMEOUT_SECONDS: u32 = 30;
 pub const CHECK_TIMEOUTS_INTERVAL: u32 = 5 * 60;
 pub const LISTEN_BACKLOG: u32 = 1024;
+
+pub type ConfigMap = FnvHashMap<String, Value>;
 
 #[derive(Deserialize)]
 pub struct Settings {
@@ -52,7 +57,9 @@ pub struct Settings {
     /// postgres specific settings
     pub postgres: PostgresCluster,
     /// plugin settings
-    pub plugins: FnvHashMap<String, serde_yaml::Value>,
+    pub plugins: Vec<ConfigMap>,
+    #[serde(skip)]
+    plugins_by_name: FnvHashMap<String, i32>,
 }
 
 fn default_num_workers() -> u32 { num_cpus::get() as u32 }
@@ -88,7 +95,39 @@ impl Settings {
             return Err(Error::new("recv_buffer_size cannot be > 1MB"));
         }
         self.recv_buffer_size = self.recv_buffer_size.next_power_of_two();
+
+        let mut i = 0;
+        for plugin in &mut self.plugins {
+            if let Some(name) = plugin.get("name") {
+                if let Value::String(name_str) = name {
+                    self.plugins_by_name.insert(name_str.to_lowercase(), i);
+                } else {
+                    return Err(Error::new(format!("plugins name must be a string at index {}", i)));
+                }
+            } else {
+                return Err(Error::new(format!("plugins entry missing name at index {}", i)));
+            }
+
+            i += 1;
+
+            match plugin.entry("order".to_string()) {
+                Entry::Occupied(_) => (),
+                Entry::Vacant(entry) => {
+                    // Set order to the 1-based index by default
+                    entry.insert(Value::from(i));
+                }
+            }
+        }
+
         self.postgres.load()
+    }
+
+    pub fn get_plugin_config(&'static self, name: &str) -> Option<&'static ConfigMap> {
+        if let Some(i) = self.plugins_by_name.get(&name.to_lowercase()) {
+            self.plugins.get(*i as usize)
+        } else {
+            None
+        }
     }
 
     pub fn listen_address(&self) -> String {

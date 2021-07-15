@@ -82,7 +82,7 @@ pub struct Postgres {
     #[serde(default = "default_port")]
     pub port: u16,
     /// is_master is set to true if this isn't inside a replicas vec
-    #[serde(skip_deserializing)]
+    #[serde(skip)]
     pub is_master: bool,
     /// max_concurrent_transactions is the maximum number of db connections with open transactions permitted, defaults to 80.
     #[serde(default = "default_max_concurrent_transactions")]

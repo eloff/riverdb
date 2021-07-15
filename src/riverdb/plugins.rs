@@ -2,6 +2,7 @@ use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{Acquire, SeqCst};
 
 use crate::riverdb::Result;
+use crate::riverdb::config::{ConfigMap, conf};
 
 /// get_plugin gets or default creates a shared static instance (singleton) of type P
 pub fn get_plugin<P: Plugin>(type_name: &'static str) -> Result<&'static P> {
@@ -12,14 +13,15 @@ pub fn get_plugin<P: Plugin>(type_name: &'static str) -> Result<&'static P> {
         if name.is_empty() {
             name = type_name;
         }
-        // TODO lookup config settings by name
-        p = Box::leak(Plugin::create(None)?) as *const P;
+        let settings = conf().get_plugin_config(name);
+        let plugin: Box<P> = Plugin::create(settings)?;
+        p = plugin.as_ref() as *const P;
         match SINGLETON.compare_exchange(std::ptr::null_mut(), p as _, SeqCst, Acquire) {
-            Ok(_) => (),
+            Ok(_) => {
+                Box::leak(plugin); // don't free this ever
+            },
             Err(existing) => {
-                // Drop the P we created and leaked, we're going to use existing instead
-                unsafe { Box::from_raw(p as *mut P); }
-                p = existing as *const P
+                p = existing as *const P;
             },
         }
     }
@@ -29,7 +31,7 @@ pub fn get_plugin<P: Plugin>(type_name: &'static str) -> Result<&'static P> {
 pub trait Plugin {
     const NAME: &'static str = "";
 
-    fn create(settings: Option<&'static serde_yaml::Value>) -> Result<Box<Self>>;
+    fn create(settings: Option<&'static ConfigMap>) -> Result<Box<Self>>;
     fn order(&self) -> i32;
 }
 
