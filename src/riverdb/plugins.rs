@@ -33,7 +33,11 @@ pub trait Plugin {
     fn order(&self) -> i32;
 }
 
-pub(crate) static mut CONFIGURE_PLUGINS: Vec<unsafe fn() -> Result<()>> = Vec::new();
+static mut CONFIGURE_PLUGINS: Vec<unsafe fn() -> Result<()>> = Vec::new();
+
+pub unsafe fn register_plugin_definition(configure: unsafe fn() -> Result<()>) {
+    CONFIGURE_PLUGINS.push(configure);
+}
 
 pub unsafe fn configure() -> Result<()> {
     for f in &CONFIGURE_PLUGINS {
@@ -43,7 +47,7 @@ pub unsafe fn configure() -> Result<()> {
 }
 
 #[macro_export]
-macro_rules! define_plugin {
+macro_rules! define_event {
     ($(#[$meta:meta])* $name:ident, ($event_src:ident: &$l:lifetime mut $src_ty:ty $(,$arg:ident: $arg_ty:ty)*) -> $result:ty) => {
         $(#[$meta])*
         pub mod $name {
@@ -84,7 +88,7 @@ macro_rules! define_plugin {
 
                 #[ctor::ctor]
                 unsafe fn register_plugin_configure() {
-                    $crate::riverdb::plugins::CONFIGURE_PLUGINS.push(configure);
+                    $crate::riverdb::plugins::register_plugin_definition(configure);
                 }
             };
 
@@ -113,7 +117,7 @@ macro_rules! define_plugin {
                         panic!("called next too many times (did you mean to clone() the context first?)");
                     } else {
                         self.index = i + 1;
-                        $event_src.client_connected(self, $($arg),*).await
+                        $event_src.$name(self, $($arg),*).await
                     }
                 }
             }
@@ -196,18 +200,18 @@ macro_rules! define_plugin {
 /// If you make an open-source plugin and share it with the world, please submit a pull request
 /// to the plugins repository to update the list of community plugins.
 #[macro_export]
-macro_rules! async_plugin {
+macro_rules! event_listener {
     ($event_name:ident, $l:lifetime, $event:ident, $src:ident, $p:ident: $plugin_type:ty, ($($arg:ident: $arg_ty:ty),*) -> $result:ty $body:block) => {
         const _: () = {
             fn plugin_fn<$l>($event: &$l mut $event_name::Event, $src: &$l mut $event_name::Source, $($arg: $arg_ty),*)
                 -> std::pin::Pin<Box<dyn std::future::Future<Output=$result> + Send + Sync + $l>>
             {
-                let $p: &'static $plugin_type = $crate::get_plugin(stringify!($plugin_type))?;
+                let $p: &'static $plugin_type = $crate::riverdb::plugins::get_plugin(stringify!($plugin_type))?;
                 Box::pin(async move { $body })
             }
 
             fn plugin_ctor() -> Result<i32> {
-                Ok($crate::get_plugin(stringify!($plugin_type))?.order())
+                Ok($crate::riverdb::plugins::get_plugin(stringify!($plugin_type))?.order())
             }
 
             #[ctor::ctor]
