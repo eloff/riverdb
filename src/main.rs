@@ -14,6 +14,7 @@ use crate::riverdb::worker::Worker;
 use crate::riverdb::config::{conf, load_config};
 use crate::riverdb::pg::PostgresService;
 use crate::riverdb::worker::init_workers;
+use crate::riverdb::common::coarse_monotonic_clock_updater;
 
 
 fn main() {
@@ -57,6 +58,9 @@ fn main() {
     // std::panic::set_hook();
 
     tokio.block_on(async move {
+        // Update the coarse monotonic clock on a periodic basis
+        tokio::spawn(coarse_monotonic_clock_updater());
+
         let mut handles = Vec::new();
         // If reuseport is false, we create a single TcpListener.
         // Otherwise we create one per tokio worker. This reduces contention sharing accepted

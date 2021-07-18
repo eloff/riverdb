@@ -2,13 +2,15 @@ use std::pin::Pin;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{Relaxed, AcqRel, Acquire, Release};
 use std::sync::atomic::{AtomicPtr, AtomicI64, AtomicI32};
+use std::sync::Mutex;
 
 use tokio::net::TcpStream;
+use tokio::time::{interval, Duration};
 use tracing::{warn, info, info_span};
 
 use crate::riverdb::worker::Worker;
-use std::sync::Mutex;
 use crate::riverdb::common::coarse_monotonic_now;
+use crate::riverdb::config::CHECK_TIMEOUTS_INTERVAL;
 
 pub trait Connection: std::fmt::Debug {
     fn id(&self) -> u32;
@@ -31,7 +33,7 @@ pub struct Connections<C: 'static + Connection> {
 
 impl<C: 'static + Connection> Connections<C> {
     pub fn new(max_connections: u32, timeout_seconds: u32) -> &'static Self {
-        let connections = Box::leak(Box::new(Self{
+        let connections = &*Box::leak(Box::new(Self{
             items: Vec::with_capacity((max_connections as f64 * 1.1) as usize).leak(),
             timeout_seconds,
             max_connections,
@@ -42,7 +44,7 @@ impl<C: 'static + Connection> Connections<C> {
         }));
 
         if timeout_seconds > 0 {
-            // TODO start a timeout task to scan for timeouts
+            tokio::spawn(connections.timeouts_task());
         }
 
         connections
@@ -152,6 +154,14 @@ impl<C: 'static + Connection> Connections<C> {
                 }
                 false
             });
+        }
+    }
+
+    async fn timeouts_task(&self) {
+        let mut interval = interval(Duration::from_secs(CHECK_TIMEOUTS_INTERVAL));
+        loop {
+            interval.tick().await;
+            self.do_timeouts();
         }
     }
 }

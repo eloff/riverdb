@@ -14,6 +14,8 @@ use nanorand::{WyRand, Rng};
 use crate::riverdb::{Error, Result};
 use crate::riverdb::config::{conf, LISTEN_BACKLOG};
 use crate::riverdb::common::fast_modulo32;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 
 
 thread_local! {
@@ -21,7 +23,6 @@ thread_local! {
 }
 
 static mut ALL_WORKERS: &[Worker] = &[];
-static mut NEXT_WORKER: usize = 0;
 
 /// Worker represents a Worker thread and serves as a thread-local storage
 /// for all the resources the worker thread accesses. This includes
@@ -64,14 +65,16 @@ impl Worker {
     }
 
     pub fn try_get() -> Option<&'static mut Worker> {
+        static NEXT_WORKER: AtomicUsize = AtomicUsize::new(0);
+
         CURRENT_WORKER.with(|ctx| {
+            // Safety: ALL_WORKERS has been initialized before this function is called
             unsafe {
                 let mut p = ctx.get();
                 if p.is_null() {
                     // Grab an unallocated worker from ALL_WORKERS
-                    if NEXT_WORKER < ALL_WORKERS.len() {
-                        let worker = ALL_WORKERS.get_unchecked(NEXT_WORKER);
-                        NEXT_WORKER += 1;
+                    if NEXT_WORKER.load(Relaxed) < ALL_WORKERS.len() {
+                        let worker = ALL_WORKERS.get_unchecked(NEXT_WORKER.fetch_add(1, Relaxed));
                         p = worker as _;
                         ctx.set(p);
                     } else {

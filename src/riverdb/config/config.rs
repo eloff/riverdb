@@ -16,8 +16,11 @@ use crate::riverdb::{Error, Result};
 // Things that are not configurable, but might be one day
 pub const SMALL_BUFFER_SIZE: u32 = 1024;
 pub const CONNECT_TIMEOUT_SECONDS: u32 = 30;
-pub const CHECK_TIMEOUTS_INTERVAL: u32 = 5 * 60;
+/// CHECK_TIMEOUTS_INTERVAL the number of seconds between checking for timed-out connections
+pub const CHECK_TIMEOUTS_INTERVAL: u64 = 5 * 60;
 pub const LISTEN_BACKLOG: u32 = 1024;
+/// COARSE_CLOCK_GRANULARITY_SECONDS is the number of seconds between ticks of the clock, when it's updated
+pub const COARSE_CLOCK_GRANULARITY_SECONDS: u64 = 5;
 
 pub type ConfigMap = FnvHashMap<String, Value>;
 
