@@ -21,7 +21,7 @@ pub const LISTEN_BACKLOG: u32 = 1024;
 
 pub type ConfigMap = FnvHashMap<String, Value>;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct Settings {
     /// config_path is the path of the loaded config file
     pub config_path: PathBuf,
@@ -73,17 +73,29 @@ const fn default_web_socket_idle_timeout_seconds() -> u32 { 20 * 60 }
 
 pub(crate) static mut SETTINGS: MaybeUninit<Settings> = MaybeUninit::uninit();
 
+#[cfg(test)]
+thread_local! {
+    static TEST_SETTINGS: std::cell::UnsafeCell<Settings> = std::cell::UnsafeCell::new(Settings::default());
+}
+
 pub fn conf() -> &'static Settings {
-    // TODO in tests return a thread-local Settings
     unsafe {
+        #[cfg(test)]
+        {
+            return &*test_config_mut();
+        }
         &*SETTINGS.as_ptr()
     }
 }
 
-// #[cfg(test)]
-// pub fn test_config_mut() -> &'static mut Settings {
-//     // TODO in tests return a thread-local Settings
-// }
+#[cfg(test)]
+pub fn test_config_mut() -> &'static mut Settings {
+    TEST_SETTINGS.with(|settings| {
+        unsafe {
+            &mut *settings.get()
+        }
+    })
+}
 
 impl Settings {
     pub(crate) fn load(&mut self, path: PathBuf) -> Result<()> {

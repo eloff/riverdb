@@ -13,12 +13,12 @@ pub struct BackendConn {
 }
 
 impl BackendConn {
-    pub fn new(stream: TcpStream, conn_id: u32, session: Option<Arc<Session>>) -> Self {
+    pub fn new(stream: TcpStream, session: Option<Arc<Session>>) -> Self {
         let transport = Transport::new(stream);
         BackendConn {
             session: session
                 .clone()
-                .unwrap_or_else(|| Session::new_with_backend(transport, conn_id)),
+                .unwrap_or_else(|| Session::new_with_backend(transport)),
             state: BackendConnState::StateInitial,
         }
     }

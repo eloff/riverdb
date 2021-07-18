@@ -58,6 +58,17 @@ impl TransportStream {
             TransportStream::UnixSocket(s) => unimplemented!(),
         })
     }
+
+    pub fn close(&self) {
+        let raw_fd = match self {
+            TransportStream::TcpStream(s) => s.as_raw_fd(),
+            #[cfg(unix)]
+            TransportStream::UnixSocket(s) => s.as_raw_fd(),
+        };
+        unsafe {
+            libc::close(raw_fd);
+        }
+    }
 }
 
 /// convert_result converts an io::Result from read/write to a Result

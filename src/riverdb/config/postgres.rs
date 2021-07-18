@@ -3,7 +3,7 @@ use serde::{Deserialize};
 use crate::riverdb::config::enums::TlsMode;
 use crate::riverdb::{Error, Result};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct PostgresCluster {
     pub servers: Vec<Postgres>,
     /// default values used to replace any empty/omitted value for each Postgres config struct
@@ -30,6 +30,9 @@ pub struct PostgresCluster {
     /// max_connections to allow before rejecting new connections. Important to introduce back-pressure. Default 10,000.
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+    /// idle_timeout_seconds is the number of seconds a connection can be idle before it is closed. Default 0 (no timeout).
+    #[serde(default)]
+    pub idle_timeout_seconds: u32,
     /// client_tls TLS preference between clients and River DB, defaults to disabled
     #[serde(default)]
     pub client_tls: TlsMode,
@@ -58,7 +61,7 @@ pub struct PostgresCluster {
 const fn default_port() -> u16 { 5432 }
 const fn default_max_connections() -> u32 { 10000 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct Postgres {
     /// database to connect to
     pub database: String,

@@ -55,18 +55,18 @@ impl Session {
         })
     }
 
-    pub fn new_with_client(stream: Transport, conn_id: u32) -> Arc<Self> {
+    pub fn new_with_client(stream: Transport) -> Arc<Self> {
         let s = Self::new();
         unsafe {
-            s.set_client(stream, conn_id);
+            s.set_client(stream, u32::MAX);
         }
         s
     }
 
-    pub fn new_with_backend(stream: Transport, conn_id: u32) -> Arc<Self> {
+    pub fn new_with_backend(stream: Transport) -> Arc<Self> {
         let s = Self::new();
         unsafe {
-            s.set_backend(stream, conn_id);
+            s.set_backend(stream, u32::MAX);
         }
         s
     }
@@ -282,3 +282,5 @@ fn try_read(buf: &mut BytesMut, transport: &Transport) -> Result<usize> {
     Ok(read_bytes)
 }
 
+// Safety: The public interface for session is safe to use concurrently across multiple threads.
+unsafe impl Sync for Session {}

@@ -69,7 +69,11 @@ fn main() {
         // Postgres service
         if conf.postgres.port != 0 {
             handles.push(tokio::spawn(async move {
-                let service = PostgresService::new(conf.postgres_listen_address(), conf.reuseport);
+                let service = PostgresService::new(
+                    conf.postgres_listen_address(),
+                    conf.postgres.max_connections,
+                    conf.postgres.idle_timeout_seconds,
+                    conf.reuseport);
                 service.run().await
             }));
         }

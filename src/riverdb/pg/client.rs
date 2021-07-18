@@ -15,7 +15,7 @@ use crate::riverdb::worker::{Worker};
 use crate::riverdb::pg::protocol::{Message, MessageParser};
 use crate::riverdb::pg::{Session, SessionSide, ClientConnState};
 use crate::riverdb::pool::PostgresCluster;
-use crate::riverdb::server::{Transport};
+use crate::riverdb::server::{Transport, Connection};
 
 pub struct ClientConn {
     pub session: Arc<Session>, // shared session data
@@ -23,12 +23,12 @@ pub struct ClientConn {
 }
 
 impl ClientConn {
-    pub fn new(stream: TcpStream, conn_id: u32, session: Option<Arc<Session>>) -> Self {
+    pub fn new(stream: TcpStream, session: Option<Arc<Session>>) -> Self {
         let transport = Transport::new(stream);
         ClientConn {
             session: session
                 .clone()
-                .unwrap_or_else(|| Session::new_with_client(transport, conn_id)),
+                .unwrap_or_else(|| Session::new_with_client(transport)),
             state: ClientConnState::StateInitial,
         }
     }
@@ -77,6 +77,29 @@ impl ClientConn {
 
     pub async fn client_message(&mut self, _: &mut client_message::Event, msg: Message) -> Result<()> {
         unimplemented!();
+    }
+}
+
+impl Connection for ClientConn {
+    fn id(&self) -> u32 {
+        self.session.client_id.load(Relaxed)
+    }
+
+    fn set_id(&self, id: u32) {
+        self.session.client_id.store(id, Relaxed);
+    }
+
+    fn last_active(&self) -> u32 {
+        std::cmp::max(
+            self.session.client_last_active.load(Relaxed),
+            self.session.backend_last_active.load(Relaxed)
+        )
+    }
+
+    fn close(&self) {
+        unsafe {
+            self.session.client().close();
+        }
     }
 }
 

@@ -255,4 +255,9 @@ impl Transport
         *self.tls.lock().map_err(Error::from)? = conn;
         Ok(())
     }
+
+    pub fn close(&self) {
+        self.is_closing.store(true, Relaxed);
+        self.stream.close();
+    }
 }

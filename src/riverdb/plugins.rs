@@ -4,34 +4,10 @@ use std::sync::atomic::Ordering::{Acquire, SeqCst};
 use crate::riverdb::Result;
 use crate::riverdb::config::{ConfigMap, conf};
 
-/// get_plugin gets or default creates a shared static instance (singleton) of type P
-pub fn get_plugin<P: Plugin>(type_name: &'static str) -> Result<&'static P> {
-    static SINGLETON: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
-    let mut p = SINGLETON.load(Acquire) as *const P;
-    if p.is_null() {
-        let mut name = P::NAME;
-        if name.is_empty() {
-            name = type_name;
-        }
-        let settings = conf().get_plugin_config(name);
-        let plugin: Box<P> = Plugin::create(settings)?;
-        p = plugin.as_ref() as *const P;
-        match SINGLETON.compare_exchange(std::ptr::null_mut(), p as _, SeqCst, Acquire) {
-            Ok(_) => {
-                Box::leak(plugin); // don't free this ever
-            },
-            Err(existing) => {
-                p = existing as *const P;
-            },
-        }
-    }
-    unsafe { Ok(&*p) }
-}
-
-pub trait Plugin {
+pub trait Plugin: Sized {
     const NAME: &'static str = "";
 
-    fn create(settings: Option<&'static ConfigMap>) -> Result<Box<Self>>;
+    fn create(settings: Option<&'static ConfigMap>) -> Result<Self>;
     fn order(&self) -> i32;
 }
 
@@ -78,11 +54,10 @@ macro_rules! define_event {
                 /// It's invoked after loading the configuration, but before starting the server.
                 unsafe fn configure() -> $crate::riverdb::Result<()> {
                     let orders = PLUGINS_CTORS.iter().map(|f| f()).collect::<Result<Vec<i32>>>()?;
-                    let mut with_order: Vec<_> = orders.iter().zip(PLUGINS.iter()).collect();
+                    let mut with_order: Vec<_> = orders.iter().zip(PLUGINS.drain(..)).collect();
                     with_order.sort_unstable_by_key(|(order,_)| *order);
                     // Re-order the PLUGINS Vec by the order values returned from the constructors
-                    PLUGINS.clear();
-                    for (_, f) in with_order {
+                    for (_, f) in &with_order {
                         PLUGINS.push(*f);
                     }
                     Ok(())
@@ -133,7 +108,6 @@ macro_rules! define_event {
 }
 
 /// async_plugin! registers the passed async handler for the defined plugin module.
-///
 ///     $event_name:ident : the module defining the plugin hook we want to register for
 ///     $l:lifetime : a named lifetime for reference arguments captured for the duration of the async plugin invocation
 ///     $event:ident : the name of local holding a mut ref to the $event_name::Event context instance
@@ -204,16 +178,36 @@ macro_rules! define_event {
 #[macro_export]
 macro_rules! event_listener {
     ($event_name:ident, $l:lifetime, $event:ident, $src:ident, $p:ident: $plugin_type:ty, ($($arg:ident: $arg_ty:ty),*) -> $result:ty $body:block) => {
+        gensym::gensym!{
+            _event_listener_impl!{$event_name, $l, $event, $src, $p: $plugin_type, ($($arg: $arg_ty),*) -> $result $body}
+        }
+    }
+}
+
+macro_rules! _event_listener_impl {
+    ($singleton:ident, $event_name:ident, $l:lifetime, $event:ident, $src:ident, $p:ident: $plugin_type:ty, ($($arg:ident: $arg_ty:ty),*) -> $result:ty $body:block) => {
         const _: () = {
+            static mut $singleton: std::mem::MaybeUninit<$plugin_type> = std::mem::MaybeUninit::uninit();
+
             fn plugin_fn<$l>($event: &$l mut $event_name::Event, $src: &$l mut $event_name::Source, $($arg: $arg_ty),*)
                 -> std::pin::Pin<Box<dyn std::future::Future<Output=$result> + Send + Sync + $l>>
             {
-                let $p: &'static $plugin_type = $crate::riverdb::plugins::get_plugin(stringify!($plugin_type))?;
+                let $p = unsafe { &*$singleton.as_ptr() };
                 Box::pin(async move { $body })
             }
 
             fn plugin_ctor() -> Result<i32> {
-                Ok($crate::riverdb::plugins::get_plugin(stringify!($plugin_type))?.order())
+                let mut name = <$plugin_type>::NAME;
+                if name.is_empty() {
+                    name = stringify!($plugin_type);
+                }
+                let settings = crate::riverdb::config::conf().get_plugin_config(name);
+                let p = <$plugin_type>::create(settings)?;
+                let order = p.order();
+                unsafe {
+                    *$singleton.as_mut_ptr() = p;
+                }
+                Ok(order)
             }
 
             #[ctor::ctor]
@@ -221,5 +215,81 @@ macro_rules! event_listener {
                 $event_name::register(plugin_fn, plugin_ctor);
             }
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Plugin, configure};
+    use crate::riverdb::config::ConfigMap;
+    use crate::riverdb::Result;
+
+    pub struct RecordMonitor {
+        greeting: String,
+        state: i32
+    }
+
+    impl RecordMonitor {
+        async fn record_changed(&mut self, ev: &mut record_changed::Event, payload: &str) -> Result<String> {
+            Ok(payload.to_lowercase() + &self.greeting)
+        }
+    }
+
+    define_event!(record_changed, (monitor: &'a mut RecordMonitor, payload: &'a str) -> Result<String>);
+
+    struct Listener2 {
+        foo: i32,
+        bar: i32
+    }
+
+    impl Plugin for Listener2 {
+        fn create(settings: Option<&'static ConfigMap>) -> Result<Self> {
+            Ok(Self{foo: 0, bar: 5})
+        }
+
+        fn order(&self) -> i32 {
+            2
+        }
+    }
+
+    event_listener!(record_changed, 'a, ev, monitor, this: Listener2, (payload: &'a str) -> Result<String> {
+        monitor.state += this.bar;
+        let s = "-2b-".to_string() + &ev.next(monitor, payload).await? + "-2a-";
+        monitor.state *= this.bar;
+        Ok(s)
+    });
+
+    struct Listener {
+        foo: i32,
+        bar: i32
+    }
+
+    impl Plugin for Listener {
+        fn create(settings: Option<&'static ConfigMap>) -> Result<Self> {
+            Ok(Self{foo: 3, bar: -1})
+        }
+
+        fn order(&self) -> i32 {
+            1
+        }
+    }
+
+    event_listener!(record_changed, 'a, ev, monitor, this: Listener, (payload: &'a str) -> Result<String> {
+        monitor.state += this.foo;
+        let s = "-1b-".to_string() + &ev.next(monitor, payload).await? + "-1a-";
+        monitor.state *= this.foo;
+        Ok(s)
+    });
+
+    #[tokio::test]
+    async fn test_event() {
+        unsafe {
+            configure();
+        }
+
+        let mut monitor = RecordMonitor{ greeting: " world!".to_string(), state: 1 };
+        let result = record_changed::run(&mut monitor, "HELLO").await;
+        assert_eq!(Ok("-1b--2b-hello world!-2a--1a-".to_string()), result);
+        assert_eq!(monitor.state, (1+3+5)*5*3);
     }
 }
