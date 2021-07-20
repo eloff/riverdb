@@ -30,9 +30,12 @@ pub struct PostgresCluster {
     /// max_connections to allow before rejecting new connections. Important to introduce back-pressure. Default 10,000.
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
-    /// idle_timeout_seconds is the number of seconds a connection can be idle before it is closed. Default 0 (no timeout).
+    /// idle_timeout_seconds is the number of seconds a client connection can be idle before it is closed. Default 0 (no timeout).
     #[serde(default)]
     pub idle_timeout_seconds: u32,
+    /// backend_timeout_seconds is the number of seconds a backend db connection can be idle in the pool before it is closed. 0 disables timeout. Default 30min.
+    #[serde(default = "default_backend_timeout_seconds")]
+    pub backend_timeout_seconds: u32,
     /// client_tls TLS preference between clients and River DB, defaults to disabled
     #[serde(default)]
     pub client_tls: TlsMode,
@@ -60,6 +63,7 @@ pub struct PostgresCluster {
 
 const fn default_port() -> u16 { 5432 }
 const fn default_max_connections() -> u32 { 10000 }
+const fn default_backend_timeout_seconds() -> u32 { 30 * 60 }
 
 #[derive(Deserialize, Default)]
 pub struct Postgres {

@@ -27,8 +27,8 @@ impl PostgresService {
         // Use an explicit handle here rather than looking it up in thread local storage each time
         let tokio = tokio::runtime::Handle::current();
         while let Some(sock) = self.listener.accept().await {
-            if let Some(mut conn) = self.connections.add(|| ClientConn::new(sock, None)) {
-                tokio::spawn(async move {
+            if let Some(mut conn) = self.connections.add(sock) {
+                tokio.spawn(async move {
                     if let Err(e) = conn.run().await {
                         warn!(%e, "error in Postgres ClientConn");
                     }

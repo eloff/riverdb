@@ -1,8 +1,8 @@
 use std::pin::Pin;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::Ordering::{Relaxed, AcqRel, Acquire, Release};
-use std::sync::atomic::{AtomicPtr, AtomicI64, AtomicI32};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicPtr, AtomicI64, AtomicI32, AtomicUsize};
+use std::sync::{Mutex, Weak, Arc};
 
 use tokio::net::TcpStream;
 use tokio::time::{interval, Duration};
@@ -13,6 +13,7 @@ use crate::riverdb::common::coarse_monotonic_now;
 use crate::riverdb::config::CHECK_TIMEOUTS_INTERVAL;
 
 pub trait Connection: std::fmt::Debug {
+    fn new(s: TcpStream) -> Self;
     fn id(&self) -> u32;
     fn set_id(&self, id: u32);
     fn last_active(&self) -> u32;
@@ -59,7 +60,7 @@ impl<C: 'static + Connection> Connections<C> {
         (self.added.load(Acquire) - removed) as usize
     }
 
-    pub fn add<F: FnOnce() -> C>(&'static self, new_connection: F) -> Option<ConnectionRef<C>> {
+    pub fn add(&'static self, stream: TcpStream) -> Option<ConnectionRef<C>> {
         // Because remove is loaded second, this might impose a very slightly lower limit (but never higher)
         let added = self.added.fetch_add(1, AcqRel) + 1;
         if added - self.removed.load(Acquire) > self.max_connections as i64 {
@@ -68,9 +69,9 @@ impl<C: 'static + Connection> Connections<C> {
             return None;
         }
 
-        let mut conn = Box::new(new_connection());
-        // Safety: this is safe because we always downgrade this to a const reference before using it.
-        let conn_ptr = unsafe { conn.as_mut() as *mut C };
+        let mut conn = Box::new(C::new(stream));
+        // Storing a raw pointer is fine, the object is removed from this collection before the Arc is dropped
+        let conn_ptr = conn.as_ref() as *const C as *mut C;
 
         // Pick a random place in the array and search from there for a free connection slot.
         // This shouldn't take long because we allocated items to be at least 10% larger than maxConcurrent.
@@ -83,11 +84,11 @@ impl<C: 'static + Connection> Connections<C> {
             if i == end {
                 i = 0;
             }
-            // Safe because we iterate between [0, items.len())
+            // Safety: get_unchecked is safe because we iterate between [0, items.len())
             let slot = unsafe { self.items.get_unchecked(i) };
             if slot.load(Relaxed).is_null() {
                 if slot.compare_exchange(std::ptr::null_mut(), conn_ptr, Release, Relaxed).is_ok() {
-                    conn.set_id((i+1) as u32);
+                    conn.set_id((i + 1) as u32);
                     break;
                 }
             }
@@ -100,27 +101,26 @@ impl<C: 'static + Connection> Connections<C> {
         })
     }
 
-    fn remove(&self, id: u32) {
-        let _guard = self.remove_lock.lock().unwrap();
+    fn remove(&self, conn: &C, id: u32) {
+        let slot = self.items.get((id - 1) as usize).expect("invalid id");
+        let current = slot.load(Acquire);
 
-        // These can all be relaxed loads/stores since the mutex unlock above will ensure they have total order
-        let slot = self.items.get((id-1) as usize).expect("invalid id");
-        let conn = slot.load(Relaxed);
-        assert!(!conn.is_null());
+        assert!(!current.is_null());
+        assert_eq!(current, conn as *const C as *mut C);
+
+        let _guard = self.remove_lock.lock().unwrap();
+        // These can all be relaxed loads/stores since the mutex acquire/release will ensure they have total order
         slot.store(std::ptr::null_mut(), Relaxed);
         self.removed.store(self.removed.load(Relaxed) + 1, Relaxed);
     }
 
     /// for_each iterates over all active connections and calls f(&connection) for each.
-    /// It's not just unsafe, it's undefined behavior because there is a mutable reference
-    /// to the connection somewhere else. This should only ever be used for read-only access
-    /// and only to atomic fields. That is very likely to compile to valid machine code, but
-    /// it's still not a legal rust program. We use this for collecting statistics and timing
-    /// out inactive connections.
+    /// This should only ever be used for read-only access and only to atomic fields.
+    /// We use this for collecting statistics and timing out inactive connections.
     ///
     /// If f returns true, iteration stops and true is returned. Else iteration continues
     /// until exhausted, and false is returned.
-    pub unsafe fn for_each<F: FnMut(&C) -> bool>(&self, mut f: F) -> bool {
+    pub fn for_each<F: FnMut(&C) -> bool>(&self, mut f: F) -> bool {
         if self.len() == 0 {
             return false
         }
@@ -128,11 +128,11 @@ impl<C: 'static + Connection> Connections<C> {
         // This must be exclusive with remove to ensure we don't see freed memory
         // A concurrent remove can free the connection memory, after we've seen a pointer to it.
         let _guard = self.remove_lock.lock().unwrap();
-
         for slot in self.items.iter() {
             let p = slot.load(Acquire);
             if !p.is_null() {
-                if f(&*p) {
+                // Safety: Because of the remove_lock that we're holding we know this points inside a valid Arc<C>
+                if f(unsafe { &*p }) {
                     return true
                 }
             }
@@ -144,17 +144,15 @@ impl<C: 'static + Connection> Connections<C> {
         let _span = info_span!("scanning for inactive, timed-out connections", "estimated {} total connections", self.len()).entered();
 
         let now = coarse_monotonic_now();
-        unsafe {
-            self.for_each(|conn| {
-                if conn.last_active() + self.timeout_seconds < now {
-                    warn!(timeout=self.timeout_seconds, "closing connection {:?} because it timed out", conn);
-                    // This will trigger the task that called conn.run() to exit,
-                    // and the connection to be dropped (including calling self.remove for it.)
-                    conn.close();
-                }
-                false
-            });
-        }
+        self.for_each(|conn| {
+            if conn.last_active() + self.timeout_seconds < now {
+                warn!(timeout=self.timeout_seconds, "closing connection {:?} because it timed out", conn);
+                // This will trigger the task that called conn.run() to exit,
+                // and the connection to be dropped (including calling self.remove for it.)
+                conn.close();
+            }
+            false
+        });
     }
 
     async fn timeouts_task(&self) {
@@ -187,10 +185,10 @@ impl<C: 'static + Connection> DerefMut for ConnectionRef<C> {
 
 impl<C: 'static + Connection> Drop for ConnectionRef<C> {
     fn drop(&mut self) {
-        self.connections.remove(self.conn.id())
+        self.connections.remove(&self.conn, self.conn.id())
     }
 }
 
-// Safety: although ConnectionRef contains a reference, it's a shared thread-safe 'static reference.
+// Safety: although these contain a reference, it's a shared thread-safe 'static reference.
 // It is safe to send a ConnectionRef between threads.
-unsafe impl<C: 'static + Connection> Send for ConnectionRef<C> {}
+unsafe impl<C: 'static + Connection> Sync for Connections<C> {}
