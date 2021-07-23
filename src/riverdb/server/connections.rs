@@ -57,7 +57,7 @@ impl<C: 'static + Connection> Connections<C> {
     /// a chance it's not empty.
     pub fn len(&self) -> usize {
         let removed = self.removed.load(Acquire);
-        let count = (self.added.load(Acquire) - removed);
+        let count = self.added.load(Acquire) - removed;
         // This can't be negative, because we load removed first.
         // Added will always be >= removed at the same or later point in time.
         debug_assert!(count >= 0);

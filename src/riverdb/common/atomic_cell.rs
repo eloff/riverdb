@@ -7,10 +7,19 @@ use std::sync::Arc;
 macro_rules! atomic {
     // If values of type `$t` can be transmuted into values of the primitive atomic type `$atomic`,
     // declares variable `$a` of type `$atomic` and executes `$atomic_op`.
-    ($t:ty, $a:ident: &$atomic:ty = $init:expr, $atomic_op:expr) => {
+    (@check, $t:ty, $a:ident: &$atomic:ty = $init:expr, $atomic_op:expr) => {
         if crate::riverdb::common::can_transmute::<$t, $atomic>() {
             let $a = unsafe { &*($init as *const _ as *const $atomic) };
             $atomic_op
+        } else {
+            println!("could not convert {} to {}", stringify!($t), stringify!($atomic));
+        }
+    };
+
+    ($t:ty, $a:ident: &$atomic:ty = $init:expr, $atomic_op:expr) => {
+        loop {
+            atomic!(@check, $t, $a: &$atomic = $init, break $atomic_op);
+            std::unimplemented!();
         }
     };
 
@@ -19,11 +28,11 @@ macro_rules! atomic {
     ($t:ty, $a:ident = $init:expr, $atomic_op:expr) => {
         // Safety: see assertion in AtomicCell constructor
         loop {
-            atomic! { $t, $a: &std::sync::atomic::AtomicUsize = $init, break $atomic_op };
-            atomic! { $t, $a: &std::sync::atomic::AtomicU8 = $init, break $atomic_op };
-            atomic! { $t, $a: &std::sync::atomic::AtomicU16 = $init, break $atomic_op };
-            atomic! { $t, $a: &std::sync::atomic::AtomicU32 = $init, break $atomic_op };
-            atomic! { $t, $a: &std::sync::atomic::AtomicU64 = $init, break $atomic_op };
+            atomic!(@check, $t, $a: &std::sync::atomic::AtomicUsize = $init, break $atomic_op);
+            atomic!(@check, $t, $a: &std::sync::atomic::AtomicU8 = $init, break $atomic_op);
+            atomic!(@check, $t, $a: &std::sync::atomic::AtomicU16 = $init, break $atomic_op);
+            atomic!(@check, $t, $a: &std::sync::atomic::AtomicU32 = $init, break $atomic_op);
+            atomic!(@check, $t, $a: &std::sync::atomic::AtomicU64 = $init, break $atomic_op);
             std::unimplemented!();
         }
     };
