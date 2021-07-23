@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicPtr};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex};
-use std::cell::Cell;
 use std::collections::VecDeque;
 
 use bytes::Bytes;
@@ -23,6 +22,7 @@ use crate::riverdb::pg::pool::PostgresCluster;
 use crate::riverdb::pg::connection::{read_and_flush_backlog, Backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::pg::client_state::ClientState;
+use crate::riverdb::common::{AtomicCell, AtomicArc};
 
 
 pub struct ClientConn {
@@ -34,18 +34,18 @@ pub struct ClientConn {
     last_active: AtomicU32,
     has_send_backlog: AtomicBool,
     state: ClientConnState,
-    backend: AtomicPtr<BackendConn>,
+    backend: AtomicArc<BackendConn>,
     send_backlog: Backlog,
 }
 
 impl ClientConn {
     #[instrument]
     pub async fn run(&self) -> Result<()> {
-        // XXX: This code is very similar to BackendConn::read_loop.
+        // XXX: This code is very similar to BackendConn::run.
         // If you change this, you probably need to change that too.
 
         let mut parser = MessageParser::new();
-        let mut backend: Option<&BackendConn> = None;
+        let mut backend: Option<Arc<BackendConn>> = None; // keep
         loop {
             // Check first if we have another message in the parser
             if let Some(result) = parser.next() {
@@ -58,27 +58,32 @@ impl ClientConn {
 
                 // TODO run client_message
             } else {
+                // We don't want to clone the Arc everytime, so we clone() it once calling self.get_backend()
+                // And then we cache that Arc, checking that it's still the current backend with self.has_backend()
+                // Which is cheaper the the atomic-read-modify-write ops used increment and decrement and Arc.
+                if backend.is_none() || !self.has_backend(backend.as_ref().unwrap()) {
+                    backend = self.get_backend();
+                }
+
                 read_and_flush_backlog(
                     self,
                     parser.bytes_mut(),
-                    self.backend(),
+                    backend.as_ref().map(|arc| arc.as_ref()),
                 ).await?;
             }
         }
     }
 
-    pub fn set_backend(&self, backend: *mut BackendConn) -> *mut BackendConn {
-        let prev = self.backend.swap(backend, AcqRel);
-        // If there was a previous ClientConn set, and we're set to the backend, clear that relation as well
-        if !prev.is_null() {
-            let prev_backend = unsafe { &*prev };
-            if let Some(maybe_me) = prev_backend.client() {
-                if maybe_me as * const _ == self as * const _ {
-                    prev_backend.set_client(std::ptr::null_mut());
-                }
-            }
-        }
-        prev
+    pub fn get_backend(&self) -> Option<Arc<BackendConn>> {
+        self.backend.load()
+    }
+
+    pub fn has_backend(&self, backend: &BackendConn) -> bool {
+        self.backend.is(backend)
+    }
+
+    pub fn set_backend(&self, backend: Option<Arc<BackendConn>>) {
+        self.backend.store(backend);
     }
 
     pub async fn client_connected(&mut self, _: &mut client_connected::Event, params: &mut FnvHashMap<String, String>) -> Result<&'static PostgresCluster> {
@@ -138,35 +143,11 @@ impl Connection for ClientConn {
         &self.transport
     }
 
-    fn backend(&self) -> Option<&BackendConn> {
-        let p = self.backend.load(Acquire);
-        if !p.is_null() {
-            let backend = unsafe { &*p };
-            if !backend.is_closed() {
-                return Some(backend);
-            }
-            self.backend.store(std::ptr::null_mut(), Relaxed);
-        }
-        None
-    }
-
-    fn client(&self) -> Option<&Self> {
-        Some(self)
-    }
-
     fn is_closed(&self) -> bool {
         if let ClientState::Closed = self.state.get() {
             true
         } else {
             false
-        }
-    }
-}
-
-impl Drop for ClientConn {
-    fn drop(&mut self) {
-        if let Some(backend) = self.backend() {
-            backend.set_client(std::ptr::null_mut());
         }
     }
 }

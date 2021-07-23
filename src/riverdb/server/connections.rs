@@ -57,7 +57,15 @@ impl<C: 'static + Connection> Connections<C> {
     /// a chance it's not empty.
     pub fn len(&self) -> usize {
         let removed = self.removed.load(Acquire);
-        (self.added.load(Acquire) - removed) as usize
+        let count = (self.added.load(Acquire) - removed);
+        // This can't be negative, because we load removed first.
+        // Added will always be >= removed at the same or later point in time.
+        debug_assert!(count >= 0);
+        count as usize
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.len() >= self.max_connections as usize
     }
 
     pub fn add(&'static self, stream: TcpStream) -> Option<ConnectionRef<C>> {
@@ -69,8 +77,9 @@ impl<C: 'static + Connection> Connections<C> {
             return None;
         }
 
-        let mut conn = Box::new(C::new(stream));
+        let mut conn = Arc::new(C::new(stream));
         // Storing a raw pointer is fine, the object is removed from this collection before the Arc is dropped
+        // See ConnectionRef::drop for where we do that.
         let conn_ptr = conn.as_ref() as *const C as *mut C;
 
         // Pick a random place in the array and search from there for a free connection slot.
@@ -145,7 +154,8 @@ impl<C: 'static + Connection> Connections<C> {
 
         let now = coarse_monotonic_now();
         self.for_each(|conn| {
-            if conn.last_active() + self.timeout_seconds < now {
+            let last_active = conn.last_active();
+            if last_active != 0 && last_active + self.timeout_seconds < now {
                 warn!(timeout=self.timeout_seconds, "closing connection {:?} because it timed out", conn);
                 // This will trigger the task that called conn.run() to exit,
                 // and the connection to be dropped (including calling self.remove for it.)
@@ -166,7 +176,17 @@ impl<C: 'static + Connection> Connections<C> {
 
 pub struct ConnectionRef<C: 'static + Connection> {
     connections: &'static Connections<C>,
-    conn: Box<C>,
+    conn: Arc<C>,
+}
+
+impl<C: 'static + Connection> ConnectionRef<C> {
+    pub fn arc_ref(this: &Self) -> &Arc<C> {
+        &this.conn
+    }
+
+    pub fn clone_arc(this: &Self) -> Arc<C> {
+        this.conn.clone()
+    }
 }
 
 impl<C: 'static + Connection> Deref for ConnectionRef<C> {
@@ -174,12 +194,6 @@ impl<C: 'static + Connection> Deref for ConnectionRef<C> {
 
     fn deref(&self) -> &Self::Target {
         &self.conn
-    }
-}
-
-impl<C: 'static + Connection> DerefMut for ConnectionRef<C> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.conn
     }
 }
 
@@ -192,3 +206,4 @@ impl<C: 'static + Connection> Drop for ConnectionRef<C> {
 // Safety: although these contain a reference, it's a shared thread-safe 'static reference.
 // It is safe to send a ConnectionRef between threads.
 unsafe impl<C: 'static + Connection> Sync for Connections<C> {}
+unsafe impl<C: 'static + Connection> Send for ConnectionRef<C> {}

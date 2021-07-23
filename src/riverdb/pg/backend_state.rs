@@ -4,7 +4,7 @@ use strum::Display;
 
 use crate::riverdb::pg::protocol::Tag;
 use crate::riverdb::{Error, Result};
-use crate::riverdb::common::AtomicCell8;
+use crate::riverdb::common::AtomicCell;
 use std::sync::atomic::Ordering::{Release, Relaxed, Acquire};
 
 #[derive(Display, Debug, Clone, Copy)]
@@ -23,11 +23,11 @@ pub enum BackendState {
     Closed,
 }
 
-pub struct BackendConnState(AtomicCell8<BackendState>);
+pub struct BackendConnState(AtomicCell<BackendState>);
 
 impl BackendConnState {
     pub fn new(state: BackendState) -> Self {
-        Self(AtomicCell8::new(state))
+        Self(AtomicCell::new(state))
     }
 
     pub fn msg_is_allowed(&self, tag: Tag) -> bool {
@@ -39,12 +39,12 @@ impl BackendConnState {
     pub fn transition(&self, new_state: BackendState) -> Result<()> {
         // TODO check if it's allowed
 
-        self.0.store(new_state, Release);
+        self.0.store(new_state);
         Ok(())
     }
 
     pub fn get(&self) -> BackendState {
-        self.0.load(Acquire)
+        self.0.load()
     }
 }
 
@@ -56,6 +56,6 @@ impl Default for BackendConnState {
 
 impl Debug for BackendConnState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(&self.0.load(Relaxed), f)
+        Debug::fmt(&self.0.load(), f)
     }
 }

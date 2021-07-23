@@ -2,6 +2,7 @@ use serde::{Deserialize};
 
 use crate::riverdb::config::enums::TlsMode;
 use crate::riverdb::{Error, Result};
+use std::net::SocketAddr;
 
 #[derive(Deserialize, Default)]
 pub struct PostgresCluster {
@@ -33,9 +34,6 @@ pub struct PostgresCluster {
     /// idle_timeout_seconds is the number of seconds a client connection can be idle before it is closed. Default 0 (no timeout).
     #[serde(default)]
     pub idle_timeout_seconds: u32,
-    /// backend_timeout_seconds is the number of seconds a backend db connection can be idle in the pool before it is closed. 0 disables timeout. Default 30min.
-    #[serde(default = "default_backend_timeout_seconds")]
-    pub backend_timeout_seconds: u32,
     /// client_tls TLS preference between clients and River DB, defaults to disabled
     #[serde(default)]
     pub client_tls: TlsMode,
@@ -63,10 +61,11 @@ pub struct PostgresCluster {
 
 const fn default_port() -> u16 { 5432 }
 const fn default_max_connections() -> u32 { 10000 }
-const fn default_backend_timeout_seconds() -> u32 { 30 * 60 }
 
 #[derive(Deserialize, Default)]
 pub struct Postgres {
+    #[serde(default)]
+    pub address: Option<SocketAddr>,
     /// database to connect to
     pub database: String,
     /// host to connect to, defaults to localhost
@@ -97,13 +96,17 @@ pub struct Postgres {
     /// max_connections is the total maximum number of db connections for one-off queries and transactions, defaults to 100.
     #[serde(default = "default_max_db_connections")]
     pub max_connections: u32,
+    /// idle_timeout_seconds is the number of seconds a client connection can be idle in the pool before it is closed. Default 30min. 0 is disabled.
+    #[serde(default = "default_idle_timeout_seconds")]
+    pub idle_timeout_seconds: u32,
     /// replicas are other Postgres servers that host read-only replicas of this database
-    pub replicas: Vec<Postgres>
+    pub replicas: Vec<Postgres>,
 }
 
 fn default_host() -> String { "localhost".to_string() }
 const fn default_max_concurrent_transactions() -> u32 { 80 }
 const fn default_max_db_connections() -> u32 { 100 }
+const fn default_idle_timeout_seconds() -> u32 { 30 * 60 }
 
 impl PostgresCluster {
     pub(crate) fn load(&mut self) -> Result<()> {
@@ -149,6 +152,9 @@ impl Postgres {
                 self.max_concurrent_transactions = self.max_connections*4/5;
             }
         }
+
+        self.address = Some(to_address(&self.host, self.port)?);
+
         for replica in &mut self.replicas {
             if let Err(e) = replica.load(defaults, false) {
                 return Err(e);
@@ -156,4 +162,8 @@ impl Postgres {
         }
         Ok(())
     }
+}
+
+fn to_address(host: &str, port: u16) -> Result<SocketAddr> {
+    format!("{}:{}", host, port).parse().map_err(Error::from)
 }

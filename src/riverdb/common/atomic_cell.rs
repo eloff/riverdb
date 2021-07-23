@@ -1,53 +1,79 @@
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::marker::PhantomData;
-use std::mem::ManuallyDrop;
+use std::mem::{transmute_copy};
+use std::cell::UnsafeCell;
 
-pub union AtomicCell8<T: Copy> {
-    a: ManuallyDrop<AtomicU8>,
-    b: u8,
-    t: T,
+use std::sync::atomic::Ordering::{Acquire, Release, AcqRel};
+use std::sync::Arc;
+
+macro_rules! atomic {
+    // If values of type `$t` can be transmuted into values of the primitive atomic type `$atomic`,
+    // declares variable `$a` of type `$atomic` and executes `$atomic_op`.
+    ($t:ty, $a:ident: &$atomic:ty = $init:expr, $atomic_op:expr) => {
+        if crate::riverdb::common::can_transmute::<$t, $atomic>() {
+            let $a = unsafe { &*($init as *const _ as *const $atomic) };
+            $atomic_op
+        }
+    };
+
+    // If values of type `$t` can be transmuted into values of a primitive atomic type, declares
+    // variable `$a` of that type and executes `$atomic_op`.
+    ($t:ty, $a:ident = $init:expr, $atomic_op:expr) => {
+        // Safety: see assertion in AtomicCell constructor
+        loop {
+            atomic! { $t, $a: &std::sync::atomic::AtomicUsize = $init, break $atomic_op };
+            atomic! { $t, $a: &std::sync::atomic::AtomicU8 = $init, break $atomic_op };
+            atomic! { $t, $a: &std::sync::atomic::AtomicU16 = $init, break $atomic_op };
+            atomic! { $t, $a: &std::sync::atomic::AtomicU32 = $init, break $atomic_op };
+            atomic! { $t, $a: &std::sync::atomic::AtomicU64 = $init, break $atomic_op };
+            std::unimplemented!();
+        }
+    };
 }
 
-impl<T: Copy> AtomicCell8<T> {
+pub struct AtomicCell<T: Copy>(UnsafeCell<T>);
+
+impl<T: Copy> AtomicCell<T> {
     pub fn new(value: T) -> Self {
-        assert_eq!(std::mem::size_of::<T>(), 1);
-        Self{t: value}
+        // We could use static_assertions, but debug-only runtime assertions don't hurt compile time as much
+        debug_assert!(std::mem::size_of::<T>() <= std::mem::size_of::<usize>());
+        Self(UnsafeCell::new(value))
     }
 
     #[inline]
-    pub fn load(&self, order: Ordering) -> T {
-        // Safety: see assertion in constructor
-        unsafe {
-            Self { b: self.a.load(order) }.t
-        }
+    pub fn load(&self) -> T {
+        atomic! { T, a = &self.0, unsafe {
+            let r = a.load(Acquire);
+            transmute_copy(&r)
+        }}
     }
 
     #[inline]
-    pub fn store(&self, value: T, order: Ordering) {
-        // Safety: see assertion in constructor
-        unsafe {
-            self.a.store(Self::new(value).b, order);
-        }
+    pub fn store(&self, value: T) {
+        atomic! { T, a = &self.0, unsafe { a.store(transmute_copy(&value), Release) } };
     }
 
     #[inline]
-    pub fn compare_exchange(&self, current: T, new: T, success: Ordering, failure: Ordering) -> Result<T, T> {
-        // Safety: see assertion in constructor
-        unsafe {
-            self.a.compare_exchange(
-                Self::new(current).b,
-                Self::new(new).b,
-                success,
-                failure)
-                .map(|b| Self { b }.t)
-                .map_err(|b| Self { b }.t)
-        }
+    pub fn swap(&self, value: T) -> T {
+        atomic! { T, a = &self.0, unsafe {
+            let r = a.swap(transmute_copy(&value), AcqRel);
+            transmute_copy(&r)
+        }}
+    }
+
+    #[inline]
+    pub fn compare_exchange_weak(&self, current: T, new: T) -> Result<T, T> {
+        atomic! { T, a = &self.0, unsafe {
+            let r = a.compare_exchange_weak(transmute_copy(&current), transmute_copy(&new), AcqRel, Acquire);
+            transmute_copy(&r)
+        }}
     }
 }
 
-impl<T: Copy + Default> Default for AtomicCell8<T> {
+impl<T: Copy + Default> Default for AtomicCell<T> {
     fn default() -> Self {
         Self::new(Default::default())
     }
 }
+
+// Safety: we use UnsafeCell in a thread-safe manner by transmuting it to atomic types
+unsafe impl<T: Copy> Sync for AtomicCell<T> {}
 

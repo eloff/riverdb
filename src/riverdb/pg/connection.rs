@@ -24,8 +24,6 @@ pub trait Connection: server::Connection {
     fn set_has_backlog(&self, value: bool);
     fn backlog(&self) -> &Mutex<VecDeque<Bytes>>;
     fn transport(&self) -> &Transport;
-    fn backend(&self) -> Option<&BackendConn>;
-    fn client(&self) -> Option<&ClientConn>;
     fn is_closed(&self) -> bool;
 
     /// write_or_buffer writes all the bytes in buf to sender without blocking or buffers it

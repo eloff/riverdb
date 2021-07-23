@@ -5,7 +5,7 @@ use strum::Display;
 
 use crate::riverdb::pg::protocol::Tag;
 use crate::riverdb::{Error, Result};
-use crate::riverdb::common::AtomicCell8;
+use crate::riverdb::common::{AtomicCell};
 
 
 #[derive(Display, Debug, Clone, Copy)]
@@ -21,11 +21,11 @@ pub enum ClientState {
     Closed,
 }
 
-pub struct ClientConnState(AtomicCell8<ClientState>);
+pub struct ClientConnState(AtomicCell<ClientState>);
 
 impl ClientConnState {
     pub fn new(state: ClientState) -> Self {
-        Self(AtomicCell8::new(state))
+        Self(AtomicCell::new(state))
     }
 
     pub fn msg_is_allowed(&self, tag: Tag) -> bool {
@@ -37,12 +37,12 @@ impl ClientConnState {
     pub fn transition(&self, new_state: ClientState) -> Result<()> {
         // TODO check if it's allowed
 
-        self.0.store(new_state, Release);
+        self.0.store(new_state);
         Ok(())
     }
 
     pub fn get(&self) -> ClientState {
-        self.0.load(Acquire)
+        self.0.load()
     }
 }
 
@@ -54,6 +54,6 @@ impl Default for ClientConnState {
 
 impl Debug for ClientConnState {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(&self.0.load(Relaxed), f)
+        Debug::fmt(&self.0.load(), f)
     }
 }
