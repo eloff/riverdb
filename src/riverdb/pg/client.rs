@@ -14,7 +14,7 @@ use rustls::{ClientConnection};
 use crate::define_event;
 use crate::riverdb::{Error, Result, common};
 use crate::riverdb::worker::{Worker};
-use crate::riverdb::pg::protocol::{Message, MessageParser, StartupParams};
+use crate::riverdb::pg::protocol::{Message, MessageParser, ServerParams};
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection};
 use crate::riverdb::server::Transport;
 use crate::riverdb::server;
@@ -88,7 +88,7 @@ impl ClientConn {
         self.backend.store(backend);
     }
 
-    pub async fn client_connected(&mut self, _: &mut client_connected::Event, params: &StartupParams) -> Result<&'static PostgresCluster> {
+    pub async fn client_connected(&mut self, _: &mut client_connected::Event, params: &ServerParams) -> Result<&'static PostgresCluster> {
         if let Some(encoding) = params.get("client_encoding") {
             if encoding.to_ascii_uppercase() != "UTF8" {
                 error!(encoding, "client_encoding must be set to UTF8");
@@ -176,7 +176,7 @@ impl Debug for ClientConn {
 /// Returns the database cluster where the BackendConn will later be established (usually pool.get_cluster()).
 /// ClientConn::client_connected is called by default and sends the authentication challenge in response.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_connected, (client: &'a mut ClientConn, params: &'a StartupParams) -> Result<&'static PostgresCluster>);
+define_event!(client_connected, (client: &'a mut ClientConn, params: &'a ServerParams) -> Result<&'static PostgresCluster>);
 
 /// client_message is called when a Postgres protocol.Message is received in a client session.
 ///     client: &mut ClientConn : the event source handling the client connection

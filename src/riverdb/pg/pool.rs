@@ -13,7 +13,7 @@ use crate::riverdb::pg::{BackendConn};
 use crate::riverdb::config;
 use crate::riverdb::config::{Postgres, conf};
 use crate::riverdb::common::{coarse_monotonic_now, Version, AtomicCell};
-use crate::riverdb::pg::protocol::StartupParams;
+use crate::riverdb::pg::protocol::ServerParams;
 
 
 // We just use a Mutex and Vec here to implement the pool.

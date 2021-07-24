@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicU32, AtomicBool, AtomicPtr};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::collections::VecDeque;
@@ -15,6 +15,8 @@ use crate::riverdb::server;
 use crate::riverdb::pg::connection::Backlog;
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now};
+use crate::riverdb::pg::protocol::ServerParams;
+use std::borrow::Cow;
 
 
 pub struct BackendConn {
@@ -28,6 +30,7 @@ pub struct BackendConn {
     state: BackendConnState,
     client: AtomicArc<ClientConn>,
     send_backlog: Backlog,
+    server_params: Mutex<ServerParams>,
 }
 
 impl BackendConn {
@@ -78,6 +81,10 @@ impl BackendConn {
             true
         }
     }
+
+    pub fn params(&self) -> MutexGuard<ServerParams> {
+        self.server_params.lock().unwrap()
+    }
 }
 
 impl server::Connection for BackendConn {
@@ -90,7 +97,8 @@ impl server::Connection for BackendConn {
             for_transaction: Default::default(),
             state: Default::default(),
             client: Default::default(),
-            send_backlog: Mutex::new(Default::default())
+            send_backlog: Mutex::new(Default::default()),
+            server_params: Mutex::new(ServerParams::default()),
         }
     }
 

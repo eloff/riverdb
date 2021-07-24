@@ -7,12 +7,12 @@ use crate::riverdb::pg::protocol::Message;
 use crate::riverdb::pg::protocol::MessageReader;
 
 
-pub struct StartupParams {
+pub struct ServerParams {
     params: Vec<Bytes>,
     buffer: Option<BytesMut>,
 }
 
-impl StartupParams {
+impl ServerParams {
     pub fn new<Iter: Iterator<Item=Message>>(params: Iter) -> Self
     {
         let params = params.map(|m| {
@@ -56,7 +56,7 @@ impl StartupParams {
     }
 }
 
-impl Clone for StartupParams {
+impl Clone for ServerParams {
     fn clone(&self) -> Self {
         let mut copy = Self::default();
         for (k, v) in self.iter() {
@@ -66,7 +66,7 @@ impl Clone for StartupParams {
     }
 }
 
-impl Default for StartupParams {
+impl Default for ServerParams {
     fn default() -> Self {
         Self::new(std::iter::empty())
     }

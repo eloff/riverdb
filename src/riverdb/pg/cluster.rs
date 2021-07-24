@@ -2,7 +2,7 @@ use std::cell::UnsafeCell;
 
 use crate::riverdb::config;
 use crate::riverdb::pg::PostgresReplicationGroup;
-use crate::riverdb::pg::protocol::StartupParams;
+use crate::riverdb::pg::protocol::ServerParams;
 use crate::riverdb::common::AtomicRef;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire};
 pub struct PostgresCluster {
     pub config: &'static config::PostgresCluster,
     pub nodes: Vec<PostgresReplicationGroup>,
-    startup_params: UnsafeCell<StartupParams>,
+    startup_params: UnsafeCell<ServerParams>,
 }
 
 impl PostgresCluster {
@@ -24,7 +24,7 @@ impl PostgresCluster {
         Self{
             config,
             nodes,
-            startup_params: UnsafeCell::new(StartupParams::default()),
+            startup_params: UnsafeCell::new(ServerParams::default()),
         }
     }
 
@@ -48,7 +48,7 @@ impl PostgresCluster {
         }
     }
 
-    pub fn get_startup_params(&self) -> &StartupParams {
+    pub fn get_startup_params(&self) -> &ServerParams {
         // Safety: this is not called until after it's initialized (prior to starting the server)
         unsafe { &*self.startup_params.get() }
     }
