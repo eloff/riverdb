@@ -1,9 +1,11 @@
 use std::convert::TryInto;
 use std::cell::Cell;
+use std::mem::{swap, ManuallyDrop, transmute_copy};
+use std::io::Bytes;
 
-use crate::riverdb::pg::protocol::Message;
+use crate::riverdb::pg::protocol::{Message, Tag};
 use crate::riverdb::{Error, Result};
-use std::mem::swap;
+use std::ops::Deref;
 
 
 pub struct MessageReader<'a> {
@@ -16,7 +18,16 @@ impl<'a> MessageReader<'a> {
     pub fn new(msg: &'a Message) -> Self {
         MessageReader{
             msg,
-            pos: Cell::new(0),
+            pos: Cell::new(msg.body_start()),
+            read_past_end: Cell::new(false),
+        }
+    }
+
+    pub fn new_at(msg: &'a Message, pos: u32) -> Self {
+        assert!(pos <= msg.len());
+        MessageReader{
+            msg,
+            pos: Cell::new(pos),
             read_past_end: Cell::new(false),
         }
     }

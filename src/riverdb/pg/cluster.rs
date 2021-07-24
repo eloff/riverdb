@@ -13,8 +13,8 @@ use std::sync::atomic::Ordering::{AcqRel, Acquire};
 /// clusters, you can run multiple riverdb processes. It's also possible to
 /// have multiple Clusters managed in a single process by using custom plugins.
 pub struct PostgresCluster {
-    config: &'static config::PostgresCluster,
-    nodes: Vec<PostgresReplicationGroup>,
+    pub config: &'static config::PostgresCluster,
+    pub nodes: Vec<PostgresReplicationGroup>,
     startup_params: UnsafeCell<StartupParams>,
 }
 

@@ -1,11 +1,13 @@
 use std::fmt;
 use std::fmt::{Display, Formatter, Debug};
+use std::mem::ManuallyDrop;
 
 use bytes::{Bytes, Buf};
 
 use crate::riverdb::Result;
-use crate::riverdb::pg::protocol::Tag;
+use crate::riverdb::pg::protocol::{Tag, MessageReader};
 use crate::riverdb::pg::protocol::message_parser::Header;
+
 
 #[derive(Clone)]
 pub struct Message(Bytes);
@@ -32,6 +34,11 @@ impl Message {
     /// len returns the length of the Message including optional tag byte and length frame
     pub fn len(&self) -> u32 {
         self.0.len() as u32
+    }
+
+    /// Returns the offset to the start of the message body
+    pub fn body_start(&self) -> u32 {
+        if self.tag() == Tag::UNTAGGED { 4 } else { 5 }
     }
 
     /// header returns the message Header or panics if self.is_empty()
