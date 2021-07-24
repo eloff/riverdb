@@ -1,19 +1,25 @@
-use std::sync::atomic::AtomicI32;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicI32, AtomicPtr};
+use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::ops::Deref;
 use std::sync::{Mutex, Arc};
 
 use tokio::net::TcpStream;
+use tracing::{warn};
 
 use crate::riverdb::{Result};
 use crate::riverdb::pg::isolation::IsolationLevel;
-use crate::riverdb::server::{Connections, ConnectionRef};
-use crate::riverdb::pg::BackendConn;
-use crate::riverdb::pool::{Cluster, ReplicationGroup};
-use crate::riverdb::config::Postgres;
+use crate::riverdb::server::{Connections, ConnectionRef, Connection};
+use crate::riverdb::pg::{BackendConn};
+use crate::riverdb::config;
+use crate::riverdb::config::{Postgres, conf};
+use crate::riverdb::common::{coarse_monotonic_now, Version, AtomicCell};
+use crate::riverdb::pg::protocol::StartupParams;
 
 
 // We just use a Mutex and Vec here to implement the pool.
+// if contention is light, this is optimal. We hold the lock for very short
+// periods, so it may well be the way to go.
+//
 // If that proves to be a bottleneck we can scale it with the same
 // work-stealing algorithm/containers that tokio uses:
 // https://tokio.rs/blog/2019-10-scheduler#a-better-run-queue
@@ -21,14 +27,15 @@ use crate::riverdb::config::Postgres;
 //
 // We really just have to slap the thread-local work-stealing queues
 // on top in the Worker struct and then this Mutex<Vec> becomes the
-// shared global queue in the tokio algorithm.
+// shared global queue as-in the tokio algorithm.
 
 pub struct ConnectionPool {
     config: &'static Postgres,
     connections: &'static Connections<BackendConn>,
     active_transactions: AtomicI32,
     max_transactions: i32,
-    default_isolation_level: IsolationLevel,
+    default_isolation_level: AtomicCell<IsolationLevel>,
+    server_version: AtomicCell<Version>,
     pooled_connections: Mutex<Vec<Arc<BackendConn>>>,
 }
 
@@ -39,14 +46,16 @@ impl ConnectionPool {
             connections: Connections::new(config.max_connections, 0), // we don't use the Connections level timeout
             active_transactions: Default::default(),
             max_transactions: config.max_concurrent_transactions as i32,
-            default_isolation_level: IsolationLevel::None,
+            default_isolation_level: AtomicCell::<IsolationLevel>::default(),
+            server_version: Default::default(),
             pooled_connections: Mutex::new(Vec::new()),
         }
     }
     
     pub async fn get(&'static self, role: &str, for_transaction: bool) -> Result<Option<Arc<BackendConn>>> {
         if for_transaction && self.active_transactions.fetch_add(1, Relaxed) > self.max_transactions {
-            self.active_transactions.fetch_add(-1, Relaxed);
+            let prev = self.active_transactions.fetch_add(-1, Relaxed);
+            debug_assert!(prev > 0);
             return Ok(None);
         }
 
@@ -73,8 +82,17 @@ impl ConnectionPool {
                 }
             };
 
+            // Set the role for the connection, which also checks that it's healthy.
+            // If this fails, and the connection came from the pool, we try with another connection.
             if let Err(e) = conn.check_health_and_set_role(role).await {
-                // TODO log error
+                let mut idle_seconds = 0;
+                let now = coarse_monotonic_now();
+                let added_to_pool = conn.last_active();
+                if added_to_pool != 0 {
+                    idle_seconds = now - added_to_pool;
+                }
+                warn!(?e, idle_seconds, role, "connection failed health check / set role");
+
                 if !created {
                     continue;
                 }
@@ -98,10 +116,18 @@ impl ConnectionPool {
         Ok(self.connections.add(stream))
     }
 
-    pub fn put(&self, conn: *const BackendConn) {
+    pub fn put(&self, conn: Arc<BackendConn>) {
+        if conn.created_for_transaction() {
+            let prev = self.active_transactions.fetch_add(-1, Relaxed);
+            debug_assert!(prev > 0);
+        }
 
+        if !conn.set_in_pool() {
+            conn.close();
+            return // free connection
+        }
 
-        // TODO add to pool, set added time (if timeout != 0), decrement active_transactions if created_for_transaction
+        self.pooled_connections.lock().unwrap().push(conn);
     }
 
     fn remove(&self, conn: &Arc<BackendConn>) {
@@ -110,14 +136,13 @@ impl ConnectionPool {
         }
 
         let mut pool = self.pooled_connections.lock().unwrap();
+        // rposition should be slightly better than position here, as we remove needs to slide the
+        // tail elements down, which will now be in cache after the search with rposition.
         if let Some(i) = pool.iter().rposition(|a| Arc::ptr_eq(a,conn)) {
             pool.remove(i);
         }
     }
 }
-
-pub type PostgresCluster = Cluster<ConnectionPool>;
-pub type PostgresReplicationGroup = ReplicationGroup<ConnectionPool>;
 
 // Safety: although ConnectionPool contains a reference, it's a shared thread-safe 'static reference.
 // It is safe to send a ConnectionPool between threads.

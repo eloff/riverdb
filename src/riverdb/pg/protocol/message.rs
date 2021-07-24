@@ -7,7 +7,7 @@ use crate::riverdb::Result;
 use crate::riverdb::pg::protocol::Tag;
 use crate::riverdb::pg::protocol::message_parser::Header;
 
-
+#[derive(Clone)]
 pub struct Message(Bytes);
 
 impl Message {

@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 
 use tokio::net::TcpStream;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, warn, instrument};
 use bytes::Bytes;
 
 use crate::riverdb::Result;
@@ -14,7 +14,7 @@ use crate::riverdb::server::{Transport};
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::Backlog;
 use crate::riverdb::pg::backend_state::BackendState;
-use crate::riverdb::common::{AtomicCell, AtomicArc};
+use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now};
 
 
 pub struct BackendConn {
@@ -65,6 +65,17 @@ impl BackendConn {
             true
         } else {
             false
+        }
+    }
+
+    pub fn set_in_pool(&self) -> bool {
+        if let Err(e) = self.state.transition(BackendState::InPool) {
+            warn!(?e, "cannot transition to InPool state");
+            false
+        } else {
+            self.added_to_pool.store(coarse_monotonic_now(), Relaxed);
+            self.for_transaction.store(false, Relaxed);
+            true
         }
     }
 }

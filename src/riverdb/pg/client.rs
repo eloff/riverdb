@@ -14,11 +14,11 @@ use rustls::{ClientConnection};
 use crate::define_event;
 use crate::riverdb::{Error, Result, common};
 use crate::riverdb::worker::{Worker};
-use crate::riverdb::pg::protocol::{Message, MessageParser};
+use crate::riverdb::pg::protocol::{Message, MessageParser, StartupParams};
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection};
 use crate::riverdb::server::Transport;
 use crate::riverdb::server;
-use crate::riverdb::pg::pool::PostgresCluster;
+use crate::riverdb::pg::{PostgresCluster, ConnectionPool};
 use crate::riverdb::pg::connection::{read_and_flush_backlog, Backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::pg::client_state::ClientState;
@@ -35,7 +35,9 @@ pub struct ClientConn {
     has_send_backlog: AtomicBool,
     state: ClientConnState,
     backend: AtomicArc<BackendConn>,
+    pool: AtomicCell<Option<&'static ConnectionPool>>,
     send_backlog: Backlog,
+    salt: u32,
 }
 
 impl ClientConn {
@@ -86,8 +88,13 @@ impl ClientConn {
         self.backend.store(backend);
     }
 
-    pub async fn client_connected(&mut self, _: &mut client_connected::Event, params: &mut FnvHashMap<String, String>) -> Result<&'static PostgresCluster> {
-        unimplemented!();
+    pub async fn client_connected(&mut self, _: &mut client_connected::Event, params: &StartupParams) -> Result<&'static PostgresCluster> {
+        if let Some(encoding) = params.get("client_encoding") {
+            if encoding.to_ascii_uppercase() != "UTF8" {
+                error!(encoding, "client_encoding must be set to UTF8");
+            }
+        }
+        Ok(PostgresCluster::singleton())
     }
 
     pub async fn client_message(&mut self, _: &mut client_message::Event, msg: Message) -> Result<()> {
@@ -104,7 +111,9 @@ impl server::Connection for ClientConn {
             has_send_backlog: Default::default(),
             state: Default::default(),
             backend: Default::default(),
-            send_backlog: Mutex::new(VecDeque::new())
+            pool: Default::default(),
+            send_backlog: Mutex::new(VecDeque::new()),
+            salt: Worker::get().rand32()
         }
     }
 
@@ -167,7 +176,7 @@ impl Debug for ClientConn {
 /// Returns the database cluster where the BackendConn will later be established (usually pool.get_cluster()).
 /// ClientConn::client_connected is called by default and sends the authentication challenge in response.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_connected, (client: &'a mut ClientConn, params: &'a mut FnvHashMap<String, String>) -> Result<&'static PostgresCluster>);
+define_event!(client_connected, (client: &'a mut ClientConn, params: &'a StartupParams) -> Result<&'static PostgresCluster>);
 
 /// client_message is called when a Postgres protocol.Message is received in a client session.
 ///     client: &mut ClientConn : the event source handling the client connection

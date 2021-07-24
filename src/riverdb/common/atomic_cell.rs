@@ -75,11 +75,19 @@ impl<T: Copy> AtomicCell<T> {
             transmute_copy(&r)
         }}
     }
+
+    #[inline]
+    pub fn compare_exchange(&self, current: T, new: T) -> Result<T, T> {
+        atomic! { T, a = &self.0, unsafe {
+            let r = a.compare_exchange(transmute_copy(&current), transmute_copy(&new), AcqRel, Acquire);
+            transmute_copy(&r)
+        }}
+    }
 }
 
 impl<T: Copy + Default> Default for AtomicCell<T> {
     fn default() -> Self {
-        Self::new(Default::default())
+        Self::new(T::default())
     }
 }
 

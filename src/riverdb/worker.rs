@@ -86,6 +86,10 @@ impl Worker {
         })
     }
 
+    pub fn rand32(&mut self) -> u32 {
+        self.rng.generate()
+    }
+
     pub fn uniform_rand32(&mut self, max: u32) -> u32 {
         fast_modulo32(self.rng.generate(), max)
     }
