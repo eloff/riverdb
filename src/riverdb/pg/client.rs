@@ -58,7 +58,7 @@ impl ClientConn {
                     return Err(Error::new(format!("unexpected message {} for state {:?}", tag, self.state)));
                 }
 
-                // TODO run client_message
+                client_message::run(self, msg).await?;
             } else {
                 // We don't want to clone the Arc everytime, so we clone() it once calling self.get_backend()
                 // And then we cache that Arc, checking that it's still the current backend with self.has_backend()
@@ -88,7 +88,7 @@ impl ClientConn {
         self.backend.store(backend);
     }
 
-    pub async fn client_connected(&mut self, _: &mut client_connected::Event, params: &ServerParams) -> Result<&'static PostgresCluster> {
+    pub async fn client_connected(&self, _: &mut client_connected::Event, params: &ServerParams) -> Result<&'static PostgresCluster> {
         if let Some(encoding) = params.get("client_encoding") {
             if encoding.to_ascii_uppercase() != "UTF8" {
                 error!(encoding, "client_encoding must be set to UTF8");
@@ -97,7 +97,7 @@ impl ClientConn {
         Ok(PostgresCluster::singleton())
     }
 
-    pub async fn client_message(&mut self, _: &mut client_message::Event, msg: Message) -> Result<()> {
+    pub async fn client_message(&self, _: &mut client_message::Event, msg: Message) -> Result<()> {
         unimplemented!();
     }
 }
@@ -176,7 +176,7 @@ impl Debug for ClientConn {
 /// Returns the database cluster where the BackendConn will later be established (usually pool.get_cluster()).
 /// ClientConn::client_connected is called by default and sends the authentication challenge in response.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_connected, (client: &'a mut ClientConn, params: &'a ServerParams) -> Result<&'static PostgresCluster>);
+define_event!(client_connected, (client: &'a ClientConn, params: &'a ServerParams) -> Result<&'static PostgresCluster>);
 
 /// client_message is called when a Postgres protocol.Message is received in a client session.
 ///     client: &mut ClientConn : the event source handling the client connection
@@ -187,4 +187,4 @@ define_event!(client_connected, (client: &'a mut ClientConn, params: &'a ServerP
 /// ClientConn::client_message is called by default and does further processing on the Message,
 /// including potentially calling the higher-level client_query. Symmetric with backend_message.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_message, (client: &'a mut ClientConn, msg: Message) -> Result<()>);
+define_event!(client_message, (client: &'a ClientConn, msg: Message) -> Result<()>);

@@ -26,7 +26,15 @@ pub unsafe fn configure() -> Result<()> {
 
 #[macro_export]
 macro_rules! define_event {
+    ($(#[$meta:meta])* $name:ident, ($event_src:ident: &$l:lifetime $src_ty:ty $(,$arg:ident: $arg_ty:ty)*) -> $result:ty) => {
+        define_event!($(#[$meta])* $name, $event_src, $l, $src_ty, $result, $($arg: $arg_ty),*, @);
+    };
+
     ($(#[$meta:meta])* $name:ident, ($event_src:ident: &$l:lifetime mut $src_ty:ty $(,$arg:ident: $arg_ty:ty)*) -> $result:ty) => {
+        define_event!($(#[$meta])* $name, $event_src, $l, $src_ty, $result, $($arg: $arg_ty),*, @mut);
+    };
+
+    ($(#[$meta:meta])* $name:ident, $event_src:ident, $l:lifetime, $src_ty:ty, $result:ty, $($arg:ident: $arg_ty:ty),*, @$($mod:tt)?) => {
         $(#[$meta])*
         pub mod $name {
             pub use super::*;
@@ -36,7 +44,7 @@ macro_rules! define_event {
 
             // This boxes the Future, which is unfortunate, but that restriction may be lifted in a future edition of Rust
             // We need to be able to return impl dyn Future here to avoid boxing.
-            type Plugin<$l> = fn(ctx: &$l mut Event, $event_src: &$l mut Source, $($arg: $arg_ty),*) -> std::pin::Pin<Box<dyn std::future::Future<Output=$result> + Send + Sync + $l>>;
+            type Plugin<$l> = fn(ctx: &$l mut Event, $event_src: &$l $($mod)? Source, $($arg: $arg_ty),*) -> std::pin::Pin<Box<dyn std::future::Future<Output=$result> + Send + Sync + $l>>;
 
             // See notes on register for safety
             static mut PLUGINS: Vec<Plugin<'static>> = Vec::new();
@@ -80,7 +88,7 @@ macro_rules! define_event {
                 }
 
                 /// next() invokes the next plugin in the chain, or the default behavior
-                pub async fn next<$l>(&$l mut self, $event_src: &$l mut Source, $($arg: $arg_ty),*) -> $result {
+                pub async fn next<$l>(&$l mut self, $event_src: &$l $($mod)? Source, $($arg: $arg_ty),*) -> $result {
                     let i = self.index;
                     let plugins = unsafe { &PLUGINS[..] };
                     if i < plugins.len() {
@@ -100,8 +108,13 @@ macro_rules! define_event {
             }
 
             /// run invokes the plugins registered in this module
-            pub async fn run<$l>($event_src: &$l mut Source, $($arg: $arg_ty),*) -> $result {
-                Event::new().next($event_src, $($arg),*).await
+            pub async fn run<$l>($event_src: &$l $($mod)? Source, $($arg: $arg_ty),*) -> $result {
+                let mut ev = Event::new();
+                if unsafe { PLUGINS.is_empty() } {
+                    $event_src.$name(&mut ev, $($arg),*).await
+                } else {
+                    ev.next($event_src, $($arg),*).await
+                }
             }
         }
     }
@@ -179,17 +192,23 @@ macro_rules! define_event {
 macro_rules! event_listener {
     ($event_name:ident, $l:lifetime, $event:ident, $src:ident, $p:ident: $plugin_type:ty, ($($arg:ident: $arg_ty:ty),*) -> $result:ty $body:block) => {
         gensym::gensym!{
-            _event_listener_impl!{$event_name, $l, $event, $src, $p: $plugin_type, ($($arg: $arg_ty),*) -> $result $body}
+            _event_listener_impl!{$event_name, $l, $event, $src, $p: $plugin_type, $result, $body, ($($arg: $arg_ty),*), }
         }
-    }
+    };
+
+    ($event_name:ident, $l:lifetime, $event:ident, mut $src:ident, $p:ident: $plugin_type:ty, ($($arg:ident: $arg_ty:ty),*) -> $result:ty $body:block) => {
+        gensym::gensym!{
+            _event_listener_impl!{$event_name, $l, $event, $src, $p: $plugin_type, $result, $body, ($($arg: $arg_ty),*), mut}
+        }
+    };
 }
 
 macro_rules! _event_listener_impl {
-    ($singleton:ident, $event_name:ident, $l:lifetime, $event:ident, $src:ident, $p:ident: $plugin_type:ty, ($($arg:ident: $arg_ty:ty),*) -> $result:ty $body:block) => {
+    ($singleton:ident, $event_name:ident, $l:lifetime, $event:ident, $src:ident, $p:ident: $plugin_type:ty, $result:ty, $body:block, ($($arg:ident: $arg_ty:ty),*), $($mod:tt)?) => {
         const _: () = {
             static mut $singleton: std::mem::MaybeUninit<$plugin_type> = std::mem::MaybeUninit::uninit();
 
-            fn plugin_fn<$l>($event: &$l mut $event_name::Event, $src: &$l mut $event_name::Source, $($arg: $arg_ty),*)
+            fn plugin_fn<$l>($event: &$l mut $event_name::Event, $src: &$l $($mod)? $event_name::Source, $($arg: $arg_ty),*)
                 -> std::pin::Pin<Box<dyn std::future::Future<Output=$result> + Send + Sync + $l>>
             {
                 let $p = unsafe { &*$singleton.as_ptr() };
@@ -252,7 +271,7 @@ mod tests {
         }
     }
 
-    event_listener!(record_changed, 'a, ev, monitor, this: Listener2, (payload: &'a str) -> Result<String> {
+    event_listener!(record_changed, 'a, ev, mut monitor, this: Listener2, (payload: &'a str) -> Result<String> {
         monitor.state += this.bar;
         let s = "-2b-".to_string() + &ev.next(monitor, payload).await? + "-2a-";
         monitor.state *= this.bar;
@@ -274,7 +293,7 @@ mod tests {
         }
     }
 
-    event_listener!(record_changed, 'a, ev, monitor, this: Listener, (payload: &'a str) -> Result<String> {
+    event_listener!(record_changed, 'a, ev, mut monitor, this: Listener, (payload: &'a str) -> Result<String> {
         monitor.state += this.foo;
         let s = "-1b-".to_string() + &ev.next(monitor, payload).await? + "-1a-";
         monitor.state *= this.foo;

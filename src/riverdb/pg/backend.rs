@@ -8,14 +8,14 @@ use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn, instrument};
 use bytes::Bytes;
 
-use crate::riverdb::Result;
+use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::{BackendConnState, ClientConn, Connection};
 use crate::riverdb::server::{Transport};
 use crate::riverdb::server;
-use crate::riverdb::pg::connection::Backlog;
+use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now};
-use crate::riverdb::pg::protocol::ServerParams;
+use crate::riverdb::pg::protocol::{ServerParams, MessageParser};
 use std::borrow::Cow;
 
 
@@ -39,7 +39,34 @@ impl BackendConn {
         // XXX: This code is very similar to ClientConn::run.
         // If you change this, you probably need to change that too.
 
-        todo!();
+        let mut parser = MessageParser::new();
+        let mut client: Option<Arc<ClientConn>> = None; // keep
+        loop {
+            // Check first if we have another message in the parser
+            if let Some(result) = parser.next() {
+                let msg = result?;
+                let tag = msg.tag();
+                debug!(%tag, "received message from backend");
+                if !self.state.msg_is_allowed(tag) {
+                    return Err(Error::new(format!("unexpected message {} for state {:?}", tag, self.state)));
+                }
+
+                // TODO run client_message
+            } else {
+                // We don't want to clone the Arc everytime, so we clone() it once calling self.get_client()
+                // And then we cache that Arc, checking that it's still the current client with self.has_client()
+                // Which is cheaper the the atomic-read-modify-write ops used increment and decrement and Arc.
+                if client.is_none() || !self.has_client(client.as_ref().unwrap()) {
+                    client = self.get_client();
+                }
+
+                read_and_flush_backlog(
+                    self,
+                    parser.bytes_mut(),
+                    client.as_ref().map(|arc| arc.as_ref()),
+                ).await?;
+            }
+        }
     }
 
     pub fn get_client(&self) -> Option<Arc<ClientConn>> {
