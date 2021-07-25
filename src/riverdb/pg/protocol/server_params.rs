@@ -23,7 +23,7 @@ impl ServerParams {
         Self{params, buffer: None}
     }
 
-    pub fn add(&mut self, k: &str, v: &str) {
+    fn add(&mut self, k: &str, v: &str) {
         let space_needed = k.len() + v.len() + 2;
         if self.buffer.is_none() || self.buffer.as_mut().unwrap().remaining_mut() < space_needed {
             self.buffer = Some(BytesMut::with_capacity(space_needed * 12));
@@ -37,6 +37,22 @@ impl ServerParams {
         buf.write_str(v).unwrap();
         buf.write_char(0 as char).unwrap();
         self.params.push(buf.split_to(space_needed).freeze());
+    }
+
+    pub fn set(&mut self, k: &str, v: &str) {
+        for (i, buf) in self.params.iter().enumerate() {
+            if let Some(key) = read_null_terminated_str(buf, 0) {
+                if k == key {
+                    // Add the new (k, v) pair to the end, and then swap it into params[i],
+                    // removing the value at i.
+                    self.add(k, v);
+                    self.params.swap_remove(i);
+                    return;
+                }
+            }
+        }
+        // The key doesn't exist, add it to the end
+        self.add(k, v);
     }
 
     pub fn get<'a>(&'a self, k: &'_ str) -> Option<&'a str>

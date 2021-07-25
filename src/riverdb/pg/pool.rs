@@ -14,6 +14,7 @@ use crate::riverdb::config;
 use crate::riverdb::config::{Postgres, conf};
 use crate::riverdb::common::{coarse_monotonic_now, Version, AtomicCell};
 use crate::riverdb::pg::protocol::ServerParams;
+use std::fmt::{Debug, Formatter};
 
 
 // We just use a Mutex and Vec here to implement the pool.
@@ -75,6 +76,10 @@ impl ConnectionPool {
                         self.remove(ConnectionRef::arc_ref(&conn_ref));
                     });
 
+                    if let IsolationLevel::None = self.default_isolation_level.load() {
+                        // TODO Check the isolation level and record it
+                    }
+
                     created = true;
                     conn
                 } else {
@@ -85,6 +90,8 @@ impl ConnectionPool {
             // Set the role for the connection, which also checks that it's healthy.
             // If this fails, and the connection came from the pool, we try with another connection.
             if let Err(e) = conn.check_health_and_set_role(role).await {
+                // If this connection came from the pool, and failed the health check
+                // Record how long it was idle in the pool.
                 let mut idle_seconds = 0;
                 let now = coarse_monotonic_now();
                 let added_to_pool = conn.last_active();
@@ -147,3 +154,9 @@ impl ConnectionPool {
 // Safety: although ConnectionPool contains a reference, it's a shared thread-safe 'static reference.
 // It is safe to send a ConnectionPool between threads.
 unsafe impl Send for ConnectionPool {}
+
+impl Debug for ConnectionPool {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("pg::ConnectionPool({})", self.config.address.as_ref().unwrap()))
+    }
+}

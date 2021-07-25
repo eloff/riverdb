@@ -21,6 +21,7 @@ custom_error!{pub ErrorKind
     PostgresError{source: PostgresError} = "{source}",
     Io{source: io::Error} = "io error",
     Utf8Error{source: std::str::Utf8Error} = "{source}",
+    ParseIntError{source: std::num::ParseIntError} = "{source}",
     AddrParseError{source: net::AddrParseError} = "{source}",
     Yaml{source: serde_yaml::Error} = "{source}",
     Tls{source: rustls::Error} = "{source}",
@@ -67,6 +68,12 @@ impl From<std::str::Utf8Error> for Error {
 
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
+        Error(Box::new(ErrorKind::from(e)))
+    }
+}
+
+impl From<std::num::ParseIntError> for Error {
+    fn from(e: std::num::ParseIntError) -> Self {
         Error(Box::new(ErrorKind::from(e)))
     }
 }
