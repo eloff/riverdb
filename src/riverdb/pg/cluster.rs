@@ -1,11 +1,13 @@
 use std::cell::UnsafeCell;
-
-use crate::riverdb::config;
-use crate::riverdb::pg::PostgresReplicationGroup;
-use crate::riverdb::pg::protocol::ServerParams;
-use crate::riverdb::common::AtomicRef;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
+
+use crate::riverdb::{Result};
+use crate::riverdb::config;
+use crate::riverdb::pg::PostgresReplicationGroup;
+use crate::riverdb::pg::group::merge_server_params;
+use crate::riverdb::pg::protocol::ServerParams;
+use crate::riverdb::common::AtomicRef;
 
 /// A Cluster represents a collection of nodes which store all database partitions.
 /// Each node itself may be a replication group with a single master and multiple read-only replicas.
@@ -46,6 +48,25 @@ impl PostgresCluster {
             }
             &*p
         }
+    }
+
+    pub async fn test_connection(&self) -> Result<()> {
+        let mut params = futures::future::try_join_all(
+            self.nodes.iter()
+                .map(|n| n.test_connection())).await?;
+
+        params.reverse();
+        if let Some(master_params) = params.pop() {
+            let master = params.iter().fold(master_params, |m, o| {
+                let mut m = m;
+                merge_server_params(&mut m, o);
+                m
+            });
+            unsafe {
+                *self.startup_params.get() = master;
+            }
+        }
+        Ok(())
     }
 
     pub fn get_startup_params(&self) -> &ServerParams {
