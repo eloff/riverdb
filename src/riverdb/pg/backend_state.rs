@@ -80,9 +80,49 @@ impl BackendConnState {
     }
 
     pub fn msg_is_allowed(&self, tag: Tag) -> bool {
-        // TODO check if it's allowed
+        if tag == Tag::ERROR_RESPONSE || tag == Tag::PARAMETER_STATUS || tag == Tag::NOTICE_RESPONSE || tag == Tag::NOTIFICATION_RESPONSE {
+            return true;
+        }
 
-        true
+        // Tags expected from server in Ready or Transaction states
+        const RESPONSE_TAGS: &'static [Tag] = &[
+            Tag::DATA_ROW,
+            Tag::COMMAND_COMPLETE,
+            Tag::READY_FOR_QUERY,
+            Tag::ROW_DESCRIPTION,
+            Tag::PARAMETER_DESCRIPTION,
+            Tag::EMPTY_QUERY,
+            Tag::NO_DATA,
+            Tag::FUNCTION_CALL_RESPONSE,
+            Tag::BIND_COMPLETE,
+            Tag::CLOSE_COMPLETE,
+            Tag::PARSE_COMPLETE,
+            Tag::COPY_IN_RESPONSE,
+            Tag::COPY_OUT_RESPONSE,
+            Tag::COPY_BOTH_RESPONSE,
+            Tag::PORTAL,
+        ];
+
+        const ALLOWED_TAGS: [&'static [Tag]; 10] = [
+            &[], // no valid tags in StateInitial
+            &[], // no valid tags in SSLHandshake
+            &[Tag::AUTHENTICATION_OK], // Authentication
+            &[Tag::AUTHENTICATION_OK, Tag::BACKEND_KEY_DATA, Tag::READY_FOR_QUERY], // Startup
+            RESPONSE_TAGS, // Ready
+            RESPONSE_TAGS, // Transaction
+            &[], // FailedTransaction
+            &[], // Listen (only ASYNC_TAGS)
+            &[], // InPool (only ASYNC_TAGS)
+            &[], // no valid tags in Closed
+        ];
+
+        let state = self.0.load();
+        unsafe {
+            memchr::memchr(
+                tag.as_u8(),
+                transmute::<&[Tag], &[u8]>(ALLOWED_TAGS.get(state.ordinal() as usize).unwrap()),
+            ).is_some()
+        }
     }
 
     pub fn transition(&self, backend: &BackendConn, new_state: BackendState) -> Result<()> {
@@ -145,4 +185,15 @@ pub fn checked_state_transition<T: Debug, S: Copy + Debug + Eq + StateEnum>(subj
 
     debug!("transitioned {:?} from {:?} to {:?}", subject, state, new_state);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backend_state_transition() {
+        // TODO
+        //BackendConn::new_unix()
+    }
 }

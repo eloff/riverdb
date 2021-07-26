@@ -65,9 +65,41 @@ impl ClientConnState {
     }
 
     pub fn msg_is_allowed(&self, tag: Tag) -> bool {
-        // TODO check if it's allowed
+        if tag == Tag::TERMINATE {
+            return true;
+        }
 
-        true
+        // Tags expected from server in Ready or Transaction states
+        const REQUEST_TAGS: &'static [Tag] = &[
+            Tag::QUERY,
+            Tag::BIND,
+            Tag::EXECUTE,
+            Tag::FUNCTION_CALL,
+            Tag::CLOSE,
+            Tag::PARSE,
+            Tag::DESCRIBE,
+            Tag::FLUSH,
+            Tag::SYNC,
+        ];
+
+        const ALLOWED_TAGS: [&'static [Tag]; 8] = [
+            &[Tag::UNTAGGED], // StateInitial (the startup tag)
+            &[], // no valid tags in SSLHandshake
+            &[Tag::PASSWORD_MESSAGE, Tag::AUTHENTICATION_OK, Tag::ERROR_RESPONSE], // Authentication
+            REQUEST_TAGS, // Ready
+            REQUEST_TAGS, // Transaction
+            &[], // FailedTransaction
+            &[], // Listen
+            &[], // no valid tags in Closed
+        ];
+
+        let state = self.0.load();
+        unsafe {
+            memchr::memchr(
+                tag.as_u8(),
+                transmute::<&[Tag], &[u8]>(ALLOWED_TAGS.get(state.ordinal() as usize).unwrap()),
+            ).is_some()
+        }
     }
 
     pub fn transition(&self, client: &ClientConn, new_state: ClientState) -> Result<()> {
