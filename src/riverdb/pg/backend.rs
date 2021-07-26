@@ -8,6 +8,7 @@ use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn, instrument};
 use bytes::Bytes;
 
+use crate::define_event;
 use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::{BackendConnState, ClientConn, Connection};
 use crate::riverdb::server::{Transport};
@@ -15,8 +16,7 @@ use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now};
-use crate::riverdb::pg::protocol::{ServerParams, MessageParser};
-use std::borrow::Cow;
+use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message};
 
 
 pub struct BackendConn {
@@ -51,7 +51,7 @@ impl BackendConn {
                     return Err(Error::new(format!("unexpected message {} for state {:?}", tag, self.state)));
                 }
 
-                // TODO run client_message
+                backend_message::run(self, msg).await?;
             } else {
                 // We don't want to clone the Arc everytime, so we clone() it once calling self.get_client()
                 // And then we cache that Arc, checking that it's still the current client with self.has_client()
@@ -73,7 +73,7 @@ impl BackendConn {
         self.client.load()
     }
 
-    pub fn has_client(&self, client: &ClientConn) -> bool {
+    pub fn has_client(&self, client: &Arc<ClientConn>) -> bool {
         self.client.is(client)
     }
 
@@ -99,7 +99,7 @@ impl BackendConn {
     }
 
     pub fn set_in_pool(&self) -> bool {
-        if let Err(e) = self.state.transition(BackendState::InPool) {
+        if let Err(e) = self.state.transition(self,BackendState::InPool) {
             warn!(?e, "cannot transition to InPool state");
             false
         } else {
@@ -111,6 +111,10 @@ impl BackendConn {
 
     pub fn params(&self) -> MutexGuard<ServerParams> {
         self.server_params.lock().unwrap()
+    }
+
+    pub async fn backend_message(&self, _: &mut backend_message::Event, msg: Message) -> Result<()> {
+        unimplemented!();
     }
 }
 
@@ -180,3 +184,14 @@ impl Debug for BackendConn {
             self.state))
     }
 }
+
+/// backend_message is called when a Postgres protocol.Message is received in a backend db connection.
+///     backend: &BackendConn : the event source handling the client connection
+///     msg: protocol.Message is the received protocol.Message
+/// You can replace msg by creating and passing a new Message object to ev.next(...)
+/// It's also possible to replace a single Message with many by calling ev.next() for each.
+/// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
+/// BackendConn::backend_message is called by default and does further processing on the Message,
+/// including potentially forwarding it to associated client session. Symmetric with client_message.
+/// If it returns an error, the associated session is terminated.
+define_event!(backend_message, (backend: &'a BackendConn, msg: Message) -> Result<()>);

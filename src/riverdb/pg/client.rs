@@ -80,7 +80,7 @@ impl ClientConn {
         self.backend.load()
     }
 
-    pub fn has_backend(&self, backend: &BackendConn) -> bool {
+    pub fn has_backend(&self, backend: &Arc<BackendConn>) -> bool {
         self.backend.is(backend)
     }
 
@@ -130,7 +130,7 @@ impl server::Connection for ClientConn {
     }
 
     fn close(&self) {
-        self.state.transition(ClientState::Closed);
+        self.state.transition(self, ClientState::Closed);
         self.transport.close();
     }
 }
@@ -171,15 +171,15 @@ impl Debug for ClientConn {
 }
 
 /// client_connected is called when a new client session is being established.
-///     client: &mut ClientConn : the event source handling the client connection
-///     params: &mut FnvHashMap : key-value pairs passed by the connected client in the startup message (including database and user)
+///     client: &ClientConn : the event source handling the client connection
+///     params: &ServerParams : key-value pairs passed by the connected client in the startup message (including database and user)
 /// Returns the database cluster where the BackendConn will later be established (usually pool.get_cluster()).
 /// ClientConn::client_connected is called by default and sends the authentication challenge in response.
 /// If it returns an error, the associated session is terminated.
 define_event!(client_connected, (client: &'a ClientConn, params: &'a ServerParams) -> Result<&'static PostgresCluster>);
 
 /// client_message is called when a Postgres protocol.Message is received in a client session.
-///     client: &mut ClientConn : the event source handling the client connection
+///     client: &ClientConn : the event source handling the client connection
 ///     msg: protocol.Message is the received protocol.Message
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
 /// It's also possible to replace a single Message with many by calling ev.next() for each.

@@ -110,6 +110,7 @@ macro_rules! define_event {
             /// run invokes the plugins registered in this module
             pub async fn run<$l>($event_src: &$l $($mod)? Source, $($arg: $arg_ty),*) -> $result {
                 let mut ev = Event::new();
+                // With this check, we can avoid allocating a boxed Future if there aren't any plugins registered
                 if unsafe { PLUGINS.is_empty() } {
                     $event_src.$name(&mut ev, $($arg),*).await
                 } else {
