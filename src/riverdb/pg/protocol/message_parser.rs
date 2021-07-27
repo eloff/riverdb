@@ -50,6 +50,20 @@ impl MessageParser {
         }
     }
 
+    /// Returns the next byte in the buffer (or None) if empty. Does not advance the read position.
+    pub fn peek(&mut self) -> Option<u8> {
+        self.data.first().cloned()
+    }
+
+    /// Returns the next byte in the buffer (or None) if empty and advances the read position.
+    pub fn next_byte(&mut self) -> Option<u8> {
+        let b = self.peek();
+        self.data.advance(1);
+        b
+    }
+
+    /// Parses and returns the next Message in the buffer without copying,
+    /// or None if there isn't a complete message.
     pub fn next(&mut self) -> Option<Result<Message>> {
         match Header::parse(self.data.chunk()) {
             Err(e) => Some(Err(e)),
@@ -69,6 +83,7 @@ impl MessageParser {
         }
     }
 
+    /// Returns a mutable reference to the underlying BytesMut buffer.
     pub fn bytes_mut(&mut self) -> &mut BytesMut {
         &mut self.data
     }

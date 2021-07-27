@@ -1,4 +1,4 @@
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Debug};
 
 use crate::riverdb::{Error, Result};
 
@@ -209,5 +209,11 @@ impl Display for Tag {
             return f.write_str(name);
         }
         f.write_fmt(format_args!("Unknown message tag '{}'", self.0))
+    }
+}
+
+impl Debug for Tag {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
     }
 }

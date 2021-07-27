@@ -4,11 +4,17 @@ use crate::riverdb::config::enums::TlsMode;
 use crate::riverdb::{Error, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use crate::riverdb::server::DangerousCertificateNonverifier;
+use std::path::Path;
+use rustls::{Certificate, PrivateKey};
+use std::io::BufReader;
+use std::fs::File;
 
 #[derive(Deserialize, Default)]
 pub struct PostgresCluster {
     pub servers: Vec<Postgres>,
     /// default values used to replace any empty/omitted value for each Postgres config struct
+    #[serde(default)]
     pub default: Postgres,
     /// port to listen on for PostgreSQL connections: default 5432
     #[serde(default = "default_port")]
@@ -38,6 +44,9 @@ pub struct PostgresCluster {
     /// client_tls TLS preference between clients and River DB, defaults to disabled
     #[serde(default)]
     pub client_tls: TlsMode,
+    /// backend_tls TLS preference between River DB and PostgreSQL, defaults to disabled
+    #[serde(default)]
+    pub backend_tls: TlsMode,
     /// tls_client_certificate is the client authentication certificate sent from River DB to Postgres
     /// The value can be the inlined certificate, or a file path from which to load it.
     #[serde(default)]
@@ -58,6 +67,10 @@ pub struct PostgresCluster {
     /// The value can be the inlined key, or a file path from which to load it.
     #[serde(default)]
     pub tls_server_key: String,
+    #[serde(skip)]
+    pub tls_config: Option<Arc<rustls::ServerConfig>>,
+    #[serde(skip)]
+    pub backend_tls_config: Option<Arc<rustls::ClientConfig>>,
 }
 
 const fn default_port() -> u16 { 5432 }
@@ -65,10 +78,6 @@ const fn default_max_connections() -> u32 { 10000 }
 
 #[derive(Deserialize, Default)]
 pub struct Postgres {
-    #[serde(skip)]
-    pub address: Option<SocketAddr>,
-    #[serde(skip)]
-    pub tls_config: Option<Arc<rustls::ClientConfig>>,
     /// database to connect to
     pub database: String,
     /// host to connect to, defaults to localhost
@@ -84,9 +93,6 @@ pub struct Postgres {
     /// tls_host is the hostname expected in the server's certificate, if different from host.
     #[serde(default)]
     pub tls_host: String,
-    /// backend_tls TLS preference between River DB and PostgreSQL, defaults to disabled
-    #[serde(default)]
-    pub backend_tls: TlsMode,
     /// Port to connect to, defaults to 5432
     #[serde(default = "default_port")]
     pub port: u16,
@@ -104,6 +110,10 @@ pub struct Postgres {
     pub idle_timeout_seconds: u32,
     /// replicas are other Postgres servers that host read-only replicas of this database
     pub replicas: Vec<Postgres>,
+    #[serde(skip)]
+    pub address: Option<SocketAddr>,
+    #[serde(skip)]
+    pub cluster: Option<&'static PostgresCluster>,
 }
 
 fn default_host() -> String { "localhost".to_string() }
@@ -113,35 +123,112 @@ const fn default_idle_timeout_seconds() -> u32 { 30 * 60 }
 
 impl PostgresCluster {
     pub(crate) fn load(&mut self) -> Result<()> {
+        match self.client_tls {
+            TlsMode::Invalid => {
+                self.client_tls = TlsMode::Disabled;
+            },
+            TlsMode::Disabled => (),
+            _ => {
+                let b = rustls::server_config_builder_with_safe_defaults();
+                let b = if let TlsMode::DangerouslyUnverifiedCertificates = self.client_tls {
+                    b.with_client_cert_verifier(DangerousCertificateNonverifier::new())
+                } else {
+                    b.with_no_client_auth()
+                }; // TODO add client certificate verification
+
+                let server_certs = Path::new(self.tls_server_certificate.as_str());
+                let server_key = Path::new(self.tls_server_key.as_str());
+
+                if !server_certs.exists() {
+                    return Err(Error::new("tls_server_certificate does not exist"));
+                }
+
+                if !server_key.exists() {
+                    return Err(Error::new("tls_server_key does not exist"));
+                }
+
+                let mut r = BufReader::new(File::open(server_key)?);
+                let certs: Vec<Certificate> = rustls_pemfile::certs(&mut r)?
+                    .into_iter()
+                    .map(|cert| Certificate(cert))
+                    .collect();
+
+                if certs.is_empty() {
+                    return Err(Error::new("tls_server_certificate file does not contain any certificates"));
+                }
+
+                let mut r = BufReader::new(File::open(server_key)?);
+                let mut keys = rustls_pemfile::rsa_private_keys(&mut r)?;
+                if keys.is_empty() {
+                    return Err(Error::new("tls_server_key file does not contain any keys"));
+                }
+                let key = PrivateKey(keys.pop().unwrap());
+
+                self.tls_config = Some(Arc::new(b.with_single_cert(certs, key)?));
+            }
+        }
+
+        match self.backend_tls {
+            TlsMode::Invalid => {
+                self.backend_tls = TlsMode::Disabled;
+            },
+            TlsMode::Disabled => (),
+            _ => {
+                let b = rustls::client_config_builder_with_safe_defaults();
+                let backend_config = if let TlsMode::DangerouslyUnverifiedCertificates = self.backend_tls {
+                    b.with_custom_certificate_verifier(DangerousCertificateNonverifier::new())
+                        .with_no_client_auth()
+                } else {
+                    let mut root_store = rustls::RootCertStore::empty();
+                    root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0);
+
+                    if !self.tls_root_certificate.is_empty() {
+                        let root_cert_path = Path::new(self.tls_root_certificate.as_str());
+                        if !root_cert_path.exists() {
+                            return Err(Error::new("tls_root_certificate does not exist"));
+                        }
+
+                        let mut r = BufReader::new(File::open(root_cert_path)?);
+                        let certs = rustls_pemfile::certs(&mut r)?;
+                        root_store.add_parsable_certificates(certs.as_slice());
+                    }
+
+                    let b = b.with_root_certificates(root_store, &[]);
+                    b.with_no_client_auth() // TODO add client certificate if configured
+                };
+
+                self.backend_tls_config = Some(Arc::new(backend_config));
+            }
+        }
+
+        let self_ptr = self as *mut PostgresCluster as *const PostgresCluster;
         for server in &mut self.servers {
-            if let Err(e) = server.load(&self.default, true) {
+            if let Err(e) = server.load(self_ptr, &self.default, true) {
                 return Err(e);
             }
         }
+
         Ok(())
     }
 }
 
 impl Postgres {
-    pub(crate) fn load(&mut self, defaults: &Postgres, is_master: bool) -> Result<()> {
+    pub(crate) fn load(&mut self, cluster: *const PostgresCluster, defaults: &Postgres, is_master: bool) -> Result<()> {
         self.is_master = is_master;
-        if self.database == "" {
+        if self.database.is_empty() {
             self.database = defaults.database.clone();
         }
-        if self.host == "" {
+        if self.host.is_empty() {
             self.host = defaults.host.clone();
         }
-        if self.user == "" {
+        if self.tls_host.is_empty() {
+            self.tls_host = self.host.clone();
+        }
+        if self.user.is_empty() {
             self.user = defaults.user.clone();
         }
         if self.port == 0 {
             self.port = defaults.port;
-        }
-        if let TlsMode::Invalid = self.backend_tls {
-            self.backend_tls = defaults.backend_tls;
-            if let TlsMode::Invalid = self.backend_tls {
-                self.backend_tls = TlsMode::Disabled;
-            }
         }
         if self.max_connections == 0 {
             self.max_connections = defaults.max_connections;
@@ -158,16 +245,12 @@ impl Postgres {
 
         self.address = Some(to_address(&self.host, self.port)?);
 
-        let mut root_store = rustls::RootCertStore::empty();
-        root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0);
-        // TODO add additional certificates if configured
-
-        self.tls_config = Some(Arc::new(rustls::client_config_builder_with_safe_defaults()
-            .with_root_certificates(root_store, &[])
-            .with_no_client_auth())); // TODO add a client certificate if configured
-
+        // Safety: we're using a raw pointer here to get around a limitation in rusts borrow checker
+        // the caller holds a &mut PostgresCluster, so having a &PostgresCluster here doesn't work
+        // (even though we don't use it until after the caller returns.)
+        self.cluster = Some(unsafe { &*cluster });
         for replica in &mut self.replicas {
-            if let Err(e) = replica.load(defaults, false) {
+            if let Err(e) = replica.load(cluster, defaults, false) {
                 return Err(e);
             }
         }

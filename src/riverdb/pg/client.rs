@@ -14,7 +14,7 @@ use rustls::{ClientConnection};
 use crate::define_event;
 use crate::riverdb::{Error, Result, common};
 use crate::riverdb::worker::{Worker};
-use crate::riverdb::pg::protocol::{Message, MessageParser, ServerParams};
+use crate::riverdb::pg::protocol::{Message, MessageReader, MessageParser, ServerParams, Tag, PROTOCOL_VERSION, SSL_REQUEST};
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection};
 use crate::riverdb::server::Transport;
 use crate::riverdb::server;
@@ -23,6 +23,7 @@ use crate::riverdb::pg::connection::{read_and_flush_backlog, Backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::common::{AtomicCell, AtomicArc};
+use crate::riverdb::config::{conf, TlsMode};
 
 
 pub struct ClientConn {
@@ -35,7 +36,6 @@ pub struct ClientConn {
     has_send_backlog: AtomicBool,
     state: ClientConnState,
     backend: AtomicArc<BackendConn>,
-    pool: AtomicCell<Option<&'static ConnectionPool>>,
     send_backlog: Backlog,
     salt: u32,
 }
@@ -88,6 +88,33 @@ impl ClientConn {
         self.backend.store(backend);
     }
 
+    async fn startup(&self, msg: Message) -> Result<()> {
+        assert_eq!(msg.tag(), Tag::UNTAGGED); // was previously checked by msg_is_allowed
+        let r = MessageReader::new(&msg);
+        let protocol_version = r.read_i32();
+        match protocol_version {
+            PROTOCOL_VERSION => self.send_auth_challenge().await,
+            SSL_REQUEST => self.ssl_handshake().await,
+            _ => Err(Error::new(format!("{:?}: unsupported protocol {}", self, protocol_version)))
+        }
+    }
+
+    async fn ssl_handshake(&self) -> Result<()> {
+        let tls_mode = conf().postgres.client_tls;
+        match tls_mode {
+            TlsMode::Disabled | TlsMode::Invalid => Ok(()),
+            _ => {
+                self.state.transition(self, ClientState::SSLHandshake)?;
+                let tls_config = conf().postgres.tls_config.clone().unwrap();
+                self.transport.upgrade_server(tls_config, tls_mode).await
+            }
+        }
+    }
+
+    async fn send_auth_challenge(&self) -> Result<()> {
+        self.state.transition(self, ClientState::Authentication)
+    }
+
     pub async fn client_connected(&self, _: &mut client_connected::Event, params: &ServerParams) -> Result<&'static PostgresCluster> {
         if let Some(encoding) = params.get("client_encoding") {
             if encoding.to_ascii_uppercase() != "UTF8" {
@@ -98,7 +125,14 @@ impl ClientConn {
     }
 
     pub async fn client_message(&self, _: &mut client_message::Event, msg: Message) -> Result<()> {
-        unimplemented!();
+        match self.state.get() {
+            ClientState::StateInitial => {
+                self.startup(msg).await
+            },
+            _ => {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -111,7 +145,6 @@ impl server::Connection for ClientConn {
             has_send_backlog: Default::default(),
             state: Default::default(),
             backend: Default::default(),
-            pool: Default::default(),
             send_backlog: Mutex::new(VecDeque::new()),
             salt: Worker::get().rand32()
         }

@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn, instrument};
 use bytes::Bytes;
 
 use crate::define_event;
-use crate::riverdb::{Error, Result};
+use crate::riverdb::{config, Error, Result};
 use crate::riverdb::config::TlsMode;
 use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool};
 use crate::riverdb::server::{Transport};
@@ -79,12 +79,13 @@ impl BackendConn {
     }
 
     async fn start(&self, pool: &'static ConnectionPool) -> Result<()> {
+        let cluster = pool.config.cluster.unwrap();
         self.pool.store(Some(pool));
 
-        match pool.config.backend_tls {
+        match cluster.backend_tls {
             TlsMode::Disabled | TlsMode::Invalid => (),
             _ => {
-                self.ssl_handshake(pool).await?;
+                self.ssl_handshake(pool, cluster).await?;
             }
         }
 
@@ -96,10 +97,9 @@ impl BackendConn {
         return backend_connected::run(self, &mut params).await;
     }
 
-    pub async fn ssl_handshake(&self, pool: &'static ConnectionPool) -> Result<()> {
-        let mut mb = MessageBuilder::new(Tag::UNTAGGED);
-        mb.write_i32(SSL_REQUEST);
-        let ssl_request = mb.finish();
+    pub async fn ssl_handshake(&self, pool: &'static ConnectionPool, cluster: &'static config::PostgresCluster) -> Result<()> {
+        const SSL_REQUEST_MSG: &[u8] = &[0, 0, 0, 8, 4, 210, 22, 47];
+        let ssl_request = Message::new(Bytes::from_static(SSL_REQUEST_MSG));
 
         self.state.transition(self, BackendState::SSLHandshake)?;
         backend_send_message::run(self, ssl_request).await?;
@@ -109,8 +109,9 @@ impl BackendConn {
         let n = self.transport.try_read(&mut buf[..])?;
         if n == 1 {
             if buf[0] == SSL_ALLOWED {
-                self.transport.upgrade_client(pool.config.tls_config.clone().unwrap(), pool.config.backend_tls, pool.config.host.as_str()).await
-            } else if let TlsMode::Prefer = pool.config.backend_tls {
+                let tls_config = cluster.backend_tls_config.clone().unwrap();
+                self.transport.upgrade_client(tls_config, cluster.backend_tls, pool.config.tls_host.as_str()).await
+            } else if let TlsMode::Prefer = cluster.backend_tls {
                 Err(Error::new(format!("{} does not support TLS", pool.config.address.as_ref().unwrap())))
             } else {
                 Ok(())
