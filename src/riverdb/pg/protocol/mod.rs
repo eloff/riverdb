@@ -9,7 +9,7 @@ pub mod error_codes;
 mod message_error_builder;
 mod server_params;
 
-pub use self::tag::Tag;
+pub use self::tag::*;
 pub use self::message::Message;
 pub use self::message_reader::MessageReader;
 pub use self::message_parser::MessageParser;

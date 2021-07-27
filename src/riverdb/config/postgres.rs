@@ -3,6 +3,7 @@ use serde::{Deserialize};
 use crate::riverdb::config::enums::TlsMode;
 use crate::riverdb::{Error, Result};
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 #[derive(Deserialize, Default)]
 pub struct PostgresCluster {
@@ -64,8 +65,10 @@ const fn default_max_connections() -> u32 { 10000 }
 
 #[derive(Deserialize, Default)]
 pub struct Postgres {
-    #[serde(default)]
+    #[serde(skip)]
     pub address: Option<SocketAddr>,
+    #[serde(skip)]
+    pub tls_config: Option<Arc<rustls::ClientConfig>>,
     /// database to connect to
     pub database: String,
     /// host to connect to, defaults to localhost
@@ -154,6 +157,14 @@ impl Postgres {
         }
 
         self.address = Some(to_address(&self.host, self.port)?);
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0);
+        // TODO add additional certificates if configured
+
+        self.tls_config = Some(Arc::new(rustls::client_config_builder_with_safe_defaults()
+            .with_root_certificates(root_store, &[])
+            .with_no_client_auth())); // TODO add a client certificate if configured
 
         for replica in &mut self.replicas {
             if let Err(e) = replica.load(defaults, false) {

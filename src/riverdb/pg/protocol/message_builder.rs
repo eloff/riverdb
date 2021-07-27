@@ -1,6 +1,6 @@
 use bytes::{BytesMut, Buf, BufMut};
 
-use crate::riverdb::pg::protocol::{Tag, Message};
+use crate::riverdb::pg::protocol::{Tag, Message, ServerParams};
 use crate::riverdb::pg::protocol::message_parser::MIN_MESSAGE_LEN;
 use crate::riverdb::common::bytes_to_slice_mut;
 
@@ -51,7 +51,9 @@ impl MessageBuilder {
             self.complete_message();
             self.start = len;
         }
-        self.data.put_u8(tag.as_u8());
+        if tag != Tag::UNTAGGED {
+            self.data.put_u8(tag.as_u8());
+        }
         self.data.put_i32(0);
     }
 
@@ -92,5 +94,12 @@ impl MessageBuilder {
 
     pub fn write_i32(&mut self, i: i32) {
         self.data.put_i32(i);
+    }
+
+    pub fn write_params(&mut self, params: &ServerParams) {
+        for (k, v) in params.iter() {
+            self.write_str(k);
+            self.write_str(v);
+        }
     }
 }

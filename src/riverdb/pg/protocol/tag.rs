@@ -5,6 +5,7 @@ use crate::riverdb::{Error, Result};
 pub const SSL_ALLOWED: u8 = 'S' as u8;
 pub const SSL_NOT_ALLOWED: u8 = 'N' as u8;
 pub const SSL_REQUEST: i32 = 80877103;
+pub const PROTOCOL_VERSION: i32 = 196608;
 
 // Tag defines the Postgres protocol message type tag bytes
 #[derive(Copy, Clone, Eq, PartialEq)]

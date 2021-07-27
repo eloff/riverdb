@@ -1,22 +1,25 @@
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::sync::atomic::{AtomicU32, AtomicBool, AtomicPtr};
+use std::sync::atomic::{AtomicU32, AtomicBool, AtomicPtr, AtomicI32};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 
+use chrono::{Local, DateTime};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn, instrument};
 use bytes::Bytes;
 
 use crate::define_event;
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::{BackendConnState, ClientConn, Connection};
+use crate::riverdb::config::TlsMode;
+use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool};
 use crate::riverdb::server::{Transport};
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
-use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now};
-use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message};
+use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now, AtomicRef};
+use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION};
+use tokio::io::Interest;
 
 
 pub struct BackendConn {
@@ -30,14 +33,20 @@ pub struct BackendConn {
     state: BackendConnState,
     client: AtomicArc<ClientConn>,
     send_backlog: Backlog,
+    pool: AtomicRef<'static, ConnectionPool>,
     server_params: Mutex<ServerParams>,
+    pid: AtomicI32,
+    secret: AtomicI32,
+    created_at: DateTime<Local>,
 }
 
 impl BackendConn {
     #[instrument]
-    pub async fn run(&self) -> Result<()> {
+    pub async fn run(&self, pool: &'static ConnectionPool) -> Result<()> {
         // XXX: This code is very similar to ClientConn::run.
         // If you change this, you probably need to change that too.
+
+        self.start(pool).await?;
 
         let mut parser = MessageParser::new();
         let mut client: Option<Arc<ClientConn>> = None; // keep
@@ -51,7 +60,7 @@ impl BackendConn {
                     return Err(Error::new(format!("unexpected message {} for state {:?}", tag, self.state)));
                 }
 
-                backend_message::run(self, msg).await?;
+                backend_message::run(self, client.as_ref(), msg).await?;
             } else {
                 // We don't want to clone the Arc everytime, so we clone() it once calling self.get_client()
                 // And then we cache that Arc, checking that it's still the current client with self.has_client()
@@ -66,6 +75,48 @@ impl BackendConn {
                     client.as_ref().map(|arc| arc.as_ref()),
                 ).await?;
             }
+        }
+    }
+
+    async fn start(&self, pool: &'static ConnectionPool) -> Result<()> {
+        self.pool.store(Some(pool));
+
+        match pool.config.backend_tls {
+            TlsMode::Disabled | TlsMode::Invalid => (),
+            _ => {
+                self.ssl_handshake(pool).await?;
+            }
+        }
+
+        let mut params = ServerParams::default();
+        params.add("database", &pool.config.database);
+        params.add("user", &pool.config.user);
+        params.add("client_encoding", "UTF8");
+
+        return backend_connected::run(self, &mut params).await;
+    }
+
+    pub async fn ssl_handshake(&self, pool: &'static ConnectionPool) -> Result<()> {
+        let mut mb = MessageBuilder::new(Tag::UNTAGGED);
+        mb.write_i32(SSL_REQUEST);
+        let ssl_request = mb.finish();
+
+        self.state.transition(self, BackendState::SSLHandshake)?;
+        backend_send_message::run(self, ssl_request).await?;
+
+        self.transport.ready(Interest::READABLE).await?;
+        let mut buf: [u8; 1] = [0];
+        let n = self.transport.try_read(&mut buf[..])?;
+        if n == 1 {
+            if buf[0] == SSL_ALLOWED {
+                self.transport.upgrade_client(pool.config.tls_config.clone().unwrap(), pool.config.backend_tls, pool.config.host.as_str()).await
+            } else if let TlsMode::Prefer = pool.config.backend_tls {
+                Err(Error::new(format!("{} does not support TLS", pool.config.address.as_ref().unwrap())))
+            } else {
+                Ok(())
+            }
+        } else {
+            unreachable!(); // readable, but not a single byte could be read? Not possible.
         }
     }
 
@@ -113,8 +164,33 @@ impl BackendConn {
         self.server_params.lock().unwrap()
     }
 
-    pub async fn backend_message(&self, _: &mut backend_message::Event, msg: Message) -> Result<()> {
-        unimplemented!();
+    pub async fn backend_connected(&self, _: &mut backend_connected::Event, params: &mut ServerParams) -> Result<()> {
+        let mut mb = MessageBuilder::new(Tag::UNTAGGED);
+        mb.write_i32(PROTOCOL_VERSION);
+        mb.write_params(params);
+        let startup_msg = mb.finish();
+
+        backend_send_message::run(self, startup_msg).await
+    }
+
+    pub async fn backend_message(&self, _: &mut backend_message::Event, client: Option<&Arc<ClientConn>>, msg: Message) -> Result<()> {
+        match self.state.get() {
+            BackendState::StateInitial | BackendState::SSLHandshake => {},
+            BackendState::Authentication => {},
+            BackendState::Startup => {},
+            BackendState::InPool => {},
+            _ => {
+                // Forward the message to the client, if there is one
+                if let Some(client) = client {
+                    return client.write_or_buffer(msg.into_bytes());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn backend_send_message(&self, _: &mut backend_send_message::Event, msg: Message) -> Result<()> {
+        self.write_or_buffer(msg.into_bytes())
     }
 }
 
@@ -129,7 +205,11 @@ impl server::Connection for BackendConn {
             state: Default::default(),
             client: Default::default(),
             send_backlog: Mutex::new(Default::default()),
+            pool: AtomicRef::default(),
             server_params: Mutex::new(ServerParams::default()),
+            pid: Default::default(),
+            secret: Default::default(),
+            created_at: Local::now(),
         }
     }
 
@@ -185,6 +265,13 @@ impl Debug for BackendConn {
     }
 }
 
+/// backend_connected is called when a new backend session is being established.
+///     backend: &BackendConn : the event source handling the backend connection
+///     params: &ServerParams : key-value pairs that will be passed to the connected backend in the startup message (including database and user)
+/// BackendConn::backend_connected is called by default and sends ServerParams in the startup message.
+/// If it returns an error, the associated session is terminated.
+define_event!(backend_connected, (backend: &'a BackendConn, params: &'a mut ServerParams) -> Result<()>);
+
 /// backend_message is called when a Postgres protocol.Message is received in a backend db connection.
 ///     backend: &BackendConn : the event source handling the client connection
 ///     msg: protocol.Message is the received protocol.Message
@@ -194,4 +281,14 @@ impl Debug for BackendConn {
 /// BackendConn::backend_message is called by default and does further processing on the Message,
 /// including potentially forwarding it to associated client session. Symmetric with client_message.
 /// If it returns an error, the associated session is terminated.
-define_event!(backend_message, (backend: &'a BackendConn, msg: Message) -> Result<()>);
+define_event!(backend_message, (backend: &'a BackendConn, client: Option<&'a Arc<ClientConn>>, msg: Message) -> Result<()>);
+
+/// backend_send_message is called to send a Message to a backend db connection.
+///     backend: &BackendConn : the event source handling the client connection
+///     msg: protocol.Message is the protocol.Message to send
+/// You can replace msg by creating and passing a new Message object to ev.next(...)
+/// It's also possible to replace a single Message with many by calling ev.next() for each.
+/// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
+/// BackendConn::backend_send_message is called by default and sends the Message to the db server.
+/// If it returns an error, the associated session is terminated.
+define_event!(backend_send_message, (backend: &'a BackendConn, msg: Message) -> Result<()>);

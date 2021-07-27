@@ -14,7 +14,7 @@ use crate::riverdb::server;
 use crate::riverdb::server::Transport;
 use crate::riverdb::{Error, Result};
 use crate::riverdb::common::bytes_to_slice_mut;
-use crate::riverdb::pg::{BackendConn, ClientConn};
+use crate::riverdb::pg::{BackendConn, ClientConn, ConnectionPool};
 
 
 pub type Backlog = Mutex<VecDeque<Bytes>>;
@@ -29,7 +29,7 @@ pub trait Connection: server::Connection {
     /// write_or_buffer writes all the bytes in buf to sender without blocking or buffers it
     /// (without copying) to send later. Takes ownership of buf in all cases.
     fn write_or_buffer(&self, mut buf: Bytes) -> Result<()> {
-        // We always have to acquire the mutex, otherwise, even if the backlog appears empty,
+        // We always have to acquire the mutex, even if the backlog appears empty, otherwise
         // we can't be certain another thread won't try to write the backlog and overlap write()
         // calls with us here. Essentially the backlog mutex must always be held when writing
         // so that the logical writes are atomic and ordered correctly.

@@ -23,7 +23,7 @@ impl ServerParams {
         Self{params, buffer: None}
     }
 
-    fn add(&mut self, k: &str, v: &str) {
+    pub fn add(&mut self, k: &str, v: &str) {
         let space_needed = k.len() + v.len() + 2;
         if self.buffer.is_none() || self.buffer.as_mut().unwrap().remaining_mut() < space_needed {
             self.buffer = Some(BytesMut::with_capacity(space_needed * 12));

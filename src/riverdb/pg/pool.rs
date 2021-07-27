@@ -31,7 +31,7 @@ use std::fmt::{Debug, Formatter};
 // shared global queue as-in the tokio algorithm.
 
 pub struct ConnectionPool {
-    config: &'static Postgres,
+    pub config: &'static Postgres,
     connections: &'static Connections<BackendConn>,
     active_transactions: AtomicI32,
     max_transactions: i32,
@@ -72,7 +72,7 @@ impl ConnectionPool {
                     // Which can happen asynchronously, and need to be handled (if only by dropping them)
                     // even if the connection is idle in the pool.
                     tokio::spawn(async move {
-                        conn_ref.run().await;
+                        conn_ref.run(self).await;
                         self.remove(ConnectionRef::arc_ref(&conn_ref));
                     });
 
