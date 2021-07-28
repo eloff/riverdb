@@ -14,7 +14,7 @@ use rustls::{ClientConnection};
 use crate::define_event;
 use crate::riverdb::{Error, Result, common};
 use crate::riverdb::worker::{Worker};
-use crate::riverdb::pg::protocol::{Message, MessageReader, MessageParser, ServerParams, Tag, PROTOCOL_VERSION, SSL_REQUEST};
+use crate::riverdb::pg::protocol::{Message, MessageReader, MessageParser, ServerParams, Tag, PROTOCOL_VERSION, SSL_REQUEST, AuthType, MessageBuilder};
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection};
 use crate::riverdb::server::Transport;
 use crate::riverdb::server;
@@ -24,6 +24,7 @@ use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
 use crate::riverdb::config::{conf, TlsMode};
+use std::cell::UnsafeCell;
 
 
 pub struct ClientConn {
@@ -33,12 +34,14 @@ pub struct ClientConn {
     id: AtomicU32,
     /// last-active is a course-grained monotonic clock that is advanced when data is received from the client
     last_active: AtomicU32,
+    auth_type: AtomicCell<AuthType>,
     has_send_backlog: AtomicBool,
     state: ClientConnState,
     backend: AtomicArc<BackendConn>,
     send_backlog: Backlog,
-    cluster: AtomicRef<'static, PostgresCluster>,
-    salt: u32,
+    db_cluster: AtomicRef<'static, PostgresCluster>,
+    connect_params: UnsafeCell<ServerParams>,
+    salt: i32,
 }
 
 impl ClientConn {
@@ -89,6 +92,23 @@ impl ClientConn {
         self.backend.store(backend);
     }
 
+    pub fn cluster(&self) -> Option<&'static PostgresCluster> {
+        self.db_cluster.load()
+    }
+
+    pub fn connection_params(&self) -> &ServerParams {
+        match self.state.get() {
+            ClientState::StateInitial | ClientState::SSLHandshake => {
+                panic!("can only access connection_params once in the Authentication or later states");
+            },
+            _ => (),
+        }
+        // Safety: we don't allow accessing params (we panic) if ClientState < ClientState::Authentication
+        unsafe {
+            &*self.connect_params.get()
+        }
+    }
+
     #[instrument]
     async fn startup(&self, msg: Message) -> Result<()> {
         assert_eq!(msg.tag(), Tag::UNTAGGED); // was previously checked by msg_is_allowed
@@ -96,11 +116,10 @@ impl ClientConn {
         let protocol_version = r.read_i32();
         match protocol_version {
             PROTOCOL_VERSION => {
-                let mut params = ServerParams::from_startup_message(&msg)?;
+                let mut params= ServerParams::from_startup_message(&msg)?;
                 let cluster = client_connected::run(self, &mut params).await?;
-                self.cluster.store(Some(cluster));
-
-                self.send_auth_challenge().await
+                self.db_cluster.store(Some(cluster));
+                Ok(())
             },
             SSL_REQUEST => self.ssl_handshake().await,
             _ => Err(Error::new(format!("{:?}: unsupported protocol {}", self, protocol_version)))
@@ -121,24 +140,46 @@ impl ClientConn {
     }
 
     #[instrument]
-    async fn send_auth_challenge(&self) -> Result<()> {
+    pub async fn auth_challenge(&self, _: &mut auth_challenge::Event, params: ServerParams) -> Result<AuthType> {
         let auth_type = if self.is_tls() {
-
+            AuthType::ClearText
         } else {
-
+            AuthType::MD5
         };
 
-        self.state.transition(self, ClientState::Authentication)
+        // Safety: we don't allow accessing params (we panic) if ClientState < ClientState::Authentication
+        unsafe {
+            *self.connect_params.get() = params
+        };
+        self.state.transition(self, ClientState::Authentication)?;
+
+        let mut mb = MessageBuilder::new(Tag::AUTHENTICATION_OK);
+        mb.write_i32(auth_type.as_u8() as i32);
+        if let AuthType::MD5 = auth_type {
+            mb.write_i32(self.salt);
+        }
+        self.write_or_buffer(mb.finish().into_bytes())?;
+
+        Ok(auth_type)
     }
 
     #[instrument]
-    pub async fn client_connected(&self, _: &mut client_connected::Event, params: &mut ServerParams) -> Result<&'static PostgresCluster> {
+    pub async fn authenticate(&self, _: &mut authenticate::Event, auth_type: AuthType, msg: Message) -> Result<()> {
+        todo!();
+    }
+
+    #[instrument]
+    pub async fn client_connected(&self, _: &mut client_connected::Event, params: ServerParams) -> Result<&'static PostgresCluster> {
         if let Some(encoding) = params.get("client_encoding") {
             let enc = encoding.to_ascii_uppercase();
             if enc != "UTF8" && enc != "UTF-8" {
                 error!(encoding, "client_encoding must be set to UTF8");
             }
         }
+
+        let auth_type = auth_challenge::run(self, params).await?;
+        self.auth_type.store(auth_type);
+
         Ok(PostgresCluster::singleton())
     }
 
@@ -161,12 +202,13 @@ impl server::Connection for ClientConn {
             transport: Transport::new(stream),
             id: Default::default(),
             last_active: Default::default(),
+            auth_type: AtomicCell::default(),
             has_send_backlog: Default::default(),
             state: Default::default(),
             backend: Default::default(),
             send_backlog: Mutex::new(VecDeque::new()),
-            cluster: AtomicRef::default(),
-            salt: Worker::get().rand32()
+            db_cluster: AtomicRef::default(),
+            salt: Worker::get().rand32() as i32
         }
     }
 
@@ -223,6 +265,9 @@ impl Debug for ClientConn {
     }
 }
 
+// Safety: we use an UnsafeCell, but access is controlled safely, see connection_params method for details.
+unsafe impl Sync for ClientConn {}
+
 /// client_connected is called when a new client session is being established.
 ///     client: &ClientConn : the event source handling the client connection
 ///     params: &ServerParams : key-value pairs passed by the connected client in the startup message (including database and user)
@@ -241,3 +286,7 @@ define_event!(client_connected, (client: &'a ClientConn, params: &'a mut ServerP
 /// including potentially calling the higher-level client_query. Symmetric with backend_message.
 /// If it returns an error, the associated session is terminated.
 define_event!(client_message, (client: &'a ClientConn, msg: Message) -> Result<()>);
+
+define_event!(auth_challenge, (client: &'a ClientConn, params: &mut ServerParams) -> Result<AuthType>);
+
+define_event!(authenticate, (client: &'a ClientConn, auth_type: AuthType, msg: Message) -> Result<()>);

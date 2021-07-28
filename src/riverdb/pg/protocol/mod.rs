@@ -20,3 +20,5 @@ pub use self::message_error_builder::MessageErrorBuilder;
 pub use self::errors::{ErrorFieldTag, ErrorSeverity};
 pub use self::message_error::PostgresError;
 pub use self::server_params::ServerParams;
+pub use self::auth_type::AuthType;
+pub use self::auth_md5::hash_md5_password;

@@ -19,3 +19,9 @@ impl AuthType {
         unsafe { std::mem::transmute(*self) }
     }
 }
+
+impl Default for AuthType {
+    fn default() -> Self {
+        AuthType::Ok
+    }
+}

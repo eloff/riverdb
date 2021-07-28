@@ -19,9 +19,14 @@ impl ServerParams {
 
     pub fn from_startup_message(msg: &Message) -> Result<Self> {
         assert_eq!(msg.tag(), Tag::UNTAGGED);
-        let mut params = Vec::new();
         let mut start = msg.body_start() + 4;
-        let r = MessageReader::new_at(msg, start);
+        let mut buffer = BytesMut::from(&msg.as_slice()[start as usize..]);
+
+        let msg = Message(buffer.split().freeze());
+        let r = MessageReader::new_at(&msg, 0);
+
+        let mut params = Vec::new();
+        start = 0;
         while start < r.len() {
             r.read_str()?;
             r.read_str()?;
@@ -29,9 +34,10 @@ impl ServerParams {
             params.push(r.slice(start, end));
             start = end;
         }
+
         Ok(Self{
             params,
-            buffer: None,
+            buffer: Some(buffer),
         })
     }
 
