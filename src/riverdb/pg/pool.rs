@@ -152,8 +152,9 @@ impl ConnectionPool {
 }
 
 // Safety: although ConnectionPool contains a reference, it's a shared thread-safe 'static reference.
-// It is safe to send a ConnectionPool between threads.
+// It is safe to send and share a ConnectionPool between threads.
 unsafe impl Send for ConnectionPool {}
+unsafe impl Sync for ConnectionPool {}
 
 impl Debug for ConnectionPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

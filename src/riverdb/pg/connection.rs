@@ -26,6 +26,10 @@ pub trait Connection: server::Connection {
     fn transport(&self) -> &Transport;
     fn is_closed(&self) -> bool;
 
+    fn is_tls(&self) -> bool {
+        self.transport().is_tls()
+    }
+
     /// write_or_buffer writes all the bytes in buf to sender without blocking or buffers it
     /// (without copying) to send later. Takes ownership of buf in all cases.
     fn write_or_buffer(&self, mut buf: Bytes) -> Result<()> {

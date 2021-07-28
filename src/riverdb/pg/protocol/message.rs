@@ -52,6 +52,10 @@ impl Message {
         self.0.chunk()
     }
 
+    pub fn bytes(&self) -> &Bytes {
+        &self.0
+    }
+
     /// into_bytes consumes Message and returns the underlying Bytes buffer
     pub fn into_bytes(self) -> Bytes {
         self.0

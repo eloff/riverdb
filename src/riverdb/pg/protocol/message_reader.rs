@@ -1,7 +1,8 @@
 use std::convert::TryInto;
 use std::cell::Cell;
 use std::mem::{swap, ManuallyDrop, transmute_copy};
-use std::io::Bytes;
+
+use bytes::Bytes;
 
 use crate::riverdb::pg::protocol::{Message, Tag};
 use crate::riverdb::{Error, Result};
@@ -34,6 +35,10 @@ impl<'a> MessageReader<'a> {
 
     pub fn len(&self) -> u32 {
         self.msg.len()
+    }
+
+    pub fn slice(&self, start: u32, end: u32) -> Bytes {
+        self.msg.bytes().slice(start as usize .. end as usize)
     }
 
     /// error returns an Error if has_error() is true

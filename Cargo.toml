@@ -19,6 +19,7 @@ rustls-pemfile = "0.2.1"
 webpki-roots = "0.22.0"
 futures = "0.3.15"
 fnv = "1.0.7"
+rust-crypto = "0.2.36"
 chrono = { version = "0.4.19", features = ["serde"] }
 serde = { version = "1.0.125", features = ["derive"] }
 serde_yaml = { version = "0.8.17" }
@@ -34,3 +35,4 @@ regex = "1.5.4"
 ctor = "0.1.20"
 gensym = "0.1.0"
 nanorand = { version = "0.6.0", features = ["std", "wyrand"] }
+hex = "0.4.3"

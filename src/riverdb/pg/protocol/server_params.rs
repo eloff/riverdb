@@ -1,10 +1,10 @@
-use std::fmt::Write;
+use std::fmt::{Write, Debug, Formatter};
 use std::mem::{ManuallyDrop, transmute_copy};
 
 use bytes::{BytesMut, BufMut, Bytes, Buf};
 
-use crate::riverdb::pg::protocol::Message;
-use crate::riverdb::pg::protocol::MessageReader;
+use crate::riverdb::Result;
+use crate::riverdb::pg::protocol::{MessageReader, Message, Tag};
 
 
 pub struct ServerParams {
@@ -13,14 +13,40 @@ pub struct ServerParams {
 }
 
 impl ServerParams {
-    pub fn new<Iter: Iterator<Item=Message>>(params: Iter) -> Self
+    pub const fn new() -> Self {
+        Self{params: Vec::new(), buffer: None}
+    }
+
+    pub fn from_startup_message(msg: &Message) -> Result<Self> {
+        assert_eq!(msg.tag(), Tag::UNTAGGED);
+        let mut params = Vec::new();
+        let mut start = msg.body_start() + 4;
+        let r = MessageReader::new_at(msg, start);
+        while start < r.len() {
+            r.read_str()?;
+            r.read_str()?;
+            let end = r.tell();
+            params.push(r.slice(start, end));
+            start = end;
+        }
+        Ok(Self{
+            params,
+            buffer: None,
+        })
+    }
+
+    pub fn from_parameter_status_messages<Iter: Iterator<Item=Message>>(params: Iter) -> Result<Self>
     {
         let params = params.map(|m| {
+            assert_eq!(m.tag(), Tag::PARAMETER_STATUS);
             let start = m.body_start();
+            let r = MessageReader::new_at(&m, start);
+            r.read_str()?;
+            r.read_str()?;
             let mut buf = m.into_bytes();
-            buf.split_off(start as usize)
-        }).collect();
-        Self{params, buffer: None}
+            Ok(buf.split_off(start as usize))
+        }).collect::<Result<Vec<Bytes>>>()?;
+        Ok(Self{params, buffer: None})
     }
 
     pub fn add(&mut self, k: &str, v: &str) {
@@ -84,7 +110,25 @@ impl Clone for ServerParams {
 
 impl Default for ServerParams {
     fn default() -> Self {
-        Self::new(std::iter::empty())
+        Self::new()
+    }
+}
+
+impl Debug for ServerParams {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_char('{')?;
+        let mut first = true;
+        for (key, val) in self.iter() {
+            if !first {
+                f.write_str(", ");
+            } else {
+                first = true;
+            }
+            f.write_str(key)?;
+            f.write_str(": ")?;
+            f.write_str(val)?;
+        }
+        f.write_char('}')
     }
 }
 

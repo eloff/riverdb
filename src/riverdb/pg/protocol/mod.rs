@@ -8,6 +8,8 @@ mod errors;
 pub mod error_codes;
 mod message_error_builder;
 mod server_params;
+mod auth_type;
+mod auth_md5;
 
 pub use self::tag::*;
 pub use self::message::Message;

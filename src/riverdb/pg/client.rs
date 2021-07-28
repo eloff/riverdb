@@ -22,7 +22,7 @@ use crate::riverdb::pg::{PostgresCluster, ConnectionPool};
 use crate::riverdb::pg::connection::{read_and_flush_backlog, Backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::pg::client_state::ClientState;
-use crate::riverdb::common::{AtomicCell, AtomicArc};
+use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
 use crate::riverdb::config::{conf, TlsMode};
 
 
@@ -37,6 +37,7 @@ pub struct ClientConn {
     state: ClientConnState,
     backend: AtomicArc<BackendConn>,
     send_backlog: Backlog,
+    cluster: AtomicRef<'static, PostgresCluster>,
     salt: u32,
 }
 
@@ -88,17 +89,25 @@ impl ClientConn {
         self.backend.store(backend);
     }
 
+    #[instrument]
     async fn startup(&self, msg: Message) -> Result<()> {
         assert_eq!(msg.tag(), Tag::UNTAGGED); // was previously checked by msg_is_allowed
         let r = MessageReader::new(&msg);
         let protocol_version = r.read_i32();
         match protocol_version {
-            PROTOCOL_VERSION => self.send_auth_challenge().await,
+            PROTOCOL_VERSION => {
+                let mut params = ServerParams::from_startup_message(&msg)?;
+                let cluster = client_connected::run(self, &mut params).await?;
+                self.cluster.store(Some(cluster));
+
+                self.send_auth_challenge().await
+            },
             SSL_REQUEST => self.ssl_handshake().await,
             _ => Err(Error::new(format!("{:?}: unsupported protocol {}", self, protocol_version)))
         }
     }
 
+    #[instrument]
     async fn ssl_handshake(&self) -> Result<()> {
         let tls_mode = conf().postgres.client_tls;
         match tls_mode {
@@ -111,19 +120,29 @@ impl ClientConn {
         }
     }
 
+    #[instrument]
     async fn send_auth_challenge(&self) -> Result<()> {
+        let auth_type = if self.is_tls() {
+
+        } else {
+
+        };
+
         self.state.transition(self, ClientState::Authentication)
     }
 
-    pub async fn client_connected(&self, _: &mut client_connected::Event, params: &ServerParams) -> Result<&'static PostgresCluster> {
+    #[instrument]
+    pub async fn client_connected(&self, _: &mut client_connected::Event, params: &mut ServerParams) -> Result<&'static PostgresCluster> {
         if let Some(encoding) = params.get("client_encoding") {
-            if encoding.to_ascii_uppercase() != "UTF8" {
+            let enc = encoding.to_ascii_uppercase();
+            if enc != "UTF8" && enc != "UTF-8" {
                 error!(encoding, "client_encoding must be set to UTF8");
             }
         }
         Ok(PostgresCluster::singleton())
     }
 
+    #[instrument]
     pub async fn client_message(&self, _: &mut client_message::Event, msg: Message) -> Result<()> {
         match self.state.get() {
             ClientState::StateInitial => {
@@ -146,6 +165,7 @@ impl server::Connection for ClientConn {
             state: Default::default(),
             backend: Default::default(),
             send_backlog: Mutex::new(VecDeque::new()),
+            cluster: AtomicRef::default(),
             salt: Worker::get().rand32()
         }
     }
@@ -209,7 +229,7 @@ impl Debug for ClientConn {
 /// Returns the database cluster where the BackendConn will later be established (usually pool.get_cluster()).
 /// ClientConn::client_connected is called by default and sends the authentication challenge in response.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_connected, (client: &'a ClientConn, params: &'a ServerParams) -> Result<&'static PostgresCluster>);
+define_event!(client_connected, (client: &'a ClientConn, params: &'a mut ServerParams) -> Result<&'static PostgresCluster>);
 
 /// client_message is called when a Postgres protocol.Message is received in a client session.
 ///     client: &ClientConn : the event source handling the client connection

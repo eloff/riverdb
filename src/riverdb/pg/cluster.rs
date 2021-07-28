@@ -74,3 +74,7 @@ impl PostgresCluster {
         unsafe { &*self.startup_params.get() }
     }
 }
+
+// Safety: UnsafeCell<ServerParams> is not Sync, but we use it safely
+// by setting it before accessing it from other threads.
+unsafe impl Sync for PostgresCluster {}
