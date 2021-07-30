@@ -1,3 +1,4 @@
+use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicPtr};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::fmt::{Debug, Formatter};
@@ -24,7 +25,6 @@ use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
 use crate::riverdb::config::{conf, TlsMode};
-use std::cell::UnsafeCell;
 use crate::riverdb::pg::message_stream::MessageStream;
 
 

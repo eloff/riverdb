@@ -6,7 +6,7 @@ use tracing::{debug};
 use crate::riverdb::Result;
 use crate::riverdb::pg::connection::Connection;
 use crate::riverdb::pg::protocol::{Message, MessageParser};
-use crate::pg::connection::read_and_flush_backlog;
+use crate::riverdb::pg::connection::read_and_flush_backlog;
 
 pub struct MessageStream<'a, R: Connection, W: Connection> {
     read_conn: &'a R,

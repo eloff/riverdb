@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicI32, AtomicPtr};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::ops::Deref;
 use std::sync::{Mutex, Arc};
+use std::fmt::{Debug, Formatter};
 
 use tokio::net::TcpStream;
 use tracing::{warn};
@@ -12,9 +13,9 @@ use crate::riverdb::server::{Connections, ConnectionRef, Connection};
 use crate::riverdb::pg::{BackendConn};
 use crate::riverdb::config;
 use crate::riverdb::config::{Postgres, conf};
-use crate::riverdb::common::{coarse_monotonic_now, Version, AtomicCell};
+use crate::riverdb::common::{coarse_monotonic_now, Version, AtomicCell, change_lifetime};
 use crate::riverdb::pg::protocol::ServerParams;
-use std::fmt::{Debug, Formatter};
+
 
 
 // We just use a Mutex and Vec here to implement the pool.
@@ -53,7 +54,7 @@ impl ConnectionPool {
         }
     }
     
-    pub async fn get(&'static self, application_name: &str, role: &str, for_transaction: bool) -> Result<Option<Arc<BackendConn>>> {
+    pub async fn get(&self, application_name: &str, role: &str, for_transaction: bool) -> Result<Option<Arc<BackendConn>>> {
         if for_transaction && self.active_transactions.fetch_add(1, Relaxed) > self.max_transactions {
             let prev = self.active_transactions.fetch_add(-1, Relaxed);
             debug_assert!(prev > 0);
@@ -71,9 +72,12 @@ impl ConnectionPool {
                     // Spawn off conn_ref.run() to handle incoming messages from the database server
                     // Which can happen asynchronously, and need to be handled (if only by dropping them)
                     // even if the connection is idle in the pool.
+
+                    // Safety: self is 'static, but if we mark it as such the compiler throws a fit?!?
+                    let static_self: &'static Self = unsafe { change_lifetime(self) };
                     tokio::spawn(async move {
-                        conn_ref.run(self).await;
-                        self.remove(ConnectionRef::arc_ref(&conn_ref));
+                        conn_ref.run(static_self).await;
+                        static_self.remove(ConnectionRef::arc_ref(&conn_ref));
                     });
 
                     if let IsolationLevel::None = self.default_isolation_level.load() {

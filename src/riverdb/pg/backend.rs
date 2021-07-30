@@ -18,12 +18,10 @@ use crate::riverdb::server::{Transport};
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
-use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now, AtomicRef};
-use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError};
-use crate::pg::protocol::hash_md5_password;
-use crate::config::conf;
-use crate::pg::message_stream::MessageStream;
-use crate::common::change_lifetime;
+use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now, AtomicRef,change_lifetime};
+use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError, hash_md5_password};
+use crate::riverdb::config::conf;
+use crate::riverdb::pg::message_stream::MessageStream;
 
 
 pub struct BackendConn {
@@ -46,11 +44,14 @@ pub struct BackendConn {
 
 impl BackendConn {
     #[instrument]
-    pub async fn run(&self, pool: &'static ConnectionPool) -> Result<()> {
+    pub async fn run(&self, pool: &ConnectionPool) -> Result<()> {
         // XXX: This code is very similar to ClientConn::run.
         // If you change this, you probably need to change that too.
 
-        self.pool.store(Some(pool));
+        // Safety: pool is 'static, but if we mark it as such the compiler throws a fit?!?
+        unsafe {
+            self.pool.store(Some(change_lifetime(pool)));
+        }
         self.start(&pool.config.user, &pool.config.password, pool).await?;
 
         let mut stream = MessageStream::new(self);
@@ -69,9 +70,8 @@ impl BackendConn {
         }
     }
 
-    pub async fn test_auth(&self, user: &str, password: &str, pool: &'static ConnectionPool) -> Result<()> {
+    pub async fn test_auth(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<()> {
         self.start(user, password, pool).await?;
-        // Don't capture this below
 
         debug_assert_eq!(self.state.get(), BackendState::Authentication);
 
@@ -86,15 +86,7 @@ impl BackendConn {
         }
     }
 
-    async fn start(&self, user: &str, password: &str, pool: &'static ConnectionPool) -> Result<()> {
-        let cluster = pool.config.cluster.unwrap();
-        match cluster.backend_tls {
-            TlsMode::Disabled | TlsMode::Invalid => (),
-            _ => {
-                self.ssl_handshake(pool, cluster).await?;
-            }
-        }
-
+    async fn start(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<()> {
         let mut params = ServerParams::default();
         params.add("database", &pool.config.database);
         params.add("user", user);
@@ -111,10 +103,18 @@ impl BackendConn {
             server_params.add("user", user);
         }
 
+        let cluster = pool.config.cluster.unwrap();
+        match cluster.backend_tls {
+            TlsMode::Disabled | TlsMode::Invalid => (),
+            _ => {
+                self.ssl_handshake(pool, cluster).await?;
+            }
+        }
+
         return backend_connected::run(self, &mut params).await;
     }
 
-    pub async fn ssl_handshake(&self, pool: &'static ConnectionPool, cluster: &'static config::PostgresCluster) -> Result<()> {
+    pub async fn ssl_handshake(&self, pool: &ConnectionPool, cluster: &config::PostgresCluster) -> Result<()> {
         const SSL_REQUEST_MSG: &[u8] = &[0, 0, 0, 8, 4, 210, 22, 47];
         let ssl_request = Message::new(Bytes::from_static(SSL_REQUEST_MSG));
 
@@ -287,6 +287,7 @@ impl BackendConn {
             Tag::ERROR_RESPONSE => {
                 Err(Error::from(PostgresError::new(msg)?))
             },
+            _ => Err(Error::new(format!("unexpected message {}", msg.tag())))
         }
     }
 
