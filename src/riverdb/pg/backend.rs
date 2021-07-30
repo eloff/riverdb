@@ -6,6 +6,7 @@ use std::fmt::{Debug, Formatter};
 
 use chrono::{Local, DateTime};
 use tokio::net::TcpStream;
+use tokio::io::Interest;
 use tracing::{debug, error, info, warn, instrument};
 use bytes::Bytes;
 
@@ -18,8 +19,11 @@ use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now, AtomicRef};
-use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION};
-use tokio::io::Interest;
+use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError};
+use crate::pg::protocol::hash_md5_password;
+use crate::config::conf;
+use crate::pg::message_stream::MessageStream;
+use crate::common::change_lifetime;
 
 
 pub struct BackendConn {
@@ -46,42 +50,44 @@ impl BackendConn {
         // XXX: This code is very similar to ClientConn::run.
         // If you change this, you probably need to change that too.
 
-        self.start(pool).await?;
+        self.pool.store(Some(pool));
+        self.start(&pool.config.user, &pool.config.password, pool).await?;
 
-        let mut parser = MessageParser::new();
-        let mut client: Option<Arc<ClientConn>> = None; // keep
+        let mut stream = MessageStream::new(self);
+        let mut sender: Option<Arc<ClientConn>> = None;
         loop {
-            // Check first if we have another message in the parser
-            if let Some(result) = parser.next() {
-                let msg = result?;
-                let tag = msg.tag();
-                debug!(%tag, "received message from backend");
-                if !self.state.msg_is_allowed(tag) {
-                    return Err(Error::new(format!("unexpected message {} for state {:?}", tag, self.state)));
-                }
+            // We don't want to clone the Arc everytime, so we clone() it once calling self.get_other_conn()
+            // And then we cache that Arc, checking that it's still the current with self.has_other_conn()
+            // Which is cheaper the the atomic-read-modify-write ops used increment and decrement and Arc.
+            if sender.is_none() || !self.has_client(sender.as_ref().unwrap()) {
+                sender = self.get_client();
+            }
+            let sender_ref = sender.as_ref().map(|arc| arc.as_ref());
 
-                backend_message::run(self, client.as_ref(), msg).await?;
-            } else {
-                // We don't want to clone the Arc everytime, so we clone() it once calling self.get_client()
-                // And then we cache that Arc, checking that it's still the current client with self.has_client()
-                // Which is cheaper the the atomic-read-modify-write ops used increment and decrement and Arc.
-                if client.is_none() || !self.has_client(client.as_ref().unwrap()) {
-                    client = self.get_client();
-                }
+            let msg = stream.next(sender_ref).await?;
+            backend_message::run(self, sender.as_ref(), msg).await?;
+        }
+    }
 
-                read_and_flush_backlog(
-                    self,
-                    parser.bytes_mut(),
-                    client.as_ref().map(|arc| arc.as_ref()),
-                ).await?;
+    pub async fn test_auth(&self, user: &str, password: &str, pool: &'static ConnectionPool) -> Result<()> {
+        self.start(user, password, pool).await?;
+        // Don't capture this below
+
+        debug_assert_eq!(self.state.get(), BackendState::Authentication);
+
+        let mut stream = MessageStream::<Self, ClientConn>::new(self);
+        loop {
+            let msg = stream.next(None).await?;
+
+            backend_message::run(self, None, msg).await?;
+            if self.state.get() == BackendState::Startup {
+                return Ok(())
             }
         }
     }
 
-    async fn start(&self, pool: &'static ConnectionPool) -> Result<()> {
+    async fn start(&self, user: &str, password: &str, pool: &'static ConnectionPool) -> Result<()> {
         let cluster = pool.config.cluster.unwrap();
-        self.pool.store(Some(pool));
-
         match cluster.backend_tls {
             TlsMode::Disabled | TlsMode::Invalid => (),
             _ => {
@@ -91,8 +97,19 @@ impl BackendConn {
 
         let mut params = ServerParams::default();
         params.add("database", &pool.config.database);
-        params.add("user", &pool.config.user);
+        params.add("user", user);
         params.add("client_encoding", "UTF8");
+        // We can't customize the application_name at connection, which happens once.
+        // We need to do it in check_health_and_set_role which happens for each session that uses the connection.
+        params.add("application_name", "riverdb");
+
+        // Remember the user and password in the server_params, we'll need it during authentication
+        // We'll overwrite them later when processing the server's startup response.
+        {
+            let mut server_params = self.server_params.lock().unwrap();
+            server_params.add("password", password);
+            server_params.add("user", user);
+        }
 
         return backend_connected::run(self, &mut params).await;
     }
@@ -121,20 +138,38 @@ impl BackendConn {
         }
     }
 
+    pub async fn check_health_and_set_role(&self, application_name: &str, role: &str) -> Result<()> {
+        // TODO SET role, SET application_name
+        // try_join!(
+        //     self.execute(escape_query!("SET ROLE TO {}", role))
+        //     self.execute(escape_query!("SET application_name TO {}", application_name))
+        // ).await;
+        Ok(())
+    }
+
+    pub async fn query(&self, escaped_query: &str) -> Result<()> { // TODO Result<Arc<Rows>>
+        // TODO write escape_query!() formatting macro
+
+        // TODO let run() keep pumping the message loop, and just put it in a state of
+        // ReceiveResult or something, store a reference to Rows on self, and feed it the messages
+        // as they're received (which it can buffer in a VecDeque until ready to process them.)
+        // We can use an Arc<Rows> for that.
+        todo!()
+    }
+
+    /// Returns the associated ClientConn, if any.
     pub fn get_client(&self) -> Option<Arc<ClientConn>> {
         self.client.load()
     }
 
+    /// Returns true if client is set as the associated ClientConn.
     pub fn has_client(&self, client: &Arc<ClientConn>) -> bool {
         self.client.is(client)
     }
 
+    /// Sets the associated ClientConn.
     pub fn set_client(&self, client: Option<Arc<ClientConn>>) {
         self.client.store(client);
-    }
-
-    pub async fn check_health_and_set_role(&self, role: &str) -> Result<()> {
-        Ok(())
     }
 
     pub fn created_for_transaction(&self) -> bool {
@@ -169,25 +204,90 @@ impl BackendConn {
         let mut mb = MessageBuilder::new(Tag::UNTAGGED);
         mb.write_i32(PROTOCOL_VERSION);
         mb.write_params(params);
-        let startup_msg = mb.finish();
 
-        backend_send_message::run(self, startup_msg).await
+        self.state.transition(self, BackendState::Authentication);
+
+        backend_send_message::run(self, mb.finish()).await
     }
 
     pub async fn backend_message(&self, _: &mut backend_message::Event, client: Option<&Arc<ClientConn>>, msg: Message) -> Result<()> {
         match self.state.get() {
-            BackendState::StateInitial | BackendState::SSLHandshake => {},
-            BackendState::Authentication => {},
-            BackendState::Startup => {},
-            BackendState::InPool => {},
+            BackendState::StateInitial | BackendState::SSLHandshake => {
+                Err(Error::new(format!("unexpected message for initial state: {:?}", msg.tag())))
+            },
+            BackendState::Authentication => {
+                backend_authenticate::run(self, msg).await
+            },
+            BackendState::Startup => {
+                // TODO ???
+                Ok(())
+            },
+            BackendState::InPool => {
+                if msg.tag() == Tag::PARAMETER_STATUS {
+                    todo!(); // TODO set param in server_params
+                } else if msg.tag() == Tag::ERROR_RESPONSE {
+                    todo!(); // TODO log error and close the connection
+                }
+                // Else ignore the message
+                // TODO log that we're ignoring a message of type msg.tag()
+                Ok(())
+            },
             _ => {
                 // Forward the message to the client, if there is one
                 if let Some(client) = client {
-                    return client.write_or_buffer(msg.into_bytes());
+                    return backend_send_message::run(self, msg).await
                 }
+                // TODO else this is part of a query workflow, do what with it???
+                Ok(())
             }
         }
-        Ok(())
+    }
+
+    pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, msg: Message) -> Result<()> {
+        match msg.tag() {
+            Tag::AUTHENTICATION_OK => {
+                let r = MessageReader::new(&msg);
+                let auth_type = r.read_i32();
+                if auth_type == 0 {
+                    r.error()?;
+                }
+                let auth_type = AuthType::from(auth_type);
+                let (user, password) = {
+                    let server_params = self.server_params.lock().unwrap();
+                    (server_params.get("user").expect("missing user").to_string(),
+                     server_params.get("password").expect("missing password").to_string())
+                };
+
+                match auth_type {
+                    AuthType::Ok => {
+                        // Success!
+                        self.state.transition(self, BackendState::Startup)
+                    },
+                    AuthType::ClearText => {
+                        if !self.is_tls() {
+                            warn!("sending clear text password over unencrypted connection. Consider requiring TLS or using a different authentication scheme.")
+                        }
+                        let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
+                        mb.write_str(&password);
+                        backend_send_message::run(self, mb.finish()).await
+                    },
+                    AuthType::MD5 => {
+                        let salt = r.read_i32();
+                        if salt == 0 {
+                            r.error()?;
+                        }
+                        let md5_password = hash_md5_password(&user, &password, salt);
+                        let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
+                        mb.write_str(&md5_password);
+                        backend_send_message::run(self, mb.finish()).await
+                    },
+                    _ => Err(Error::new(format!("unsupported authentication scheme (pull requests welcome!) {}", auth_type)))
+                }
+            },
+            Tag::ERROR_RESPONSE => {
+                Err(Error::from(PostgresError::new(msg)?))
+            },
+        }
     }
 
     pub async fn backend_send_message(&self, _: &mut backend_send_message::Event, msg: Message) -> Result<()> {
@@ -255,6 +355,14 @@ impl Connection for BackendConn {
             false
         }
     }
+
+    fn msg_is_allowed(&self, tag: Tag) -> Result<()> {
+        if self.state.msg_is_allowed(tag) {
+            Ok(())
+        } else {
+            Err(Error::new(format!("unexpected backend message {} for state {:?}", tag, self.state.get())))
+        }
+    }
 }
 
 impl Debug for BackendConn {
@@ -274,7 +382,8 @@ impl Debug for BackendConn {
 define_event!(backend_connected, (backend: &'a BackendConn, params: &'a mut ServerParams) -> Result<()>);
 
 /// backend_message is called when a Postgres protocol.Message is received in a backend db connection.
-///     backend: &BackendConn : the event source handling the client connection
+///     backend: &BackendConn : the event source handling the backend connection
+///     client: Option<&'a Arc<ClientConn>> : the associated client connection (if any)
 ///     msg: protocol.Message is the received protocol.Message
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
 /// It's also possible to replace a single Message with many by calling ev.next() for each.
@@ -285,7 +394,7 @@ define_event!(backend_connected, (backend: &'a BackendConn, params: &'a mut Serv
 define_event!(backend_message, (backend: &'a BackendConn, client: Option<&'a Arc<ClientConn>>, msg: Message) -> Result<()>);
 
 /// backend_send_message is called to send a Message to a backend db connection.
-///     backend: &BackendConn : the event source handling the client connection
+///     backend: &BackendConn : the event source handling the backend connection
 ///     msg: protocol.Message is the protocol.Message to send
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
 /// It's also possible to replace a single Message with many by calling ev.next() for each.
@@ -293,3 +402,6 @@ define_event!(backend_message, (backend: &'a BackendConn, client: Option<&'a Arc
 /// BackendConn::backend_send_message is called by default and sends the Message to the db server.
 /// If it returns an error, the associated session is terminated.
 define_event!(backend_send_message, (backend: &'a BackendConn, msg: Message) -> Result<()>);
+
+/// backend_authenticate is called with each Message received while in the Authentication state
+define_event!(backend_authenticate, (backend: &'a BackendConn, msg: Message) -> Result<()>);

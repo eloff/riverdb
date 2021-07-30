@@ -10,6 +10,7 @@ mod isolation;
 mod pool;
 mod cluster;
 mod group;
+mod message_stream;
 
 pub use self::service::PostgresService;
 pub use self::client_state::ClientConnState;

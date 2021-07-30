@@ -53,7 +53,7 @@ impl ConnectionPool {
         }
     }
     
-    pub async fn get(&'static self, role: &str, for_transaction: bool) -> Result<Option<Arc<BackendConn>>> {
+    pub async fn get(&'static self, application_name: &str, role: &str, for_transaction: bool) -> Result<Option<Arc<BackendConn>>> {
         if for_transaction && self.active_transactions.fetch_add(1, Relaxed) > self.max_transactions {
             let prev = self.active_transactions.fetch_add(-1, Relaxed);
             debug_assert!(prev > 0);
@@ -89,7 +89,7 @@ impl ConnectionPool {
 
             // Set the role for the connection, which also checks that it's healthy.
             // If this fails, and the connection came from the pool, we try with another connection.
-            if let Err(e) = conn.check_health_and_set_role(role).await {
+            if let Err(e) = conn.check_health_and_set_role(application_name, role).await {
                 // If this connection came from the pool, and failed the health check
                 // Record how long it was idle in the pool.
                 let mut idle_seconds = 0;

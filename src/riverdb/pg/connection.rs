@@ -15,6 +15,7 @@ use crate::riverdb::server::Transport;
 use crate::riverdb::{Error, Result};
 use crate::riverdb::common::bytes_to_slice_mut;
 use crate::riverdb::pg::{BackendConn, ClientConn, ConnectionPool};
+use crate::riverdb::pg::protocol::Tag;
 
 
 pub type Backlog = Mutex<VecDeque<Bytes>>;
@@ -25,7 +26,9 @@ pub trait Connection: server::Connection {
     fn backlog(&self) -> &Mutex<VecDeque<Bytes>>;
     fn transport(&self) -> &Transport;
     fn is_closed(&self) -> bool;
-
+    /// Returns Ok(()) if the Message Tag may be received during the
+    /// current state of the session, otherwise an error.
+    fn msg_is_allowed(&self, tag: Tag) -> Result<()>;
     fn is_tls(&self) -> bool {
         self.transport().is_tls()
     }

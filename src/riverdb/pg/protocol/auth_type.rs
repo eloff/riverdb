@@ -15,8 +15,24 @@ pub enum AuthType {
 }
 
 impl AuthType {
-    pub fn as_u8(&self) -> u8 {
-        unsafe { std::mem::transmute(*self) }
+    pub fn as_i32(&self) -> i32 {
+        unsafe { std::mem::transmute::<AuthType, u8>(*self) as i32 }
+    }
+}
+
+impl From<i32> for AuthType {
+    fn from(i: i32) -> Self {
+        match i {
+            0 => AuthType::Ok,
+            2 => AuthType::KerberosV5,
+            3 => AuthType::ClearText,
+            5 => AuthType::MD5,
+            6 => AuthType::SCM,
+            7 => AuthType::GSS,
+            8 => AuthType::GSSContinue,
+            9 => AuthType::SSPI,
+            _ => panic!("unknown auth type {}", i)
+        }
     }
 }
 

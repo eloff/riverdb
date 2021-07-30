@@ -22,7 +22,7 @@ impl ServerParams {
         let mut start = msg.body_start() + 4;
         let mut buffer = BytesMut::from(&msg.as_slice()[start as usize..]);
 
-        let msg = Message(buffer.split().freeze());
+        let msg = Message::new(buffer.split().freeze());
         let r = MessageReader::new_at(&msg, 0);
 
         let mut params = Vec::new();

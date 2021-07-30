@@ -25,6 +25,7 @@ use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
 use crate::riverdb::config::{conf, TlsMode};
 use std::cell::UnsafeCell;
+use crate::riverdb::pg::message_stream::MessageStream;
 
 
 pub struct ClientConn {
@@ -50,44 +51,33 @@ impl ClientConn {
         // XXX: This code is very similar to BackendConn::run.
         // If you change this, you probably need to change that too.
 
-        let mut parser = MessageParser::new();
-        let mut backend: Option<Arc<BackendConn>> = None; // keep
+        let mut stream = MessageStream::new(self);
+        let mut sender: Option<Arc<BackendConn>> = None;
         loop {
-            // Check first if we have another message in the parser
-            if let Some(result) = parser.next() {
-                let msg = result?;
-                let tag = msg.tag();
-                debug!(%tag, "received message from client");
-                if !self.state.msg_is_allowed(tag) {
-                    return Err(Error::new(format!("unexpected message {} for state {:?}", tag, self.state)));
-                }
-
-                client_message::run(self, msg).await?;
-            } else {
-                // We don't want to clone the Arc everytime, so we clone() it once calling self.get_backend()
-                // And then we cache that Arc, checking that it's still the current backend with self.has_backend()
-                // Which is cheaper the the atomic-read-modify-write ops used increment and decrement and Arc.
-                if backend.is_none() || !self.has_backend(backend.as_ref().unwrap()) {
-                    backend = self.get_backend();
-                }
-
-                read_and_flush_backlog(
-                    self,
-                    parser.bytes_mut(),
-                    backend.as_ref().map(|arc| arc.as_ref()),
-                ).await?;
+            // We don't want to clone the Arc everytime, so we clone() it once calling self.get_other_conn()
+            // And then we cache that Arc, checking that it's still the current with self.has_other_conn()
+            // Which is cheaper the the atomic-read-modify-write ops used increment and decrement and Arc.
+            if sender.is_none() || !self.has_backend(sender.as_ref().unwrap()) {
+                sender = self.get_backend();
             }
+            let sender_ref = sender.as_ref().map(|arc| arc.as_ref());
+
+            let msg = stream.next(sender_ref).await?;
+            client_message::run(self, sender.as_ref(), msg).await?;
         }
     }
 
+    /// Returns the associated BackendConn, if any.
     pub fn get_backend(&self) -> Option<Arc<BackendConn>> {
         self.backend.load()
     }
 
+    /// Returns true if backend is set as the associated BackendConn.
     pub fn has_backend(&self, backend: &Arc<BackendConn>) -> bool {
         self.backend.is(backend)
     }
 
+    /// Sets the associated BackendConn. Panics if called on a BackendConn.
     pub fn set_backend(&self, backend: Option<Arc<BackendConn>>) {
         self.backend.store(backend);
     }
@@ -117,7 +107,7 @@ impl ClientConn {
         match protocol_version {
             PROTOCOL_VERSION => {
                 let mut params= ServerParams::from_startup_message(&msg)?;
-                let cluster = client_connected::run(self, &mut params).await?;
+                let cluster = client_connected::run(self, params).await?;
                 self.db_cluster.store(Some(cluster));
                 Ok(())
             },
@@ -140,7 +130,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn auth_challenge(&self, _: &mut auth_challenge::Event, params: ServerParams) -> Result<AuthType> {
+    pub async fn client_auth_challenge(&self, _: &mut client_auth_challenge::Event, params: ServerParams) -> Result<AuthType> {
         let auth_type = if self.is_tls() {
             AuthType::ClearText
         } else {
@@ -154,7 +144,7 @@ impl ClientConn {
         self.state.transition(self, ClientState::Authentication)?;
 
         let mut mb = MessageBuilder::new(Tag::AUTHENTICATION_OK);
-        mb.write_i32(auth_type.as_u8() as i32);
+        mb.write_i32(auth_type.as_i32());
         if let AuthType::MD5 = auth_type {
             mb.write_i32(self.salt);
         }
@@ -164,7 +154,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn authenticate(&self, _: &mut authenticate::Event, auth_type: AuthType, msg: Message) -> Result<()> {
+    pub async fn client_authenticate(&self, _: &mut client_authenticate::Event, auth_type: AuthType, msg: Message) -> Result<()> {
         todo!();
     }
 
@@ -177,14 +167,14 @@ impl ClientConn {
             }
         }
 
-        let auth_type = auth_challenge::run(self, params).await?;
+        let auth_type = client_auth_challenge::run(self, params).await?;
         self.auth_type.store(auth_type);
 
         Ok(PostgresCluster::singleton())
     }
 
     #[instrument]
-    pub async fn client_message(&self, _: &mut client_message::Event, msg: Message) -> Result<()> {
+    pub async fn client_message(&self, _: &mut client_message::Event, _backend: Option<&Arc<BackendConn>>, msg: Message) -> Result<()> {
         match self.state.get() {
             ClientState::StateInitial => {
                 self.startup(msg).await
@@ -208,6 +198,7 @@ impl server::Connection for ClientConn {
             backend: Default::default(),
             send_backlog: Mutex::new(VecDeque::new()),
             db_cluster: AtomicRef::default(),
+            connect_params: UnsafeCell::new(ServerParams::new()),
             salt: Worker::get().rand32() as i32
         }
     }
@@ -254,6 +245,14 @@ impl Connection for ClientConn {
             false
         }
     }
+
+    fn msg_is_allowed(&self, tag: Tag) -> Result<()> {
+        if self.state.msg_is_allowed(tag) {
+            Ok(())
+        } else {
+            Err(Error::new(format!("unexpected client message {} for state {:?}", tag, self.state.get())))
+        }
+    }
 }
 
 impl Debug for ClientConn {
@@ -274,10 +273,11 @@ unsafe impl Sync for ClientConn {}
 /// Returns the database cluster where the BackendConn will later be established (usually pool.get_cluster()).
 /// ClientConn::client_connected is called by default and sends the authentication challenge in response.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_connected, (client: &'a ClientConn, params: &'a mut ServerParams) -> Result<&'static PostgresCluster>);
+define_event!(client_connected, (client: &'a ClientConn, params: ServerParams) -> Result<&'static PostgresCluster>);
 
 /// client_message is called when a Postgres protocol.Message is received in a client session.
 ///     client: &ClientConn : the event source handling the client connection
+///     backend: Option<&'a Arc<BackendConn>> : the associated backend connection (if any)
 ///     msg: protocol.Message is the received protocol.Message
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
 /// It's also possible to replace a single Message with many by calling ev.next() for each.
@@ -285,8 +285,8 @@ define_event!(client_connected, (client: &'a ClientConn, params: &'a mut ServerP
 /// ClientConn::client_message is called by default and does further processing on the Message,
 /// including potentially calling the higher-level client_query. Symmetric with backend_message.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_message, (client: &'a ClientConn, msg: Message) -> Result<()>);
+define_event!(client_message, (client: &'a ClientConn, backend: Option<&'a Arc<BackendConn>>, msg: Message) -> Result<()>);
 
-define_event!(auth_challenge, (client: &'a ClientConn, params: &mut ServerParams) -> Result<AuthType>);
+define_event!(client_auth_challenge, (client: &'a ClientConn, params: ServerParams) -> Result<AuthType>);
 
-define_event!(authenticate, (client: &'a ClientConn, auth_type: AuthType, msg: Message) -> Result<()>);
+define_event!(client_authenticate, (client: &'a ClientConn, auth_type: AuthType, msg: Message) -> Result<()>);
