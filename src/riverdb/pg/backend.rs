@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU32, AtomicBool, AtomicPtr, AtomicI32};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
+use std::net::SocketAddr;
 
 use chrono::{Local, DateTime};
 use tokio::net::TcpStream;
@@ -14,7 +15,7 @@ use crate::define_event;
 use crate::riverdb::{config, Error, Result};
 use crate::riverdb::config::TlsMode;
 use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool};
-use crate::riverdb::server::{Transport};
+use crate::riverdb::server::{Transport, Connection as ServerConnection};
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
@@ -43,6 +44,11 @@ pub struct BackendConn {
 }
 
 impl BackendConn {
+    pub async fn connect(address: &SocketAddr) -> Result<Self> {
+        let stream = TcpStream::connect(address).await?;
+        Ok(Self::new(stream))
+    }
+
     #[instrument]
     pub async fn run(&self, pool: &ConnectionPool) -> Result<()> {
         // XXX: This code is very similar to ClientConn::run.

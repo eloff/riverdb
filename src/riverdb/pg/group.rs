@@ -11,6 +11,7 @@ use crate::riverdb::pg::protocol::ServerParams;
 use std::str::FromStr;
 
 pub struct PostgresReplicationGroup {
+    pub config: &'static config::Postgres,
     pub master: AtomicRef<'static, ConnectionPool>,
     pub replicas: Vec<&'static ConnectionPool>,
     next_replica: AtomicU32,
@@ -20,6 +21,7 @@ impl PostgresReplicationGroup {
     pub fn new(config: &'static config::Postgres) -> Self {
         let replicas = config.replicas.iter().map(|c| &*Box::leak(Box::new(ConnectionPool::new(c)))).collect();
         Self{
+            config,
             master: AtomicRef::new(Some(Box::leak(Box::new(ConnectionPool::new(config))))),
             replicas,
             next_replica: AtomicU32::new(0),

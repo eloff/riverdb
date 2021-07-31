@@ -1,11 +1,17 @@
 use std::fmt::{Debug, Formatter};
 use std::cell::UnsafeCell;
+use std::sync::RwLock;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
+use std::net::SocketAddr;
+
+use fnv::FnvHashSet;
+use crypto::sha2::Sha256;
+use crypto::digest::Digest;
 
 use crate::riverdb::{Result};
 use crate::riverdb::config;
-use crate::riverdb::pg::PostgresReplicationGroup;
+use crate::riverdb::pg::{PostgresReplicationGroup, ConnectionPool, BackendConn};
 use crate::riverdb::pg::group::merge_server_params;
 use crate::riverdb::pg::protocol::ServerParams;
 use crate::riverdb::common::AtomicRef;
@@ -19,6 +25,7 @@ pub struct PostgresCluster {
     pub config: &'static config::PostgresCluster,
     pub nodes: Vec<PostgresReplicationGroup>,
     startup_params: UnsafeCell<ServerParams>,
+    auth_cache: RwLock<FnvHashSet<[u8; 32]>>, // keyed by sha256(user+database+password)
 }
 
 impl PostgresCluster {
@@ -28,6 +35,7 @@ impl PostgresCluster {
             config,
             nodes,
             startup_params: UnsafeCell::new(ServerParams::default()),
+            auth_cache: RwLock::new(FnvHashSet::default()),
         }
     }
 
@@ -49,6 +57,16 @@ impl PostgresCluster {
             }
             &*p
         }
+    }
+
+    /// Returns a reference to the ConnectionPool of the master of the first partition with a matching database
+    pub fn get_by_database(&self, database: &str) -> Option<&'static ConnectionPool> {
+        for node in self.nodes.iter() {
+            if node.config.database == database {
+                return node.master.load();
+            }
+        }
+        None
     }
 
     pub async fn test_connection(&self) -> Result<()> {
@@ -75,9 +93,26 @@ impl PostgresCluster {
         unsafe { &*self.startup_params.get() }
     }
 
-    pub async fn authenticate(&self, user: &str, password: &str, database: &str) -> Result<bool> {
-        todo!()
+    pub async fn authenticate(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<bool> {
+        let key = hash_sha256(user, password, &pool.config.database);
+        if !self.auth_cache.read().unwrap().contains(&key[..]) {
+            let backend = BackendConn::connect(pool.config.address.as_ref().unwrap()).await?;
+            backend.test_auth(user, password, pool).await?;
+            self.auth_cache.write().unwrap().insert(key);
+        }
+        Ok(true)
     }
+}
+
+/// hashes a (user, database, password) tuple with sha256
+fn hash_sha256(user: &str, password: &str, database: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.input_str(user);
+    hasher.input_str(database);
+    hasher.input_str(password);
+    let mut result = [0; 32];
+    hasher.result(&mut result);
+    result
 }
 
 impl Debug for PostgresCluster {
@@ -89,3 +124,4 @@ impl Debug for PostgresCluster {
 // Safety: UnsafeCell<ServerParams> is not Sync, but we use it safely
 // by setting it before accessing it from other threads.
 unsafe impl Sync for PostgresCluster {}
+

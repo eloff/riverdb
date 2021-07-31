@@ -1,6 +1,8 @@
+use std::fmt::Write;
+
 use crypto::md5::Md5;
 use crypto::digest::Digest;
-use std::fmt::Write;
+
 
 pub fn hash_md5_password(user: &str, password: &str, salt: i32) -> String {
     let mut hasher = Md5::new();

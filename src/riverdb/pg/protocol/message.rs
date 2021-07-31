@@ -5,7 +5,7 @@ use std::mem::ManuallyDrop;
 use bytes::{Bytes, Buf};
 
 use crate::riverdb::Result;
-use crate::riverdb::pg::protocol::{Tag, MessageReader};
+use crate::riverdb::pg::protocol::{Tag, MessageReader, MessageErrorBuilder, ErrorSeverity};
 use crate::riverdb::pg::protocol::message_parser::Header;
 
 
@@ -15,6 +15,15 @@ pub struct Message(Bytes);
 impl Message {
     pub fn new(buf: Bytes) -> Self {
         Message(buf)
+    }
+
+    pub fn new_error(error_code: &str, error_msg: &str) -> Self {
+        let mut mb = MessageErrorBuilder::new(
+            ErrorSeverity::Fatal,
+            error_code,
+            &error_msg
+        );
+        mb.finish()
     }
 
     /// tag returns the message Tag or panics if self.is_empty()

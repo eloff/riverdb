@@ -178,18 +178,21 @@ impl ClientConn {
                 // user and database exist, see ServerParams::from_startup_message
                 let user = params.get("user").expect("missing user");
                 let database = params.get("database").expect("missing database");
+
+                let pool = cluster.get_by_database(database);
+                if pool.is_none() {
+                    let error_msg = format!("database \"{}\" does not exist", database);
+                    self.send(Message::new_error(error_codes::INVALID_CATALOG_NAME, &error_msg), false).await?;
+                    return Err(Error::new(error_msg));
+                }
+
                 let r = MessageReader::new(&msg);
-                if cluster.authenticate(user, r.read_str()?, database).await? {
+                if cluster.authenticate(user, r.read_str()?, pool.unwrap()).await? {
                     client_complete_startup::run(self, cluster).await?;
                     self.state.transition(self, ClientState::Ready)
                 } else {
                     let error_msg = format!("password authentication failed for user \"{}\"", user);
-                    let mut mb = MessageErrorBuilder::new(
-                        ErrorSeverity::Fatal,
-                        error_codes::INVALID_PASSWORD,
-                        &error_msg
-                    );
-                    self.send(mb.finish(), false).await?;
+                    self.send(Message::new_error(error_codes::INVALID_PASSWORD, &error_msg), false).await?;
                     Err(Error::new(error_msg))
                 }
             },
