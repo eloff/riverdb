@@ -73,7 +73,8 @@ impl ConnectionPool {
                     // Which can happen asynchronously, and need to be handled (if only by dropping them)
                     // even if the connection is idle in the pool.
 
-                    // Safety: self is 'static, but if we mark it as such the compiler throws a fit?!?
+                    // Safety: self is 'static, but if we mark it as such the compiler barfs.
+                    // See: https://github.com/rust-lang/rust/issues/87632
                     let static_self: &'static Self = unsafe { change_lifetime(self) };
                     tokio::spawn(async move {
                         conn_ref.run(static_self).await;

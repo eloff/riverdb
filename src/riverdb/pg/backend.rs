@@ -48,7 +48,8 @@ impl BackendConn {
         // XXX: This code is very similar to ClientConn::run.
         // If you change this, you probably need to change that too.
 
-        // Safety: pool is 'static, but if we mark it as such the compiler throws a fit?!?
+        // Safety: pool is 'static, but if we mark it as such the compiler barfs.
+        // See: https://github.com/rust-lang/rust/issues/87632
         unsafe {
             self.pool.store(Some(change_lifetime(pool)));
         }
@@ -141,7 +142,7 @@ impl BackendConn {
     pub async fn check_health_and_set_role(&self, application_name: &str, role: &str) -> Result<()> {
         // TODO SET role, SET application_name
         // try_join!(
-        //     self.execute(escape_query!("SET ROLE TO {}", role))
+        //     self.execute(escape_query!("SET ROLE {}", role))
         //     self.execute(escape_query!("SET application_name TO {}", application_name))
         // ).await;
         Ok(())
@@ -200,6 +201,7 @@ impl BackendConn {
         self.server_params.lock().unwrap()
     }
 
+    #[instrument]
     pub async fn backend_connected(&self, _: &mut backend_connected::Event, params: &mut ServerParams) -> Result<()> {
         let mut mb = MessageBuilder::new(Tag::UNTAGGED);
         mb.write_i32(PROTOCOL_VERSION);
@@ -210,6 +212,7 @@ impl BackendConn {
         backend_send_message::run(self, mb.finish()).await
     }
 
+    #[instrument]
     pub async fn backend_message(&self, _: &mut backend_message::Event, client: Option<&Arc<ClientConn>>, msg: Message) -> Result<()> {
         match self.state.get() {
             BackendState::StateInitial | BackendState::SSLHandshake => {
@@ -243,6 +246,7 @@ impl BackendConn {
         }
     }
 
+    #[instrument]
     pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, msg: Message) -> Result<()> {
         match msg.tag() {
             Tag::AUTHENTICATION_OK => {
@@ -291,6 +295,7 @@ impl BackendConn {
         }
     }
 
+    #[instrument]
     pub async fn backend_send_message(&self, _: &mut backend_send_message::Event, msg: Message) -> Result<()> {
         self.write_or_buffer(msg.into_bytes())
     }

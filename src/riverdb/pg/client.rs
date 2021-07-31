@@ -15,7 +15,11 @@ use rustls::{ClientConnection};
 use crate::define_event;
 use crate::riverdb::{Error, Result, common};
 use crate::riverdb::worker::{Worker};
-use crate::riverdb::pg::protocol::{Message, MessageReader, MessageParser, ServerParams, Tag, PROTOCOL_VERSION, SSL_REQUEST, AuthType, MessageBuilder};
+use crate::riverdb::pg::protocol::{
+    Message, MessageReader, MessageParser, ServerParams, Tag,
+    PROTOCOL_VERSION, SSL_REQUEST, AuthType, MessageBuilder,
+    MessageErrorBuilder, error_codes, ErrorSeverity,
+};
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection};
 use crate::riverdb::server::Transport;
 use crate::riverdb::server;
@@ -23,7 +27,7 @@ use crate::riverdb::pg::{PostgresCluster, ConnectionPool};
 use crate::riverdb::pg::connection::{read_and_flush_backlog, Backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::pg::client_state::ClientState;
-use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
+use crate::riverdb::common::{PostgresError, AtomicCell, AtomicArc, AtomicRef};
 use crate::riverdb::config::{conf, TlsMode};
 use crate::riverdb::pg::message_stream::MessageStream;
 
@@ -148,14 +152,68 @@ impl ClientConn {
         if let AuthType::MD5 = auth_type {
             mb.write_i32(self.salt);
         }
-        self.write_or_buffer(mb.finish().into_bytes())?;
+        client_send_message::run(self, mb.finish()).await?;
 
         Ok(auth_type)
     }
 
     #[instrument]
     pub async fn client_authenticate(&self, _: &mut client_authenticate::Event, auth_type: AuthType, msg: Message) -> Result<()> {
-        todo!();
+        let params = self.connection_params();
+        let cluster = self.db_cluster.load().expect("expected db_cluster to be set");
+
+        match msg.tag() {
+            Tag::PASSWORD_MESSAGE => {
+                // user and database exist, see ServerParams::from_startup_message
+                let user = params.get("user").expect("missing user");
+                let database = params.get("database").expect("missing database");
+                let r = MessageReader::new(&msg);
+                if cluster.authenticate(user, r.read_str()?, database).await? {
+                    client_complete_startup::run(self, cluster).await?;
+                    self.state.transition(self, ClientState::Ready)
+                } else {
+                    let error_msg = format!("password authentication failed for user \"{}\"", user);
+                    let mut mb = MessageErrorBuilder::new(
+                        ErrorSeverity::Fatal,
+                        error_codes::INVALID_PASSWORD,
+                        &error_msg
+                    );
+                    client_send_message::run(self, mb.finish()).await?;
+                    Err(Error::new(error_msg))
+                }
+            },
+            _ => {
+                Err(Error::new(format!("unexpected message {}", msg.tag())))
+            }
+        }
+    }
+
+    #[instrument]
+    pub async fn client_complete_startup(&self, _: &mut client_complete_startup::Event, cluster: &PostgresCluster) -> Result<()> {
+        let startup_params = cluster.get_startup_params();
+        let mut msgs = Vec::with_capacity(startup_params.len() + 3);
+
+        let mut mb = MessageBuilder::new(Tag::AUTHENTICATION_OK);
+        mb.write_i32(AuthType::Ok.as_i32());
+        msgs.push(mb.finish());
+
+        for (key, value) in startup_params.iter() {
+            mb.add_new(Tag::PARAMETER_STATUS);
+            mb.write_str(key);
+            mb.write_str(value);
+            msgs.push(mb.finish());
+        }
+
+        mb.add_new(Tag::BACKEND_KEY_DATA);
+        mb.write_i32(self.id.load(Relaxed) as i32);
+        mb.write_i32(self.salt);
+        msgs.push(mb.finish());
+
+        mb.add_new(Tag::READY_FOR_QUERY);
+        mb.write_byte('I' as u8);
+        msgs.push(mb.finish());
+
+        Ok(())
     }
 
     #[instrument]
@@ -183,6 +241,11 @@ impl ClientConn {
                 Ok(())
             }
         }
+    }
+
+    #[instrument]
+    pub async fn client_send_message(&self, _: &mut client_send_message::Event, msg: Message) -> Result<()> {
+        self.write_or_buffer(msg.into_bytes())
     }
 }
 
@@ -287,6 +350,18 @@ define_event!(client_connected, (client: &'a ClientConn, params: ServerParams) -
 /// If it returns an error, the associated session is terminated.
 define_event!(client_message, (client: &'a ClientConn, backend: Option<&'a Arc<BackendConn>>, msg: Message) -> Result<()>);
 
+/// client_send_message is called to send a Message to a backend db connection.
+///     client: &ClientConn : the event source handling the client connection
+///     msg: protocol.Message is the protocol.Message to send
+/// You can replace msg by creating and passing a new Message object to ev.next(...)
+/// It's also possible to replace a single Message with many by calling ev.next() for each.
+/// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
+/// ClientConn::client_send_message is called by default and sends the Message to the connected client.
+/// If it returns an error, the associated session is terminated.
+define_event!(client_send_message, (client: &'a ClientConn, msg: Message) -> Result<()>);
+
 define_event!(client_auth_challenge, (client: &'a ClientConn, params: ServerParams) -> Result<AuthType>);
 
 define_event!(client_authenticate, (client: &'a ClientConn, auth_type: AuthType, msg: Message) -> Result<()>);
+
+define_event!(client_complete_startup, (client: &'a ClientConn, cluster: &'a PostgresCluster) -> Result<()>);

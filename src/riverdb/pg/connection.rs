@@ -64,6 +64,53 @@ pub trait Connection: server::Connection {
         Ok(())
     }
 
+    /// write_many_or_buffer writes all the bytes in buf to sender without blocking or buffers it
+    /// (without copying) to send later. Takes ownership of buf in all cases.
+    fn write_many_or_buffer(&self, mut msgs: Vec<Bytes>) -> Result<()> {
+        // TODO there is no unsplit on Bytes https://github.com/tokio-rs/bytes/issues/503
+        // Combine any Bytes that are adjacent (that's why we take ownership of msgs.)
+        // This is better than using writev because writev can't be used with TLS connections.
+
+        // Reverse msgs, because we write them back to front
+        msgs.reverse();
+
+        // We always have to acquire the mutex, even if the backlog appears empty, otherwise
+        // we can't be certain another thread won't try to write the backlog and overlap write()
+        // calls with us here. Essentially the backlog mutex must always be held when writing
+        // so that the logical writes are atomic and ordered correctly.
+        let mut backlog = self.backlog().lock().map_err(Error::from)?;
+        if backlog.is_empty() {
+            while let Some(mut buf) = msgs.pop() {
+                // If the backlog is empty, maybe we can write this to the socket
+                let n = self.transport().try_write(buf.chunk())?;
+                if n < buf.remaining() {
+                    buf.advance(n);
+                    msgs.push(buf);
+                } else {
+                    return Ok(());
+                }
+            }
+        }
+        // Else we have data buffered pending because the socket is not ready for writing, add msgs to the end.
+        if msgs.is_empty() {
+            return Ok(());
+        }
+
+        while let Some(buf) = msgs.pop() {
+            // TODO there is no unsplit on Bytes https://github.com/tokio-rs/bytes/issues/503
+            // if let Some(last) = backlog.back() {
+            //     // If the last buffer and this one are actually contiguous, then combine them instead of adding them separately.
+            //     // MessageParser often produces a run of contiguous messages, and recombining them here will mean fewer syscalls to write().
+            //
+            // }
+            backlog.push_back(buf);
+        }
+
+        self.set_has_backlog(true);
+        Ok(())
+    }
+
+
     /// try_write_backlog tries to write some bytes from the backlog to the transport.
     /// Call when the underlying transport is ready for writing. Returns the number of bytes written.
     fn try_write_backlog(&self) -> Result<usize> {

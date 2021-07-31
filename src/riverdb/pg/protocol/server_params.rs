@@ -3,7 +3,7 @@ use std::mem::{ManuallyDrop, transmute_copy};
 
 use bytes::{BytesMut, BufMut, Bytes, Buf};
 
-use crate::riverdb::Result;
+use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::protocol::{MessageReader, Message, Tag};
 
 
@@ -25,20 +25,37 @@ impl ServerParams {
         let msg = Message::new(buffer.split().freeze());
         let r = MessageReader::new_at(&msg, 0);
 
+        let mut user: Option<&str> = None;
+        let mut have_database = false;
         let mut params = Vec::new();
         start = 0;
         while start < r.len() {
-            r.read_str()?;
-            r.read_str()?;
+            let name = r.read_str()?;
+            let value = r.read_str()?;
+            match name {
+                "user" => user = Some(value),
+                "database" => have_database = true,
+                _ => (),
+            }
             let end = r.tell();
             params.push(r.slice(start, end));
             start = end;
         }
 
-        Ok(Self{
+        if user.is_none() {
+            return Err(Error::new("user is a required parameter"));
+        }
+
+        let mut result = Self{
             params,
             buffer: Some(buffer),
-        })
+        };
+
+        if !have_database {
+            result.add("database", user.unwrap());
+        }
+
+        Ok(result)
     }
 
     pub fn from_parameter_status_messages<Iter: Iterator<Item=Message>>(params: Iter) -> Result<Self>
@@ -99,8 +116,16 @@ impl ServerParams {
         None
     }
 
+    pub fn len(&self) -> usize {
+        self.params.len()
+    }
+
     pub fn iter(&self) -> ParamsIter {
         ParamsIter::new(&self.params)
+    }
+
+    pub fn append_to(&self, bytes_vec: &mut Vec<Bytes>) {
+        bytes_vec.extend(self.params.iter());
     }
 }
 

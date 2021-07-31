@@ -73,6 +73,10 @@ impl PostgresCluster {
         // Safety: this is not called until after it's initialized (prior to starting the server)
         unsafe { &*self.startup_params.get() }
     }
+
+    pub async fn authenticate(&self, user: &str, password: &str, database: &str) -> Result<bool> {
+        todo!()
+    }
 }
 
 // Safety: UnsafeCell<ServerParams> is not Sync, but we use it safely
