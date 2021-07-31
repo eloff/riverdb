@@ -1,3 +1,4 @@
+use std::fmt::{Debug, Formatter};
 use std::cell::UnsafeCell;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
@@ -76,6 +77,12 @@ impl PostgresCluster {
 
     pub async fn authenticate(&self, user: &str, password: &str, database: &str) -> Result<bool> {
         todo!()
+    }
+}
+
+impl Debug for PostgresCluster {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("PostgresCluster(num_partitions={})", self.config.servers.len()))
     }
 }
 

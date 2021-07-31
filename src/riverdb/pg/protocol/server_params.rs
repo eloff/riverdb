@@ -123,10 +123,6 @@ impl ServerParams {
     pub fn iter(&self) -> ParamsIter {
         ParamsIter::new(&self.params)
     }
-
-    pub fn append_to(&self, bytes_vec: &mut Vec<Bytes>) {
-        bytes_vec.extend(self.params.iter());
-    }
 }
 
 impl Clone for ServerParams {

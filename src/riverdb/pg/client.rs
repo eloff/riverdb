@@ -16,9 +16,9 @@ use crate::define_event;
 use crate::riverdb::{Error, Result, common};
 use crate::riverdb::worker::{Worker};
 use crate::riverdb::pg::protocol::{
-    Message, MessageReader, MessageParser, ServerParams, Tag,
-    PROTOCOL_VERSION, SSL_REQUEST, AuthType, MessageBuilder,
-    MessageErrorBuilder, error_codes, ErrorSeverity,
+    Message, MessageReader, MessageParser, ServerParams, Tag, PostgresError,
+    PROTOCOL_VERSION, SSL_REQUEST, AuthType, MessageBuilder, MessageErrorBuilder,
+    error_codes, ErrorSeverity, SSL_ALLOWED, SSL_NOT_ALLOWED
 };
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection};
 use crate::riverdb::server::Transport;
@@ -27,7 +27,7 @@ use crate::riverdb::pg::{PostgresCluster, ConnectionPool};
 use crate::riverdb::pg::connection::{read_and_flush_backlog, Backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::pg::client_state::ClientState;
-use crate::riverdb::common::{PostgresError, AtomicCell, AtomicArc, AtomicRef};
+use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
 use crate::riverdb::config::{conf, TlsMode};
 use crate::riverdb::pg::message_stream::MessageStream;
 
@@ -69,6 +69,11 @@ impl ClientConn {
             let msg = stream.next(sender_ref).await?;
             client_message::run(self, sender.as_ref(), msg).await?;
         }
+    }
+
+    #[inline]
+    pub async fn send(&self, msg: Message, prefer_buffer: bool) -> Result<()> {
+        client_send_message::run(self, msg, prefer_buffer).await
     }
 
     /// Returns the associated BackendConn, if any.
@@ -124,8 +129,11 @@ impl ClientConn {
     async fn ssl_handshake(&self) -> Result<()> {
         let tls_mode = conf().postgres.client_tls;
         match tls_mode {
-            TlsMode::Disabled | TlsMode::Invalid => Ok(()),
+            TlsMode::Disabled | TlsMode::Invalid => {
+                self.write_or_buffer(Bytes::from_static(&[SSL_NOT_ALLOWED]), false)
+            },
             _ => {
+                self.write_or_buffer(Bytes::from_static(&[SSL_ALLOWED]), false)?;
                 self.state.transition(self, ClientState::SSLHandshake)?;
                 let tls_config = conf().postgres.tls_config.clone().unwrap();
                 self.transport.upgrade_server(tls_config, tls_mode).await
@@ -152,7 +160,7 @@ impl ClientConn {
         if let AuthType::MD5 = auth_type {
             mb.write_i32(self.salt);
         }
-        client_send_message::run(self, mb.finish()).await?;
+        self.send(mb.finish(), false).await?;
 
         Ok(auth_type)
     }
@@ -178,7 +186,7 @@ impl ClientConn {
                         error_codes::INVALID_PASSWORD,
                         &error_msg
                     );
-                    client_send_message::run(self, mb.finish()).await?;
+                    self.send(mb.finish(), false).await?;
                     Err(Error::new(error_msg))
                 }
             },
@@ -191,29 +199,26 @@ impl ClientConn {
     #[instrument]
     pub async fn client_complete_startup(&self, _: &mut client_complete_startup::Event, cluster: &PostgresCluster) -> Result<()> {
         let startup_params = cluster.get_startup_params();
-        let mut msgs = Vec::with_capacity(startup_params.len() + 3);
 
         let mut mb = MessageBuilder::new(Tag::AUTHENTICATION_OK);
         mb.write_i32(AuthType::Ok.as_i32());
-        msgs.push(mb.finish());
+        self.send(mb.finish(), true).await?;
 
         for (key, value) in startup_params.iter() {
             mb.add_new(Tag::PARAMETER_STATUS);
             mb.write_str(key);
             mb.write_str(value);
-            msgs.push(mb.finish());
+            self.send(mb.finish(), true).await?;
         }
 
         mb.add_new(Tag::BACKEND_KEY_DATA);
         mb.write_i32(self.id.load(Relaxed) as i32);
         mb.write_i32(self.salt);
-        msgs.push(mb.finish());
+        self.send(mb.finish(), true).await?;
 
         mb.add_new(Tag::READY_FOR_QUERY);
         mb.write_byte('I' as u8);
-        msgs.push(mb.finish());
-
-        Ok(())
+        self.send(mb.finish(), false).await
     }
 
     #[instrument]
@@ -244,8 +249,8 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_send_message(&self, _: &mut client_send_message::Event, msg: Message) -> Result<()> {
-        self.write_or_buffer(msg.into_bytes())
+    pub async fn client_send_message(&self, _: &mut client_send_message::Event, msg: Message, prefer_buffer: bool) -> Result<()> {
+        self.write_or_buffer(msg.into_bytes(), prefer_buffer)
     }
 }
 
@@ -352,13 +357,14 @@ define_event!(client_message, (client: &'a ClientConn, backend: Option<&'a Arc<B
 
 /// client_send_message is called to send a Message to a backend db connection.
 ///     client: &ClientConn : the event source handling the client connection
-///     msg: protocol.Message is the protocol.Message to send
+///     msg : protocol.Message is the protocol.Message to send
+///     prefer_buffer: bool : passed to write_or_buffer, see docs for that method
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
 /// It's also possible to replace a single Message with many by calling ev.next() for each.
 /// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
 /// ClientConn::client_send_message is called by default and sends the Message to the connected client.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_send_message, (client: &'a ClientConn, msg: Message) -> Result<()>);
+define_event!(client_send_message, (client: &'a ClientConn, msg: Message, prefer_buffer: bool) -> Result<()>);
 
 define_event!(client_auth_challenge, (client: &'a ClientConn, params: ServerParams) -> Result<AuthType>);
 

@@ -71,6 +71,11 @@ impl BackendConn {
         }
     }
 
+    #[inline]
+    pub async fn send(&self, msg: Message, prefer_buffer: bool) -> Result<()> {
+        backend_send_message::run(self, msg, prefer_buffer).await
+    }
+
     pub async fn test_auth(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<()> {
         self.start(user, password, pool).await?;
 
@@ -120,7 +125,7 @@ impl BackendConn {
         let ssl_request = Message::new(Bytes::from_static(SSL_REQUEST_MSG));
 
         self.state.transition(self, BackendState::SSLHandshake)?;
-        backend_send_message::run(self, ssl_request).await?;
+        self.send(ssl_request, false).await?;
 
         self.transport.ready(Interest::READABLE).await?;
         let mut buf: [u8; 1] = [0];
@@ -209,7 +214,7 @@ impl BackendConn {
 
         self.state.transition(self, BackendState::Authentication);
 
-        backend_send_message::run(self, mb.finish()).await
+        self.send(mb.finish(), false).await
     }
 
     #[instrument]
@@ -238,7 +243,8 @@ impl BackendConn {
             _ => {
                 // Forward the message to the client, if there is one
                 if let Some(client) = client {
-                    return backend_send_message::run(self, msg).await
+                    let prefer_buffer = false; // TODO
+                    client.send(msg, prefer_buffer).await?;
                 }
                 // TODO else this is part of a query workflow, do what with it???
                 Ok(())
@@ -273,7 +279,7 @@ impl BackendConn {
                         }
                         let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
                         mb.write_str(&password);
-                        backend_send_message::run(self, mb.finish()).await
+                        self.send(mb.finish(), false).await
                     },
                     AuthType::MD5 => {
                         let salt = r.read_i32();
@@ -283,7 +289,7 @@ impl BackendConn {
                         let md5_password = hash_md5_password(&user, &password, salt);
                         let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
                         mb.write_str(&md5_password);
-                        backend_send_message::run(self, mb.finish()).await
+                        self.send(mb.finish(), false).await
                     },
                     _ => Err(Error::new(format!("unsupported authentication scheme (pull requests welcome!) {}", auth_type)))
                 }
@@ -296,8 +302,8 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn backend_send_message(&self, _: &mut backend_send_message::Event, msg: Message) -> Result<()> {
-        self.write_or_buffer(msg.into_bytes())
+    pub async fn backend_send_message(&self, _: &mut backend_send_message::Event, msg: Message, prefer_buffer: bool) -> Result<()> {
+        self.write_or_buffer(msg.into_bytes(), prefer_buffer)
     }
 }
 
@@ -402,12 +408,13 @@ define_event!(backend_message, (backend: &'a BackendConn, client: Option<&'a Arc
 /// backend_send_message is called to send a Message to a backend db connection.
 ///     backend: &BackendConn : the event source handling the backend connection
 ///     msg: protocol.Message is the protocol.Message to send
+///     prefer_buffer: bool : passed to write_or_buffer, see docs for that method
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
 /// It's also possible to replace a single Message with many by calling ev.next() for each.
 /// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
 /// BackendConn::backend_send_message is called by default and sends the Message to the db server.
 /// If it returns an error, the associated session is terminated.
-define_event!(backend_send_message, (backend: &'a BackendConn, msg: Message) -> Result<()>);
+define_event!(backend_send_message, (backend: &'a BackendConn, msg: Message, prefer_buffer: bool) -> Result<()>);
 
 /// backend_authenticate is called with each Message received while in the Authentication state
 define_event!(backend_authenticate, (backend: &'a BackendConn, msg: Message) -> Result<()>);
