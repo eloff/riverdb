@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU32, AtomicPtr, AtomicBool};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::collections::VecDeque;
@@ -36,22 +36,27 @@ pub trait Connection: server::Connection {
     /// write_or_buffer writes all the bytes in buf to sender without blocking or buffers it
     /// (without copying) to send later. Takes ownership of buf in all cases.
     /// If prefer_buffer is true, this method prefers to buffer the data instead of writing it,
-    /// if it's false, or enough data is buffered, it will try to write buffered data.
+    /// if it's false, or enough data is buffered, it will try a non-blocking write to self.transport().
     /// prefer_buffer can be set to true if you know there are more messages coming soon,
     /// and must be set to false when there are no more messages expected soon.
-    fn write_or_buffer(&self, mut buf: Bytes, _prefer_buffer: bool) -> Result<()> {
+    /// Returns the number of bytes actually written (not buffered.)
+    fn write_or_buffer(&self, mut buf: Bytes, mut prefer_buffer: bool) -> Result<usize> {
+        const MAX_BACKLOG_ENTRIES_BEFORE_WRITE: usize = 7;
         // We always have to acquire the mutex, even if the backlog appears empty, otherwise
         // we can't be certain another thread won't try to write the backlog and overlap write()
         // calls with us here. Essentially the backlog mutex must always be held when writing
         // so that the logical writes are atomic and ordered correctly.
+        let mut bytes_written = 0;
         let mut backlog = self.backlog().lock().map_err(Error::from)?;
-        if backlog.is_empty() {
+        // If the backlog is empty, and prefer_buffer = false, try writing buf directly
+        if backlog.is_empty() && !prefer_buffer {
             // If the backlog is empty, maybe we can write this to the socket
-            let n = self.transport().try_write(buf.chunk())?;
-            if n < buf.remaining() {
-                buf.advance(n);
+            bytes_written = self.transport().try_write(buf.chunk())?;
+            if bytes_written < buf.remaining() {
+                buf.advance(bytes_written);
+                prefer_buffer = true; // don't try to write this again below
             } else {
-                return Ok(());
+                return Ok(bytes_written);
             }
         }
         // Else we have data buffered pending because the socket is not ready for writing, add buf to the end.
@@ -67,18 +72,27 @@ pub trait Connection: server::Connection {
 
         backlog.push_back(buf);
         self.set_has_backlog(true);
-        Ok(())
+
+        if !prefer_buffer || backlog.len() > MAX_BACKLOG_ENTRIES_BEFORE_WRITE {
+            self.write_backlog(backlog)
+        } else {
+            Ok(bytes_written)
+        }
     }
 
     /// try_write_backlog tries to write some bytes from the backlog to the transport.
     /// Call when the underlying transport is ready for writing. Returns the number of bytes written.
     fn try_write_backlog(&self) -> Result<usize> {
-        let mut write_bytes = 0;
         if !self.has_backlog() {
-            return Ok(write_bytes);
+            return Ok(0);
         }
 
         let mut backlog = self.backlog().lock().map_err(Error::from)?;
+        self.write_backlog(backlog)
+    }
+
+    fn write_backlog(&self, mut backlog: MutexGuard<VecDeque<Bytes>>) -> Result<usize> {
+        let mut write_bytes = 0;
         loop {
             // If !backend.is_tls() && backlog.len() > 1 we may want to use try_write_vectored
             // However, that's not worth the effort yet, and it should be completely pointless once we're

@@ -72,7 +72,7 @@ impl BackendConn {
     }
 
     #[inline]
-    pub async fn send(&self, msg: Message, prefer_buffer: bool) -> Result<()> {
+    pub async fn send(&self, msg: Message, prefer_buffer: bool) -> Result<usize> {
         backend_send_message::run(self, msg, prefer_buffer).await
     }
 
@@ -214,7 +214,8 @@ impl BackendConn {
 
         self.state.transition(self, BackendState::Authentication);
 
-        self.send(mb.finish(), false).await
+        self.send(mb.finish(), false).await?;
+        Ok(())
     }
 
     #[instrument]
@@ -279,7 +280,8 @@ impl BackendConn {
                         }
                         let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
                         mb.write_str(&password);
-                        self.send(mb.finish(), false).await
+                        self.send(mb.finish(), false).await?;
+                        Ok(())
                     },
                     AuthType::MD5 => {
                         let salt = r.read_i32();
@@ -289,7 +291,8 @@ impl BackendConn {
                         let md5_password = hash_md5_password(&user, &password, salt);
                         let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
                         mb.write_str(&md5_password);
-                        self.send(mb.finish(), false).await
+                        self.send(mb.finish(), false).await?;
+                        Ok(())
                     },
                     _ => Err(Error::new(format!("unsupported authentication scheme (pull requests welcome!) {}", auth_type)))
                 }
@@ -302,7 +305,7 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn backend_send_message(&self, _: &mut backend_send_message::Event, msg: Message, prefer_buffer: bool) -> Result<()> {
+    pub async fn backend_send_message(&self, _: &mut backend_send_message::Event, msg: Message, prefer_buffer: bool) -> Result<usize> {
         self.write_or_buffer(msg.into_bytes(), prefer_buffer)
     }
 }
@@ -414,7 +417,8 @@ define_event!(backend_message, (backend: &'a BackendConn, client: Option<&'a Arc
 /// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
 /// BackendConn::backend_send_message is called by default and sends the Message to the db server.
 /// If it returns an error, the associated session is terminated.
-define_event!(backend_send_message, (backend: &'a BackendConn, msg: Message, prefer_buffer: bool) -> Result<()>);
+/// /// Returns the number of bytes actually written (not buffered.)
+define_event!(backend_send_message, (backend: &'a BackendConn, msg: Message, prefer_buffer: bool) -> Result<usize>);
 
 /// backend_authenticate is called with each Message received while in the Authentication state
 define_event!(backend_authenticate, (backend: &'a BackendConn, msg: Message) -> Result<()>);

@@ -72,7 +72,7 @@ impl ClientConn {
     }
 
     #[inline]
-    pub async fn send(&self, msg: Message, prefer_buffer: bool) -> Result<()> {
+    pub async fn send(&self, msg: Message, prefer_buffer: bool) -> Result<usize> {
         client_send_message::run(self, msg, prefer_buffer).await
     }
 
@@ -130,10 +130,13 @@ impl ClientConn {
         let tls_mode = conf().postgres.client_tls;
         match tls_mode {
             TlsMode::Disabled | TlsMode::Invalid => {
-                self.write_or_buffer(Bytes::from_static(&[SSL_NOT_ALLOWED]), false)
+                let n = self.write_or_buffer(Bytes::from_static(&[SSL_NOT_ALLOWED]), false)?;
+                debug_assert_eq!(n, 1);
+                Ok(())
             },
             _ => {
-                self.write_or_buffer(Bytes::from_static(&[SSL_ALLOWED]), false)?;
+                let n = self.write_or_buffer(Bytes::from_static(&[SSL_ALLOWED]), false)?;
+                debug_assert_eq!(n, 1);
                 self.state.transition(self, ClientState::SSLHandshake)?;
                 let tls_config = conf().postgres.tls_config.clone().unwrap();
                 self.transport.upgrade_server(tls_config, tls_mode).await
@@ -218,7 +221,8 @@ impl ClientConn {
 
         mb.add_new(Tag::READY_FOR_QUERY);
         mb.write_byte('I' as u8);
-        self.send(mb.finish(), false).await
+        self.send(mb.finish(), false).await?;
+        Ok(())
     }
 
     #[instrument]
@@ -249,7 +253,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_send_message(&self, _: &mut client_send_message::Event, msg: Message, prefer_buffer: bool) -> Result<()> {
+    pub async fn client_send_message(&self, _: &mut client_send_message::Event, msg: Message, prefer_buffer: bool) -> Result<usize> {
         self.write_or_buffer(msg.into_bytes(), prefer_buffer)
     }
 }
@@ -364,7 +368,8 @@ define_event!(client_message, (client: &'a ClientConn, backend: Option<&'a Arc<B
 /// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
 /// ClientConn::client_send_message is called by default and sends the Message to the connected client.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_send_message, (client: &'a ClientConn, msg: Message, prefer_buffer: bool) -> Result<()>);
+/// Returns the number of bytes actually written (not buffered.)
+define_event!(client_send_message, (client: &'a ClientConn, msg: Message, prefer_buffer: bool) -> Result<usize>);
 
 define_event!(client_auth_challenge, (client: &'a ClientConn, params: ServerParams) -> Result<AuthType>);
 
