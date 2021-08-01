@@ -59,11 +59,11 @@ impl PostgresCluster {
         }
     }
 
-    /// Returns a reference to the ConnectionPool of the master of the first partition with a matching database
-    pub fn get_by_database(&self, database: &str) -> Option<&'static ConnectionPool> {
+    /// Returns a reference to the PostgresReplicationGroup of the first partition with a matching database
+    pub fn get_by_database(&'static self, database: &str) -> Option<&'static PostgresReplicationGroup> {
         for node in self.nodes.iter() {
             if node.config.database == database {
-                return node.master.load();
+                return Some(node);
             }
         }
         None

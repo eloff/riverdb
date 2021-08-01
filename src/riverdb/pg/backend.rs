@@ -32,7 +32,7 @@ pub struct BackendConn {
     /// added_to_pool is a course-grained monotonic clock that is 0, or records when this was returned to the pool
     added_to_pool: AtomicU32,
     has_send_backlog: AtomicBool,
-    for_transaction: AtomicBool,
+    tx_type: AtomicBool,
     state: BackendConnState,
     client: AtomicArc<ClientConn>,
     send_backlog: Backlog,
@@ -79,6 +79,9 @@ impl BackendConn {
 
     #[inline]
     pub async fn send(&self, msg: Message, prefer_buffer: bool) -> Result<usize> {
+        if msg.is_empty() {
+            return Ok(0);
+        }
         backend_send_message::run(self, msg, prefer_buffer).await
     }
 
@@ -184,8 +187,8 @@ impl BackendConn {
         self.client.store(client);
     }
 
-    pub fn created_for_transaction(&self) -> bool {
-        self.for_transaction.load(Relaxed)
+    pub fn created_tx_type(&self) -> bool {
+        self.tx_type.load(Relaxed)
     }
 
     pub fn in_pool(&self) -> bool {
@@ -203,7 +206,7 @@ impl BackendConn {
             false
         } else {
             self.added_to_pool.store(coarse_monotonic_now(), Relaxed);
-            self.for_transaction.store(false, Relaxed);
+            self.tx_type.store(false, Relaxed);
             true
         }
     }
@@ -323,7 +326,7 @@ impl server::Connection for BackendConn {
             id: Default::default(),
             added_to_pool: Default::default(),
             has_send_backlog: Default::default(),
-            for_transaction: Default::default(),
+            tx_type: Default::default(),
             state: Default::default(),
             client: Default::default(),
             send_backlog: Mutex::new(Default::default()),

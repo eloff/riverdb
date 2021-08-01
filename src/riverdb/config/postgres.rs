@@ -22,10 +22,10 @@ pub struct PostgresCluster {
     /// pinned_sessions prevents release of the backend db connection until the session ends. Default false.
     /// Enabling this means that every connection to riverdb that's issued a query is backed 1-to-1 by a
     /// connection to the database, which hurts performance. It's not recommended to change this setting.
-    /// This will also prevent on_route_partition from being called after the first query in a session.
+    /// This will also prevent client_partition from being called after the first query in a session.
     #[serde(default)]
     pub pinned_sessions: bool,
-    /// defer_begin = false requires that transactions are backed 1-to-1 with a backend db transaction.
+    /// NOT IMPLEMENTED defer_begin = false requires that transactions are backed 1-to-1 with a backend db transaction.
     /// Default false. If this is true, a BEGIN transaction may be deferred in READ COMMITTED or
     /// lower isolation levels until the first query that would modify the database or take locks.
     /// This means shorter duration transactions and allows SELECTs (but not SELECT FOR UPDATE) at
@@ -35,6 +35,13 @@ pub struct PostgresCluster {
     /// that modify the database need to be manually tagged as being a write operation.
     #[serde(default)]
     pub defer_begin: bool,
+    #[serde(default)]
+    /// Issue begin/set/set local queries immediately, do not buffer them until another command/query
+    /// is received. A lot of frameworks will start a transaction at the beginning of a request,
+    /// and then burn time parsing/validating input before attempting to run a query.
+    /// So we reduce the time a transaction is open for (and a backend connection is unavailable.)
+    /// Defaults to false (buffering is enabled.)
+    pub unbuffered_begin: bool,
     /// max_connections to allow before rejecting new connections. Important to introduce back-pressure. Default 10,000.
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
@@ -99,6 +106,8 @@ pub struct Postgres {
     /// is_master is set to true if this isn't inside a replicas vec
     #[serde(skip)]
     pub is_master: bool,
+    /// true if queries can be routed to this database. Set to false for failover only databases.
+    pub can_query: bool,
     /// max_concurrent_transactions is the maximum number of db connections with open transactions permitted, defaults to 80.
     #[serde(default = "default_max_concurrent_transactions")]
     pub max_concurrent_transactions: u32,

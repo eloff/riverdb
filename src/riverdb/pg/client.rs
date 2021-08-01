@@ -20,16 +20,18 @@ use crate::riverdb::pg::protocol::{
     PROTOCOL_VERSION, SSL_REQUEST, AuthType, MessageBuilder, MessageErrorBuilder,
     error_codes, ErrorSeverity, SSL_ALLOWED, SSL_NOT_ALLOWED
 };
-use crate::riverdb::pg::{ClientConnState, BackendConn, Connection};
+use crate::riverdb::pg::{ClientConnState, BackendConn, Connection, TransactionType};
 use crate::riverdb::server::Transport;
 use crate::riverdb::server;
 use crate::riverdb::pg::{PostgresCluster, ConnectionPool};
 use crate::riverdb::pg::connection::{read_and_flush_backlog, Backlog};
 use crate::riverdb::pg::backend_state::BackendState;
+use crate::riverdb::pg::message_stream::MessageStream;
 use crate::riverdb::pg::client_state::ClientState;
+use crate::riverdb::pg::sql::Query;
+use crate::riverdb::pg::PostgresReplicationGroup;
 use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
 use crate::riverdb::config::{conf, TlsMode};
-use crate::riverdb::pg::message_stream::MessageStream;
 
 
 pub struct ClientConn {
@@ -42,9 +44,12 @@ pub struct ClientConn {
     auth_type: AtomicCell<AuthType>,
     has_send_backlog: AtomicBool,
     state: ClientConnState,
+    tx_type: AtomicCell<TransactionType>,
     backend: AtomicArc<BackendConn>,
     send_backlog: Backlog,
     db_cluster: AtomicRef<'static, PostgresCluster>,
+    db_replication_group: AtomicRef<'static, PostgresReplicationGroup>, // the last PostgresReplicationGroup used
+    db_pool: AtomicRef<'static, ConnectionPool>, // the last ConnectionPool used
     connect_params: UnsafeCell<ServerParams>,
     salt: i32,
 }
@@ -73,6 +78,9 @@ impl ClientConn {
 
     #[inline]
     pub async fn send(&self, msg: Message, prefer_buffer: bool) -> Result<usize> {
+        if msg.is_empty() {
+            return Ok(0);
+        }
         client_send_message::run(self, msg, prefer_buffer).await
     }
 
@@ -95,6 +103,26 @@ impl ClientConn {
         self.db_cluster.load()
     }
 
+    pub fn set_cluster(&self, cluster: Option<&'static PostgresCluster>) {
+        self.db_cluster.store(cluster);
+    }
+
+    pub fn replication_group(&self) -> Option<&'static PostgresReplicationGroup> {
+        self.db_replication_group.load()
+    }
+
+    pub fn set_replication_group(&self, replication_group: Option<&'static PostgresReplicationGroup>) {
+        self.db_replication_group.store(replication_group);
+    }
+
+    pub fn pool(&self) -> Option<&'static ConnectionPool> {
+        self.db_pool.load()
+    }
+
+    pub fn set_pool(&self, pool: Option<&'static ConnectionPool>) {
+        self.db_pool.store(pool);
+    }
+
     pub fn connection_params(&self) -> &ServerParams {
         match self.state.get() {
             ClientState::StateInitial | ClientState::SSLHandshake => {
@@ -106,6 +134,12 @@ impl ClientConn {
         unsafe {
             &*self.connect_params.get()
         }
+    }
+
+    /// forwards msg to the backend via backend.send. If backend is None, runs client_connect_backend
+    /// to acquire a backend connection. Panics unless in Ready, Transaction, or FailedTransaction states.
+    pub async fn forward(&self, backend: Option<&Arc<BackendConn>>, msg: Message) -> Result<usize> {
+        client_query::run(self, backend, Query::new(msg)).await
     }
 
     #[instrument]
@@ -145,6 +179,69 @@ impl ClientConn {
     }
 
     #[instrument]
+    pub async fn client_query(&self, _: &mut client_query::Event, backend: Option<&Arc<BackendConn>>, mut query: Query) -> Result<usize> {
+        let state = self.state.get();
+        let tx_type = match state {
+            ClientState::Transaction => self.tx_type.load(),
+            ClientState::Ready | ClientState::FailedTransaction => {
+                // TODO does msg start a transaction?
+                todo!()
+            },
+            _ => panic!("forward called in unexpected state {:?}", state)
+        };
+
+        if backend.is_none() {
+            let cluster = self.db_cluster.load().expect("missing cluster");
+            let params = self.connection_params();
+            let user = params.get("user").expect("missing user");
+            let database = params.get("database").expect("missing database");
+            let application_name = params.get("application_name").unwrap_or("riverdb");
+            let backend = client_connect_backend::run(self, cluster,application_name, user, database, tx_type, &mut query).await?;
+            let n = backend.send(query.into_message(), false).await?;
+            self.set_backend(Some(backend));
+            Ok(n)
+        } else {
+            backend.unwrap().send(query.into_message(), false).await
+        }
+    }
+
+    #[instrument]
+    pub async fn client_connect_backend<'a>(&'a self, _: &'a mut client_connect_backend::Event, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut Query) -> Result<Arc<BackendConn>> {
+        let mut error_code = error_codes::CANNOT_CONNECT_NOW;
+        let group = client_partition::run(self, cluster, application_name, user, database, tx_type, query).await?;
+        if let Some(group) = group {
+            self.set_replication_group(Some(group));
+            let pool = if !group.has_query_replica() || tx_type != TransactionType::ReadOnly {
+                group.master.load()
+            } else {
+                client_route_query::run(self, group, tx_type, query).await?
+            };
+            if let Some(pool) = pool {
+                self.set_pool(Some(pool));
+                let backend = pool.get(application_name, user, tx_type).await?;
+                if let Some(backend) = backend {
+                    return Ok(backend);
+                }
+                error_code = error_codes::CONFIGURATION_LIMIT_EXCEEDED;
+            }
+        }
+
+        let error_msg = "no database available for query";
+        self.send(Message::new_error(error_code, error_msg), false).await?;
+        Err(Error::new(error_msg))
+    }
+
+    #[instrument]
+    pub async fn client_partition<'a>(&'a self, _: &'a mut client_partition::Event, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut Query) -> Result<Option<&'static PostgresReplicationGroup>> {
+        Ok(cluster.get_by_database(database))
+    }
+
+    #[instrument]
+    pub async fn client_route_query<'a>(&'a self, _: &'a mut client_route_query::Event, group: &'static PostgresReplicationGroup, _tx_type: TransactionType, _query: &'a mut Query) -> Result<Option<&'static ConnectionPool>> {
+        Ok(group.master.load())
+    }
+
+    #[instrument]
     pub async fn client_auth_challenge(&self, _: &mut client_auth_challenge::Event, params: ServerParams) -> Result<AuthType> {
         let auth_type = if self.is_tls() {
             AuthType::ClearText
@@ -179,22 +276,28 @@ impl ClientConn {
                 let user = params.get("user").expect("missing user");
                 let database = params.get("database").expect("missing database");
 
-                let pool = cluster.get_by_database(database);
-                if pool.is_none() {
-                    let error_msg = format!("database \"{}\" does not exist", database);
-                    self.send(Message::new_error(error_codes::INVALID_CATALOG_NAME, &error_msg), false).await?;
-                    return Err(Error::new(error_msg));
+                let group = cluster.get_by_database(database);
+                if let Some(group) = group {
+                    let pool = group.master.load();
+                    if let Some(pool) = pool {
+                        let password = {
+                            let r = MessageReader::new(&msg);
+                            r.read_str()?
+                        };
+                        return if cluster.authenticate(user, password, pool).await? {
+                            client_complete_startup::run(self, cluster).await?;
+                            self.state.transition(self, ClientState::Ready)
+                        } else {
+                            let error_msg = format!("password authentication failed for user \"{}\"", user);
+                            self.send(Message::new_error(error_codes::INVALID_PASSWORD, &error_msg), false).await?;
+                            Err(Error::new(error_msg))
+                        };
+                    }
                 }
 
-                let r = MessageReader::new(&msg);
-                if cluster.authenticate(user, r.read_str()?, pool.unwrap()).await? {
-                    client_complete_startup::run(self, cluster).await?;
-                    self.state.transition(self, ClientState::Ready)
-                } else {
-                    let error_msg = format!("password authentication failed for user \"{}\"", user);
-                    self.send(Message::new_error(error_codes::INVALID_PASSWORD, &error_msg), false).await?;
-                    Err(Error::new(error_msg))
-                }
+                let error_msg = format!("database \"{}\" does not exist", database);
+                self.send(Message::new_error(error_codes::INVALID_CATALOG_NAME, &error_msg), false).await?;
+                Err(Error::new(error_msg))
             },
             _ => {
                 Err(Error::new(format!("unexpected message {}", msg.tag())))
@@ -244,13 +347,27 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_message(&self, _: &mut client_message::Event, _backend: Option<&Arc<BackendConn>>, msg: Message) -> Result<()> {
-        match self.state.get() {
+    pub async fn client_message(&self, _: &mut client_message::Event, backend: Option<&Arc<BackendConn>>, msg: Message) -> Result<()> {
+        let state = self.state.get();
+        match state {
             ClientState::StateInitial => {
                 self.startup(msg).await
             },
-            _ => {
+            ClientState::Authentication => {
+                let auth_type = self.auth_type.load();
+                client_authenticate::run(self, auth_type, msg).await
+            },
+            ClientState::Ready | ClientState::Transaction | ClientState::FailedTransaction => {
+                self.forward(backend, msg).await;
                 Ok(())
+            },
+            ClientState::Closed => {
+                Err(Error::closed())
+            },
+            _ => {
+                let error_msg = format!("received unexpected {:?} message while in {:?}", msg.tag(), state);
+                self.send(Message::new_error(error_codes::PROTOCOL_VIOLATION, &error_msg), false).await?;
+                Err(Error::new(error_msg))
             }
         }
     }
@@ -270,9 +387,12 @@ impl server::Connection for ClientConn {
             auth_type: AtomicCell::default(),
             has_send_backlog: Default::default(),
             state: Default::default(),
+            tx_type: AtomicCell::default(),
             backend: Default::default(),
             send_backlog: Mutex::new(VecDeque::new()),
             db_cluster: AtomicRef::default(),
+            db_replication_group: AtomicRef::default(),
+            db_pool: AtomicRef::default(),
             connect_params: UnsafeCell::new(ServerParams::new()),
             salt: Worker::get().rand32() as i32
         }
@@ -362,6 +482,8 @@ define_event!(client_connected, (client: &'a ClientConn, params: ServerParams) -
 /// If it returns an error, the associated session is terminated.
 define_event!(client_message, (client: &'a ClientConn, backend: Option<&'a Arc<BackendConn>>, msg: Message) -> Result<()>);
 
+define_event!(client_query, (client: &'a ClientConn, backend: Option<&'a Arc<BackendConn>>, query: Query) -> Result<usize>);
+
 /// client_send_message is called to send a Message to a backend db connection.
 ///     client: &ClientConn : the event source handling the client connection
 ///     msg : protocol.Message is the protocol.Message to send
@@ -378,4 +500,10 @@ define_event!(client_auth_challenge, (client: &'a ClientConn, params: ServerPara
 
 define_event!(client_authenticate, (client: &'a ClientConn, auth_type: AuthType, msg: Message) -> Result<()>);
 
-define_event!(client_complete_startup, (client: &'a ClientConn, cluster: &'a PostgresCluster) -> Result<()>);
+define_event!(client_complete_startup, (client: &'a ClientConn, cluster: &'static PostgresCluster) -> Result<()>);
+
+define_event!(client_connect_backend, (client: &'a ClientConn, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut Query) -> Result<Arc<BackendConn>>);
+
+define_event!(client_partition, (client: &'a ClientConn, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut Query) -> Result<Option<&'static PostgresReplicationGroup>>);
+
+define_event!(client_route_query, (client: &'a ClientConn, group: &'static PostgresReplicationGroup, tx_type: TransactionType, query: &'a mut Query) -> Result<Option<&'static ConnectionPool>>);

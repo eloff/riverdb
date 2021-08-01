@@ -8,9 +8,8 @@ use tokio::net::TcpStream;
 use tracing::{warn};
 
 use crate::riverdb::{Result};
-use crate::riverdb::pg::isolation::IsolationLevel;
 use crate::riverdb::server::{Connections, ConnectionRef, Connection};
-use crate::riverdb::pg::{BackendConn};
+use crate::riverdb::pg::{BackendConn, IsolationLevel, TransactionType};
 use crate::riverdb::config;
 use crate::riverdb::config::{Postgres, conf};
 use crate::riverdb::common::{coarse_monotonic_now, Version, AtomicCell, change_lifetime};
@@ -54,8 +53,8 @@ impl ConnectionPool {
         }
     }
     
-    pub async fn get(&self, application_name: &str, role: &str, for_transaction: bool) -> Result<Option<Arc<BackendConn>>> {
-        if for_transaction && self.active_transactions.fetch_add(1, Relaxed) > self.max_transactions {
+    pub async fn get(&self, application_name: &str, role: &str, tx_type: TransactionType) -> Result<Option<Arc<BackendConn>>> {
+        if tx_type != TransactionType::None && self.active_transactions.fetch_add(1, Relaxed) > self.max_transactions {
             let prev = self.active_transactions.fetch_add(-1, Relaxed);
             debug_assert!(prev > 0);
             return Ok(None);
@@ -63,7 +62,8 @@ impl ConnectionPool {
 
         loop {
             let mut created = false;
-            let conn = if let Some(conn) = self.pooled_connections.lock().unwrap().pop() {
+            let pooled_conn = self.pooled_connections.lock().unwrap().pop();
+            let conn = if let Some(conn) = pooled_conn {
                 conn
             } else {
                 if let Some(conn_ref) = self.connect().await? {
@@ -94,7 +94,7 @@ impl ConnectionPool {
 
             // Set the role for the connection, which also checks that it's healthy.
             // If this fails, and the connection came from the pool, we try with another connection.
-            if let Err(e) = conn.check_health_and_set_role(application_name, role).await {
+            return if let Err(e) = conn.check_health_and_set_role(application_name, role).await {
                 // If this connection came from the pool, and failed the health check
                 // Record how long it was idle in the pool.
                 let mut idle_seconds = 0;
@@ -111,9 +111,9 @@ impl ConnectionPool {
                 // If even a new connection isn't healthy or can't set the role
                 // then trying again with another new connection is unlikely to work.
                 // Just return the error.
-                return Err(e);
+                Err(e)
             } else {
-                return Ok(Some(conn));
+                Ok(Some(conn))
             }
         }
     }
@@ -129,7 +129,7 @@ impl ConnectionPool {
     }
 
     pub fn put(&self, conn: Arc<BackendConn>) {
-        if conn.created_for_transaction() {
+        if conn.created_tx_type() {
             let prev = self.active_transactions.fetch_add(-1, Relaxed);
             debug_assert!(prev > 0);
         }

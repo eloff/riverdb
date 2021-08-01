@@ -1,14 +1,16 @@
+use std::fmt::{Debug, Formatter};
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
+use std::str::FromStr;
 
 use tracing::{warn};
 
 use crate::riverdb::config;
 use crate::riverdb::{Result, Error};
-use crate::riverdb::pg::ConnectionPool;
+use crate::riverdb::pg::{ConnectionPool, TransactionType};
 use crate::riverdb::common::{AtomicRef, Version};
 use crate::riverdb::pg::protocol::ServerParams;
-use std::str::FromStr;
+
 
 pub struct PostgresReplicationGroup {
     pub config: &'static config::Postgres,
@@ -28,12 +30,12 @@ impl PostgresReplicationGroup {
         }
     }
 
-    pub fn has_replica(&self) -> bool {
-        !self.replicas.is_empty()
+    pub fn has_query_replica(&self) -> bool {
+        self.replicas.iter().cloned().find(|db| db.config.can_query).is_some()
     }
 
     pub fn round_robin(&self, allow_replica: bool) -> &'static ConnectionPool {
-        if !allow_replica || !self.has_replica() {
+        if !allow_replica || !self.has_query_replica() {
             return self.master.load().unwrap();
         }
 
@@ -49,17 +51,23 @@ impl PostgresReplicationGroup {
 
     pub async fn test_connection(&self) -> Result<ServerParams> {
         let master = self.master.load().unwrap();
-        let conn = master.get("riverdb","", false).await?
+        let conn = master.get("riverdb","", TransactionType::None).await?
             .ok_or_else(|| Error::new(format!("could not connect {:?}", master)))?;
         let mut master_params = conn.params().clone();
 
         for replica in &self.replicas {
-            let conn = replica.get("riverdb", "", false).await?
+            let conn = replica.get("riverdb", "", TransactionType::None).await?
                 .ok_or_else(|| Error::new(format!("could not connect {:?}", replica)))?;
             let replica_params = conn.params();
             merge_server_params(&mut master_params, &*replica_params);
         }
         Ok(master_params)
+    }
+}
+
+impl Debug for PostgresReplicationGroup {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("pg::PostgresReplicationGroup(db={})", self.config.database))
     }
 }
 

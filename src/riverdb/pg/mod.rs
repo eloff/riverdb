@@ -11,6 +11,7 @@ mod pool;
 mod cluster;
 mod group;
 mod message_stream;
+mod transaction;
 
 pub use self::service::PostgresService;
 pub use self::client_state::ClientConnState;
@@ -21,3 +22,5 @@ pub use self::backend::BackendConn;
 pub use self::cluster::PostgresCluster;
 pub use self::group::PostgresReplicationGroup;
 pub use self::pool::ConnectionPool;
+pub use self::isolation::IsolationLevel;
+pub use self::transaction::TransactionType;
