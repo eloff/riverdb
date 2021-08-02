@@ -81,9 +81,11 @@ impl ConnectionPool {
                         static_self.remove(ConnectionRef::arc_ref(&conn_ref));
                     });
 
-                    if let IsolationLevel::None = self.default_isolation_level.load() {
+                    let mut isolation = self.default_isolation_level.load();
+                    if let IsolationLevel::None = isolation {
                         // TODO Check the isolation level and record it
                     }
+                    conn.set_isolation_level(isolation);
 
                     created = true;
                     conn
@@ -91,6 +93,9 @@ impl ConnectionPool {
                     return Ok(None);
                 }
             };
+
+            // Remember if it was created for a transaction so we can decrement active_transactions later
+            conn.set_created_for_transaction(tx_type != TransactionType::None);
 
             // Set the role for the connection, which also checks that it's healthy.
             // If this fails, and the connection came from the pool, we try with another connection.
@@ -129,7 +134,7 @@ impl ConnectionPool {
     }
 
     pub fn put(&self, conn: Arc<BackendConn>) {
-        if conn.created_tx_type() {
+        if conn.created_for_transaction() {
             let prev = self.active_transactions.fetch_add(-1, Relaxed);
             debug_assert!(prev > 0);
         }

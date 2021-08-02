@@ -39,12 +39,15 @@ impl MessageBuilder {
         self.data.len()
     }
 
-    pub fn finish(&mut self) -> Message {
+    /// Completes the Message by setting the message length field to the current length
+    /// and returning the data as a Message, consuming self.
+    pub fn finish(mut self) -> Message {
         self.complete_message();
-        self.start = 0;
-        Message::new( std::mem::take(&mut self.data).freeze())
+        Message::new( self.data.freeze())
     }
 
+    /// Completes the prior Message (if any) by setting the message length field
+    /// and adds a new Message with tag after it.
     pub fn add_new(&mut self, tag: Tag) {
         let len = self.len();
         if len != 0 {

@@ -30,18 +30,14 @@ pub struct PostgresCluster {
     /// lower isolation levels until the first query that would modify the database or take locks.
     /// This means shorter duration transactions and allows SELECTs (but not SELECT FOR UPDATE) at
     /// the start of the transaction to be executed on replicas or served from cache.
+    /// The transaction is then started on the master when the first query with side-effects is encountered.
     /// There are some small differences in behavior, for example because datetime functions return
     /// the time as of the start of the transaction. Also SELECT queries that invoke impure functions
     /// that modify the database need to be manually tagged as being a write operation.
+    /// These differences don't matter to most applications, which benefit from additional caching
+    /// and being able to offload more queries to the replica(s).
     #[serde(default)]
     pub defer_begin: bool,
-    #[serde(default)]
-    /// Issue begin/set/set local queries immediately, do not buffer them until another command/query
-    /// is received. A lot of frameworks will start a transaction at the beginning of a request,
-    /// and then burn time parsing/validating input before attempting to run a query.
-    /// So we reduce the time a transaction is open for (and a backend connection is unavailable.)
-    /// Defaults to false (buffering is enabled.)
-    pub unbuffered_begin: bool,
     /// max_connections to allow before rejecting new connections. Important to introduce back-pressure. Default 10,000.
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,

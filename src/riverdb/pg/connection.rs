@@ -13,7 +13,7 @@ use bytes::{Bytes, BytesMut, BufMut, Buf};
 use crate::riverdb::server;
 use crate::riverdb::server::Transport;
 use crate::riverdb::{Error, Result};
-use crate::riverdb::common::bytes_to_slice_mut;
+use crate::riverdb::common::{bytes_to_slice_mut, unsplit_bytes, bytes_are_contiguous};
 use crate::riverdb::pg::{BackendConn, ClientConn, ConnectionPool};
 use crate::riverdb::pg::protocol::Tag;
 
@@ -61,16 +61,19 @@ pub trait Connection: server::Connection {
         }
         // Else we have data buffered pending because the socket is not ready for writing, add buf to the end.
 
-        // TODO there is no unsplit on Bytes https://github.com/tokio-rs/bytes/issues/503
-        // Combine any Bytes that are adjacent (that's why we take ownership of msgs.)
-        // This is better than using writev because writev can't be used with TLS connections.
-        // if let Some(last) = backlog.back() {
-        //     // If the last buffer and this one are actually contiguous, then combine them instead of adding them separately.
-        //     // MessageParser often produces a run of contiguous messages, and recombining them here will mean fewer syscalls to write().
-        //
-        // }
-
-        backlog.push_back(buf);
+        // MessageParser often produces a run of contiguous messages, and recombining them here will mean fewer syscalls to write().
+        if !backlog.is_empty() && bytes_are_contiguous(&buf, backlog.back().unwrap()) {
+            // Safety: If buf and back() are contiguous we know they were allocated from the same buffer
+            let (merged, failed) = unsafe {
+                unsplit_bytes(buf, backlog.pop_back().unwrap())
+            };
+            backlog.push_back(merged.unwrap());
+            if let Some(other) = failed {
+                backlog.push_back(other);
+            }
+        } else {
+            backlog.push_back(buf);
+        }
         self.set_has_backlog(true);
 
         if !prefer_buffer || backlog.len() > MAX_BACKLOG_ENTRIES_BEFORE_WRITE {

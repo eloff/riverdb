@@ -7,6 +7,7 @@ use bytes::{Bytes, Buf};
 use crate::riverdb::Result;
 use crate::riverdb::pg::protocol::{Tag, MessageReader, MessageErrorBuilder, ErrorSeverity};
 use crate::riverdb::pg::protocol::message_parser::Header;
+use crate::riverdb::common::unsplit_bytes;
 
 
 #[derive(Clone)]
@@ -40,7 +41,7 @@ impl Message {
         self.0.is_empty()
     }
 
-    /// len returns the length of the Message including optional tag byte and length frame
+    /// len returns the length of all the messages in Message including framing
     pub fn len(&self) -> u32 {
         self.0.len() as u32
     }
@@ -50,7 +51,7 @@ impl Message {
         if self.tag() == Tag::UNTAGGED { 4 } else { 5 }
     }
 
-    /// header returns the message Header or panics if self.is_empty()
+    /// header returns the message Header of the first message or panics if self.is_empty()
     pub fn header(&self) -> Header {
         Header::parse(&self.0.chunk()[..5])
             .expect("invalid Message")
@@ -74,6 +75,31 @@ impl Message {
     /// or if is_empty() is true for both.
     pub fn is(&self, other: &Message) -> bool {
         self.0.as_ptr() == other.0.as_ptr()
+    }
+
+    /// If there is another message in the buffer, returns a new Message object starting
+    /// at the next message. This increments the reference count of the underlying buffer,
+    /// but does not copy data. Returns None if there isn't another message.
+    pub fn next(&self) -> Option<Message> {
+        // Note: it's tempting to try to implement Iterator with a wrapper struct
+        // but that's not possible. It's really a streaming iterator and not compatible
+        // without fully materializing the iterator as a Vec<Message> (at which point
+        // it would be more useful to just have a method that returns a Vec<Message>.)
+        // See: https://stackoverflow.com/a/30422716/152580
+        if self.is_empty() {
+            return None;
+        }
+
+        let len = self.header().len() as usize;
+        Some(Message::new(self.0.slice(len..)))
+    }
+
+    /// If other follows directly after self in memory, this merges other into self and returns self.
+    /// Otherwise returns both self and other unchanged.
+    /// Safety: see note on unsplit_bytes for when this may be undefined beahvior.
+    pub unsafe fn unsplit(self, other: Self) -> (Option<Self>, Option<Self>) {
+        let (b1, b2) = unsplit_bytes(self.0, other.0);
+        (b1.and_then(|b|Some(Self::new(b))), b2.and_then(|b| Some(Self::new(b))))
     }
 }
 

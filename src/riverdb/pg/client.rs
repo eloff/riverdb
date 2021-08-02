@@ -50,6 +50,7 @@ pub struct ClientConn {
     db_cluster: AtomicRef<'static, PostgresCluster>,
     db_replication_group: AtomicRef<'static, PostgresReplicationGroup>, // the last PostgresReplicationGroup used
     db_pool: AtomicRef<'static, ConnectionPool>, // the last ConnectionPool used
+    buffered: Mutex<Option<Message>>,
     connect_params: UnsafeCell<ServerParams>,
     salt: i32,
 }
@@ -311,19 +312,16 @@ impl ClientConn {
 
         let mut mb = MessageBuilder::new(Tag::AUTHENTICATION_OK);
         mb.write_i32(AuthType::Ok.as_i32());
-        self.send(mb.finish(), true).await?;
 
         for (key, value) in startup_params.iter() {
             mb.add_new(Tag::PARAMETER_STATUS);
             mb.write_str(key);
             mb.write_str(value);
-            self.send(mb.finish(), true).await?;
         }
 
         mb.add_new(Tag::BACKEND_KEY_DATA);
         mb.write_i32(self.id.load(Relaxed) as i32);
         mb.write_i32(self.salt);
-        self.send(mb.finish(), true).await?;
 
         mb.add_new(Tag::READY_FOR_QUERY);
         mb.write_byte('I' as u8);
@@ -393,6 +391,7 @@ impl server::Connection for ClientConn {
             db_cluster: AtomicRef::default(),
             db_replication_group: AtomicRef::default(),
             db_pool: AtomicRef::default(),
+            buffered: Mutex::new(None),
             connect_params: UnsafeCell::new(ServerParams::new()),
             salt: Worker::get().rand32() as i32
         }
@@ -475,8 +474,7 @@ define_event!(client_connected, (client: &'a ClientConn, params: ServerParams) -
 ///     backend: Option<&'a Arc<BackendConn>> : the associated backend connection (if any)
 ///     msg: protocol.Message is the received protocol.Message
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
-/// It's also possible to replace a single Message with many by calling ev.next() for each.
-/// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
+/// A Message may contain multiple wire protocol messages, see Message::next().
 /// ClientConn::client_message is called by default and does further processing on the Message,
 /// including potentially calling the higher-level client_query. Symmetric with backend_message.
 /// If it returns an error, the associated session is terminated.
@@ -489,8 +487,7 @@ define_event!(client_query, (client: &'a ClientConn, backend: Option<&'a Arc<Bac
 ///     msg : protocol.Message is the protocol.Message to send
 ///     prefer_buffer: bool : passed to write_or_buffer, see docs for that method
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
-/// It's also possible to replace a single Message with many by calling ev.next() for each.
-/// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
+/// A Message may contain multiple wire protocol messages, see Message::next().
 /// ClientConn::client_send_message is called by default and sends the Message to the connected client.
 /// If it returns an error, the associated session is terminated.
 /// Returns the number of bytes actually written (not buffered.)

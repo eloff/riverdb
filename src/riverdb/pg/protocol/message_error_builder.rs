@@ -18,7 +18,7 @@ impl MessageErrorBuilder {
         self
     }
 
-    pub fn finish(&mut self) -> Message {
+    pub fn finish(mut self) -> Message {
         self.0.write_byte(ErrorFieldTag::NULL_TERMINATOR.as_u8());
         self.0.finish()
     }

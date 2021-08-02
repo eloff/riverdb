@@ -14,12 +14,12 @@ use bytes::Bytes;
 use crate::define_event;
 use crate::riverdb::{config, Error, Result};
 use crate::riverdb::config::TlsMode;
-use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool};
+use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool, IsolationLevel};
 use crate::riverdb::server::{Transport, Connection as ServerConnection};
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
-use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now, AtomicRef,change_lifetime};
+use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now, AtomicRef, change_lifetime};
 use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError, hash_md5_password};
 use crate::riverdb::config::conf;
 use crate::riverdb::pg::message_stream::MessageStream;
@@ -32,8 +32,10 @@ pub struct BackendConn {
     /// added_to_pool is a course-grained monotonic clock that is 0, or records when this was returned to the pool
     added_to_pool: AtomicU32,
     has_send_backlog: AtomicBool,
-    tx_type: AtomicBool,
+    for_transaction: AtomicBool,
+    tx_isolation_level: AtomicCell<IsolationLevel>,
     state: BackendConnState,
+    pending_requests: AtomicI32,
     client: AtomicArc<ClientConn>,
     send_backlog: Backlog,
     pool: AtomicRef<'static, ConnectionPool>,
@@ -187,8 +189,20 @@ impl BackendConn {
         self.client.store(client);
     }
 
-    pub fn created_tx_type(&self) -> bool {
-        self.tx_type.load(Relaxed)
+    pub fn created_for_transaction(&self) -> bool {
+        self.for_transaction.load(Relaxed)
+    }
+
+    pub(crate) fn set_created_for_transaction(&self, value: bool) {
+        self.for_transaction.store(value, Relaxed)
+    }
+
+    pub fn isolation_level(&self) -> IsolationLevel {
+        self.tx_isolation_level.load()
+    }
+
+    pub fn set_isolation_level(&self, level: IsolationLevel) {
+        self.tx_isolation_level.store(level);
     }
 
     pub fn in_pool(&self) -> bool {
@@ -206,7 +220,6 @@ impl BackendConn {
             false
         } else {
             self.added_to_pool.store(coarse_monotonic_now(), Relaxed);
-            self.tx_type.store(false, Relaxed);
             true
         }
     }
@@ -326,14 +339,16 @@ impl server::Connection for BackendConn {
             id: Default::default(),
             added_to_pool: Default::default(),
             has_send_backlog: Default::default(),
-            tx_type: Default::default(),
+            for_transaction: Default::default(),
+            tx_isolation_level: AtomicCell::default(),
             state: Default::default(),
+            pending_requests: AtomicI32::new(0),
             client: Default::default(),
             send_backlog: Mutex::new(Default::default()),
             pool: AtomicRef::default(),
             server_params: Mutex::new(ServerParams::default()),
-            pid: Default::default(),
-            secret: Default::default(),
+            pid: AtomicI32::new(0),
+            secret: AtomicI32::new(0),
             created_at: Local::now(),
         }
     }
@@ -410,8 +425,7 @@ define_event!(backend_connected, (backend: &'a BackendConn, params: &'a mut Serv
 ///     client: Option<&'a Arc<ClientConn>> : the associated client connection (if any)
 ///     msg: protocol.Message is the received protocol.Message
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
-/// It's also possible to replace a single Message with many by calling ev.next() for each.
-/// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
+/// A Message may contain multiple wire protocol messages, see Message::next().
 /// BackendConn::backend_message is called by default and does further processing on the Message,
 /// including potentially forwarding it to associated client session. Symmetric with client_message.
 /// If it returns an error, the associated session is terminated.
@@ -422,8 +436,7 @@ define_event!(backend_message, (backend: &'a BackendConn, client: Option<&'a Arc
 ///     msg: protocol.Message is the protocol.Message to send
 ///     prefer_buffer: bool : passed to write_or_buffer, see docs for that method
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
-/// It's also possible to replace a single Message with many by calling ev.next() for each.
-/// Or conversely replace many messages with fewer by buffering the Message and not immediately calling next.
+/// A Message may contain multiple wire protocol messages, see Message::next().
 /// BackendConn::backend_send_message is called by default and sends the Message to the db server.
 /// If it returns an error, the associated session is terminated.
 /// /// Returns the number of bytes actually written (not buffered.)

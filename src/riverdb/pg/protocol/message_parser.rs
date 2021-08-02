@@ -29,6 +29,7 @@ impl Header {
         }))
     }
 
+    /// Returns the length of the message frame, including the tag byte (if any)
     pub fn len(&self) -> u32 {
         let len = self.length.get();
         if self.tag == Tag::UNTAGGED {
