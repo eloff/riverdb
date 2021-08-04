@@ -1,21 +1,23 @@
 use std::fmt;
 use std::fmt::{Display, Formatter};
+use std::mem::transmute;
 
 use strum::{EnumString};
 
 use crate::riverdb::{Error, Result};
 
-#[derive(EnumString)]
+#[derive(EnumString, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
 #[strum(serialize_all = "UPPERCASE")]
+#[repr(u8)]
 pub enum ErrorSeverity {
-    Fatal,
-    Panic,
-    Error,
-    Warning,
-    Notice,
-    Debug,
-    Info,
     Log,
+    Info,
+    Debug,
+    Notice,
+    Warning,
+    Error,
+    Panic,
+    Fatal,
 }
 
 impl ErrorSeverity {

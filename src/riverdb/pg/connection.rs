@@ -35,12 +35,8 @@ pub trait Connection: server::Connection {
 
     /// write_or_buffer writes all the bytes in buf to sender without blocking or buffers it
     /// (without copying) to send later. Takes ownership of buf in all cases.
-    /// If prefer_buffer is true, this method prefers to buffer the data instead of writing it,
-    /// if it's false, or enough data is buffered, it will try a non-blocking write to self.transport().
-    /// prefer_buffer can be set to true if you know there are more messages coming soon,
-    /// and must be set to false when there are no more messages expected soon.
     /// Returns the number of bytes actually written (not buffered.)
-    fn write_or_buffer(&self, mut buf: Bytes, mut prefer_buffer: bool) -> Result<usize> {
+    fn write_or_buffer(&self, mut buf: Bytes) -> Result<usize> {
         const MAX_BACKLOG_ENTRIES_BEFORE_WRITE: usize = 7;
         // We always have to acquire the mutex, even if the backlog appears empty, otherwise
         // we can't be certain another thread won't try to write the backlog and overlap write()
@@ -48,13 +44,12 @@ pub trait Connection: server::Connection {
         // so that the logical writes are atomic and ordered correctly.
         let mut bytes_written = 0;
         let mut backlog = self.backlog().lock().map_err(Error::from)?;
-        // If the backlog is empty, and prefer_buffer = false, try writing buf directly
-        if backlog.is_empty() && !prefer_buffer {
+        // If the backlog is empty try writing buf directly
+        if backlog.is_empty() {
             // If the backlog is empty, maybe we can write this to the socket
             bytes_written = self.transport().try_write(buf.chunk())?;
             if bytes_written < buf.remaining() {
                 buf.advance(bytes_written);
-                prefer_buffer = true; // don't try to write this again below
             } else {
                 return Ok(bytes_written);
             }
@@ -64,6 +59,8 @@ pub trait Connection: server::Connection {
         // MessageParser often produces a run of contiguous messages, and recombining them here will mean fewer syscalls to write().
         if !backlog.is_empty() && bytes_are_contiguous(&buf, backlog.back().unwrap()) {
             // Safety: If buf and back() are contiguous we know they were allocated from the same buffer
+            // At any rate, we just pass the buffer straight to the kernel. There's no way to miscompile this.
+            // The kernel neither knows nor cares about Rust's concept of pointer provenance.
             let (merged, failed) = unsafe {
                 unsplit_bytes(buf, backlog.pop_back().unwrap())
             };
@@ -76,11 +73,7 @@ pub trait Connection: server::Connection {
         }
         self.set_has_backlog(true);
 
-        if !prefer_buffer || backlog.len() > MAX_BACKLOG_ENTRIES_BEFORE_WRITE {
-            self.write_backlog(backlog)
-        } else {
-            Ok(bytes_written)
-        }
+        Ok(bytes_written)
     }
 
     /// try_write_backlog tries to write some bytes from the backlog to the transport.

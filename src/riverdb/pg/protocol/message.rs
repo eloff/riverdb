@@ -18,9 +18,20 @@ impl Message {
         Message(buf)
     }
 
+    /// Return a new Message of type Tag::ERROR_RESPONSE with the given error code and error message
     pub fn new_error(error_code: &str, error_msg: &str) -> Self {
         let mut mb = MessageErrorBuilder::new(
             ErrorSeverity::Fatal,
+            error_code,
+            &error_msg
+        );
+        mb.finish()
+    }
+
+    /// Return a new Message of type Tag::NOTICE_RESPONSE with the given error code and error message
+    pub fn new_warning(error_code: &str, error_msg: &str) -> Self {
+        let mut mb = MessageErrorBuilder::new(
+            ErrorSeverity::Warning,
             error_code,
             &error_msg
         );

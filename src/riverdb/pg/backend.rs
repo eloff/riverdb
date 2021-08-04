@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::sync::atomic::{AtomicU32, AtomicBool, AtomicPtr, AtomicI32};
+use std::sync::atomic::{AtomicU32, AtomicBool, AtomicPtr, AtomicI32, AtomicU8};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
@@ -33,7 +33,7 @@ pub struct BackendConn {
     added_to_pool: AtomicU32,
     has_send_backlog: AtomicBool,
     for_transaction: AtomicBool,
-    tx_isolation_level: AtomicCell<IsolationLevel>,
+    tx_isolation_level: AtomicCell<IsolationLevel>, // do we need this?
     state: BackendConnState,
     pending_requests: AtomicI32,
     client: AtomicArc<ClientConn>,
@@ -80,11 +80,28 @@ impl BackendConn {
     }
 
     #[inline]
-    pub async fn send(&self, msg: Message, prefer_buffer: bool) -> Result<usize> {
-        if msg.is_empty() {
-            return Ok(0);
+    pub async fn send(&self, msg: Message) -> Result<usize> {
+        backend_send_message::run(self, msg).await
+    }
+
+    pub async fn forward(&self, client: Option<&Arc<ClientConn>>, msg: Message) -> Result<usize> {
+        if let Some(client) = client {
+            let tag = msg.tag();
+            client.send(msg).await?;
+
+            if self.pending_requests.load(Relaxed) > 0 {
+                if tag == Tag::READY_FOR_QUERY {
+                    if self.pending_requests.fetch_sub(1, Relaxed) == 1 {
+                        // pending_requests has reached zero, we can maybe release the backend to the pool
+                        if let Some(backend) = client.release_backend() {
+                            self.client.store(None);
+                            self.pool.load().unwrap().put(backend);
+                        }
+                    }
+                }
+            }
         }
-        backend_send_message::run(self, msg, prefer_buffer).await
+        Ok(0)
     }
 
     pub async fn test_auth(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<()> {
@@ -136,7 +153,7 @@ impl BackendConn {
         let ssl_request = Message::new(Bytes::from_static(SSL_REQUEST_MSG));
 
         self.state.transition(self, BackendState::SSLHandshake)?;
-        self.send(ssl_request, false).await?;
+        self.send(ssl_request).await?;
 
         self.transport.ready(Interest::READABLE).await?;
         let mut buf: [u8; 1] = [0];
@@ -236,7 +253,7 @@ impl BackendConn {
 
         self.state.transition(self, BackendState::Authentication);
 
-        self.send(mb.finish(), false).await?;
+        self.send(mb.finish()).await?;
         Ok(())
     }
 
@@ -265,10 +282,7 @@ impl BackendConn {
             },
             _ => {
                 // Forward the message to the client, if there is one
-                if let Some(client) = client {
-                    let prefer_buffer = false; // TODO
-                    client.send(msg, prefer_buffer).await?;
-                }
+                self.forward(client, msg).await?;
                 // TODO else this is part of a query workflow, do what with it???
                 Ok(())
             }
@@ -302,7 +316,7 @@ impl BackendConn {
                         }
                         let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
                         mb.write_str(&password);
-                        self.send(mb.finish(), false).await?;
+                        self.send(mb.finish()).await?;
                         Ok(())
                     },
                     AuthType::MD5 => {
@@ -313,7 +327,7 @@ impl BackendConn {
                         let md5_password = hash_md5_password(&user, &password, salt);
                         let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
                         mb.write_str(&md5_password);
-                        self.send(mb.finish(), false).await?;
+                        self.send(mb.finish()).await?;
                         Ok(())
                     },
                     _ => Err(Error::new(format!("unsupported authentication scheme (pull requests welcome!) {}", auth_type)))
@@ -327,8 +341,17 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn backend_send_message(&self, _: &mut backend_send_message::Event, msg: Message, prefer_buffer: bool) -> Result<usize> {
-        self.write_or_buffer(msg.into_bytes(), prefer_buffer)
+    pub async fn backend_send_message(&self, _: &mut backend_send_message::Event, msg: Message) -> Result<usize> {
+        if msg.is_empty() {
+            return Ok(0);
+        }
+        match msg.tag() {
+            Tag::QUERY => { // TODO what other tags expect a response?
+                self.pending_requests.fetch_add(1, Relaxed);
+            },
+            _ => (),
+        }
+        self.write_or_buffer(msg.into_bytes())
     }
 }
 
@@ -440,7 +463,7 @@ define_event!(backend_message, (backend: &'a BackendConn, client: Option<&'a Arc
 /// BackendConn::backend_send_message is called by default and sends the Message to the db server.
 /// If it returns an error, the associated session is terminated.
 /// /// Returns the number of bytes actually written (not buffered.)
-define_event!(backend_send_message, (backend: &'a BackendConn, msg: Message, prefer_buffer: bool) -> Result<usize>);
+define_event!(backend_send_message, (backend: &'a BackendConn, msg: Message) -> Result<usize>);
 
 /// backend_authenticate is called with each Message received while in the Authentication state
 define_event!(backend_authenticate, (backend: &'a BackendConn, msg: Message) -> Result<()>);

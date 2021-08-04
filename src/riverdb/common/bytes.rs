@@ -15,7 +15,7 @@ struct BytesAlike {
 /// unsplit_bytes checks if b2 follows directly after b1 in memory, and if so merges it
 /// into b1 and returns b1. Otherwise returns b1 and b2 unmodified.
 /// Safety: because of pointer provenance https://rust-lang.github.io/unsafe-code-guidelines/glossary.html#pointer-provenance
-/// this is may invoke undefined behavior if used to merge two Bytes not orginally part of
+/// this may invoke undefined behavior if used to merge two Bytes not originally part of
 /// the same allocation (e.g. not split from the same BytesMut or similar.)
 pub unsafe fn unsplit_bytes(mut b1: Bytes, b2: Bytes) -> (Option<Bytes>, Option<Bytes>) {
     if bytes_are_contiguous(&b1, &b2) {

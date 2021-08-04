@@ -4,7 +4,8 @@ pub struct MessageErrorBuilder(MessageBuilder);
 
 impl MessageErrorBuilder {
     pub fn new(severity: ErrorSeverity, code: &str, msg: &str) -> Self {
-        let mut builder = MessageErrorBuilder(MessageBuilder::new(Tag::ERROR_RESPONSE));
+        let tag = if severity <= ErrorSeverity::Warning { Tag::NOTICE_RESPONSE } else { Tag::ERROR_RESPONSE };
+        let mut builder = MessageErrorBuilder(MessageBuilder::new(tag));
         builder
             .write_field(ErrorFieldTag::SEVERITY, severity.as_str())
             .write_field(ErrorFieldTag::CODE, code)

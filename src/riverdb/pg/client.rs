@@ -28,7 +28,7 @@ use crate::riverdb::pg::connection::{read_and_flush_backlog, Backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::pg::message_stream::MessageStream;
 use crate::riverdb::pg::client_state::ClientState;
-use crate::riverdb::pg::sql::Query;
+use crate::riverdb::pg::sql::{Query, QueryType};
 use crate::riverdb::pg::PostgresReplicationGroup;
 use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
 use crate::riverdb::config::{conf, TlsMode};
@@ -78,11 +78,11 @@ impl ClientConn {
     }
 
     #[inline]
-    pub async fn send(&self, msg: Message, prefer_buffer: bool) -> Result<usize> {
+    pub async fn send(&self, msg: Message) -> Result<usize> {
         if msg.is_empty() {
             return Ok(0);
         }
-        client_send_message::run(self, msg, prefer_buffer).await
+        client_send_message::run(self, msg).await
     }
 
     /// Returns the associated BackendConn, if any.
@@ -140,7 +140,59 @@ impl ClientConn {
     /// forwards msg to the backend via backend.send. If backend is None, runs client_connect_backend
     /// to acquire a backend connection. Panics unless in Ready, Transaction, or FailedTransaction states.
     pub async fn forward(&self, backend: Option<&Arc<BackendConn>>, msg: Message) -> Result<usize> {
-        client_query::run(self, backend, Query::new(msg)).await
+        let query = Query::new(msg);
+        client_query::run(self, backend, query).await
+    }
+
+    pub fn release_backend(&self) -> Option<Arc<BackendConn>> {
+        match self.state.get() {
+            ClientState::Ready => {
+                self.backend.swap(None)
+            },
+            ClientState::Transaction => {
+                // If we're in a transaction, we can only release the backend
+                // if defer_begin is enabled and we still have the begin statement buffered.
+                if conf().postgres.defer_begin && self.buffered.lock().unwrap().is_some() {
+                    self.backend.swap(None)
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        }
+    }
+
+    fn begins_transaction(&self, query: &Query) -> Result<bool> {
+        match query.query_type {
+            QueryType::Begin | QueryType::SetTransaction => {
+                let tx_type = TransactionType::parse_from_query(query.normalized());
+                if tx_type == TransactionType::Default {
+                    // TODO use the highest default isolation level for the master nodes of the cluster
+                }
+                self.tx_type.store(tx_type);
+                self.state.transition(self, ClientState::Transaction)?;
+                Ok(true)
+            },
+            QueryType::Commit => {
+                if query.normalized().contains("AND CHAIN") {
+                    // Stay in the Transaction state
+                    Ok(true)
+                } else {
+                    self.tx_type.store(TransactionType::None);
+                    self.state.transition(self, ClientState::Ready)?;
+                    Ok(false)
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    async fn send_command_successful(&self, command: &str) -> Result<usize> {
+        let mut mb = MessageBuilder::new(Tag::COMMAND_COMPLETE);
+        mb.write_str(command);
+        mb.add_new(Tag::READY_FOR_QUERY);
+        mb.write_byte('I' as u8);
+        self.send(mb.finish()).await
     }
 
     #[instrument]
@@ -165,12 +217,12 @@ impl ClientConn {
         let tls_mode = conf().postgres.client_tls;
         match tls_mode {
             TlsMode::Disabled | TlsMode::Invalid => {
-                let n = self.write_or_buffer(Bytes::from_static(&[SSL_NOT_ALLOWED]), false)?;
+                let n = self.write_or_buffer(Bytes::from_static(&[SSL_NOT_ALLOWED]))?;
                 debug_assert_eq!(n, 1);
                 Ok(())
             },
             _ => {
-                let n = self.write_or_buffer(Bytes::from_static(&[SSL_ALLOWED]), false)?;
+                let n = self.write_or_buffer(Bytes::from_static(&[SSL_ALLOWED]))?;
                 debug_assert_eq!(n, 1);
                 self.state.transition(self, ClientState::SSLHandshake)?;
                 let tls_config = conf().postgres.tls_config.clone().unwrap();
@@ -181,13 +233,43 @@ impl ClientConn {
 
     #[instrument]
     pub async fn client_query(&self, _: &mut client_query::Event, backend: Option<&Arc<BackendConn>>, mut query: Query) -> Result<usize> {
+        let begins_tx = self.begins_transaction(&query)?;
+
         let state = self.state.get();
-        let tx_type = match state {
-            ClientState::Transaction => self.tx_type.load(),
-            ClientState::Ready | ClientState::FailedTransaction => {
-                // TODO does msg start a transaction?
-                todo!()
+        match state {
+            ClientState::Transaction | ClientState::Ready => {
+                if backend.is_none() && begins_tx {
+                    {
+                        let mut buffered = self.buffered.lock().unwrap();
+                        if buffered.is_none() {
+                            *buffered = Some(query.into_message());
+                            return Ok(0);
+                        }
+                    }
+
+                    // There shouldn't have been anything buffered, we received two begin statements back to back
+                    // Behave the same as Postgres, give a warning and ignore the second one.
+                    let msg = Message::new_warning(error_codes::ACTIVE_SQL_TRANSACTION, "there is already a transaction in progress");
+                    self.send(msg).await?;
+                    self.send_command_successful(query.normalized()).await?;
+                    return Ok(0);
+                }
             },
+            ClientState::FailedTransaction => {
+                // Only ROLLBACK is permitted
+                if query.query_type == QueryType::Rollback {
+                    // We already rolled back the backend and returned it to the pool
+                    self.state.transition(self, ClientState::Ready)?;
+
+                    // Tell the client the command succeeded
+                    self.send_command_successful(query.normalized()).await?;
+                } else {
+                    let error_msg = "current transaction is aborted, commands ignored until end of transaction block";
+                    let msg = Message::new_error(error_codes::IN_FAILED_SQL_TRANSACTION, error_msg);
+                    self.send(msg).await?;
+                }
+                return Ok(0);
+            }
             _ => panic!("forward called in unexpected state {:?}", state)
         };
 
@@ -197,12 +279,21 @@ impl ClientConn {
             let user = params.get("user").expect("missing user");
             let database = params.get("database").expect("missing database");
             let application_name = params.get("application_name").unwrap_or("riverdb");
-            let backend = client_connect_backend::run(self, cluster,application_name, user, database, tx_type, &mut query).await?;
-            let n = backend.send(query.into_message(), false).await?;
+            let tx_type = self.tx_type.load();
+            let backend = client_connect_backend::run(self, cluster, application_name, user, database, tx_type, &mut query).await?;
+
+            // If we have buffered messages, flush them now
+            // TODO not necessarily if defer_begin is enabled
+            let msg = self.buffered.lock().unwrap().take();
+            if let Some(msg) = msg {
+                backend.send(msg).await?;
+            }
+
+            let n = backend.send(query.into_message()).await?;
             self.set_backend(Some(backend));
             Ok(n)
         } else {
-            backend.unwrap().send(query.into_message(), false).await
+            backend.unwrap().send(query.into_message()).await
         }
     }
 
@@ -228,7 +319,7 @@ impl ClientConn {
         }
 
         let error_msg = "no database available for query";
-        self.send(Message::new_error(error_code, error_msg), false).await?;
+        self.send(Message::new_error(error_code, error_msg)).await?;
         Err(Error::new(error_msg))
     }
 
@@ -261,7 +352,7 @@ impl ClientConn {
         if let AuthType::MD5 = auth_type {
             mb.write_i32(self.salt);
         }
-        self.send(mb.finish(), false).await?;
+        self.send(mb.finish()).await?;
 
         Ok(auth_type)
     }
@@ -290,14 +381,14 @@ impl ClientConn {
                             self.state.transition(self, ClientState::Ready)
                         } else {
                             let error_msg = format!("password authentication failed for user \"{}\"", user);
-                            self.send(Message::new_error(error_codes::INVALID_PASSWORD, &error_msg), false).await?;
+                            self.send(Message::new_error(error_codes::INVALID_PASSWORD, &error_msg)).await?;
                             Err(Error::new(error_msg))
                         };
                     }
                 }
 
                 let error_msg = format!("database \"{}\" does not exist", database);
-                self.send(Message::new_error(error_codes::INVALID_CATALOG_NAME, &error_msg), false).await?;
+                self.send(Message::new_error(error_codes::INVALID_CATALOG_NAME, &error_msg)).await?;
                 Err(Error::new(error_msg))
             },
             _ => {
@@ -325,7 +416,7 @@ impl ClientConn {
 
         mb.add_new(Tag::READY_FOR_QUERY);
         mb.write_byte('I' as u8);
-        self.send(mb.finish(), false).await?;
+        self.send(mb.finish()).await?;
         Ok(())
     }
 
@@ -364,15 +455,15 @@ impl ClientConn {
             },
             _ => {
                 let error_msg = format!("received unexpected {:?} message while in {:?}", msg.tag(), state);
-                self.send(Message::new_error(error_codes::PROTOCOL_VIOLATION, &error_msg), false).await?;
+                self.send(Message::new_error(error_codes::PROTOCOL_VIOLATION, &error_msg)).await?;
                 Err(Error::new(error_msg))
             }
         }
     }
 
     #[instrument]
-    pub async fn client_send_message(&self, _: &mut client_send_message::Event, msg: Message, prefer_buffer: bool) -> Result<usize> {
-        self.write_or_buffer(msg.into_bytes(), prefer_buffer)
+    pub async fn client_send_message(&self, _: &mut client_send_message::Event, msg: Message) -> Result<usize> {
+        self.write_or_buffer(msg.into_bytes())
     }
 }
 
@@ -461,6 +552,7 @@ impl Debug for ClientConn {
 // Safety: we use an UnsafeCell, but access is controlled safely, see connection_params method for details.
 unsafe impl Sync for ClientConn {}
 
+
 /// client_connected is called when a new client session is being established.
 ///     client: &ClientConn : the event source handling the client connection
 ///     params: &ServerParams : key-value pairs passed by the connected client in the startup message (including database and user)
@@ -491,7 +583,7 @@ define_event!(client_query, (client: &'a ClientConn, backend: Option<&'a Arc<Bac
 /// ClientConn::client_send_message is called by default and sends the Message to the connected client.
 /// If it returns an error, the associated session is terminated.
 /// Returns the number of bytes actually written (not buffered.)
-define_event!(client_send_message, (client: &'a ClientConn, msg: Message, prefer_buffer: bool) -> Result<usize>);
+define_event!(client_send_message, (client: &'a ClientConn, msg: Message) -> Result<usize>);
 
 define_event!(client_auth_challenge, (client: &'a ClientConn, params: ServerParams) -> Result<AuthType>);
 

@@ -1,10 +1,12 @@
 use std::fmt::{Debug, Formatter};
 
 use crate::riverdb::pg::protocol::{Tag, Message, MessageReader};
+use crate::riverdb::pg::sql::QueryType;
 
 pub struct Query {
     msg: Message,
     normalized_query: String,
+    pub query_type: QueryType,
 }
 
 impl Query {
@@ -18,7 +20,8 @@ impl Query {
             }
         }
 
-        Self{msg, normalized_query}
+        // TODO figure out the actual query type here
+        Self{msg, normalized_query, query_type: QueryType::Other}
     }
 
     pub fn message(&self) -> &Message {
