@@ -51,7 +51,7 @@ mod tests {
         let s = "foobar".as_bytes();
         let mut b1 = Bytes::from(s);
         let b2 = b1.split_off(3);
-        assert!(are_contiguous(&b1, &b2));
+        assert!(bytes_are_contiguous(&b1, &b2));
         let (r1, r2) = unsafe { unsplit_bytes(b1, b2) };
         assert!(r1.is_some());
         assert!(r2.is_none());
@@ -64,7 +64,7 @@ mod tests {
         let bar = "bar".as_bytes();
         let b1 = Bytes::from(&foo[..3]);
         let b2 = Bytes::from(bar);
-        assert!(!are_contiguous(&b1, &b2));
+        assert!(!bytes_are_contiguous(&b1, &b2));
         let (r1, r2) = unsafe { unsplit_bytes(b1, b2) };
         assert_eq!(r1.is_some(), r2.is_some());
         assert_eq!(r1.unwrap().chunk(), &foo[..3]);
