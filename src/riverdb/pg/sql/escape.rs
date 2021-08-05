@@ -43,7 +43,7 @@ fn partition_fmt_str(s: &str) -> (&str, &str) {
     panic!("{}", "expected format placeholder {...}");
 }
 
-pub fn write_escaped<'a, 'b, 'c, T: Any + Display>(out: &'b mut BytesMut, fmt_str: &'a str, value: &'c T) -> &'a str {
+pub fn write_escaped<'a, T: Any + Display>(out: &'_ mut BytesMut, fmt_str: &'a str, value: &'_ T) -> &'a str {
     let value_any = value as &dyn Any;
     let (prefix, fmt_remainder) = partition_fmt_str(fmt_str);
     let _ = out.write_str(prefix);
@@ -72,30 +72,24 @@ pub fn escape_str(out: &mut BytesMut, s: &str) {
 }
 
 #[macro_export]
-macro_rules! escape_query {
+macro_rules! query {
     ($f: expr, $($args: expr),+) => {
         {
-            let mut out = ::bytes::BytesMut::with_capacity(256);
-            let out_ref = &mut out;
-            escape_query!(@out_ref, $f, $($args),+);
-            out
+            let mut mb = crate::riverdb::pg::protocol::MessageBuilder::new(crate::riverdb::pg::protocol::Tag::QUERY);
+            let out_ref = mb.bytes_mut();
+            query!(@out_ref, $f, $($args),+);
+            mb.finish()
         }
     };
-    (@$out: ident, $f: expr,) => {
-
-    };
+    (@$out: ident, $f: expr,) => {};
     (@$out: ident, $f: expr, $arg: expr) => {
-        {
-            let tail = crate::riverdb::pg::sql::escape::write_escaped($out, $f, &$arg);
-            crate::riverdb::pg::sql::escape::check_formatting_placeholders_consumed(tail);
-            let _ = $out.write_str(tail);
-        }
+        let tail = crate::riverdb::pg::sql::write_escaped($out, $f, &$arg);
+        crate::riverdb::pg::sql::escape::check_formatting_placeholders_consumed(tail);
+        let _ = $out.write_str(tail);
     };
     (@$out: ident, $f: expr, $arg: expr, $($args: expr),*) => {
-        {
-            let tmp = crate::riverdb::pg::sql::escape::write_escaped($out, $f, &$arg);
-            escape_query!(@$out, tmp, $($args),*);
-        }
+        let tmp = crate::riverdb::pg::sql::write_escaped($out, $f, &$arg);
+        query!(@$out, tmp, $($args),*);
     };
 }
 
@@ -105,26 +99,26 @@ mod tests {
 
     #[test]
     fn test_escape() {
-        let buf = escape_query!("a {} b {} c {}{} d", "fo'o", "ba'r".to_string(), 42, 12.56);
-        let result = std::str::from_utf8(buf.chunk()).unwrap();
+        let buf = query!("a {} b {} c {}{} d", "fo'o", "ba'r".to_string(), 42, 12.56);
+        let result = std::str::from_utf8(&buf.as_slice()[buf.body_start() as usize..]).unwrap();
         assert_eq!(result, "a 'fo''o' b 'ba''r' c 4212.56 d");
     }
 
     #[test]
     #[should_panic(expected = "too few arguments for the number of formatting placeholders")]
     fn test_too_few_args() {
-        escape_query!("{} {}", 42);
+        query!("{} {}", 42);
     }
 
     #[test]
     #[should_panic(expected = "expected format placeholder {...}")]
     fn test_too_many_args() {
-        escape_query!("{}", 42, "foo");
+        query!("{}", 42, "foo");
     }
 
     #[test]
     #[should_panic(expected = "expected closing }, got open {")]
     fn test_malformed_placeholder() {
-        escape_query!("{ {", 12);
+        query!("{ {", 12);
     }
 }
