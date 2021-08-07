@@ -5,7 +5,6 @@ mod math;
 mod util;
 #[macro_use]
 mod atomic_cell;
-mod atomic_arc;
 mod version;
 mod atomic_ref;
 mod atomic_refcell;
@@ -18,5 +17,4 @@ pub use self::util::*;
 pub use self::version::*;
 pub use self::atomic_cell::AtomicCell;
 pub use self::atomic_ref::AtomicRef;
-pub use self::atomic_arc::AtomicArc;
 pub use self::atomic_refcell::AtomicRefCell;

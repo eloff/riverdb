@@ -5,6 +5,8 @@ use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::mem::{transmute_copy};
 
 
+// TODO we actually use this safely,
+// but it's loaded footgun and I don't see a way to make a safe interface for it.
 
 pub struct AtomicRefCell<T>(UnsafeCell<Option<T>>);
 
@@ -28,14 +30,17 @@ impl<T> AtomicRefCell<T> {
     /// Returns Some(&T) or None. Using this reference should be considered a Relaxed load.
     /// To synchronize with the Release store in store, swap, or compare_exchange, use a
     /// fence with ordering >= Acquire *immediately after* reading from this reference.
+    /// This method essentially casts self to Option<T> (through UnsafeCell) and returns it.
+    /// If another thread calls
     #[inline]
-    pub fn load(&self) -> Option<&T> {
+    pub unsafe fn load(&self) -> Option<&T> {
         let r = unsafe { &*(self.0.get() as *const Option<T>) };
         r.as_ref()
     }
 
+    //
     #[inline]
-    pub fn store(&self, value: Option<T>) {
+    pub unsafe fn store(&self, value: Option<T>) {
         atomic! { Option<T>, a: &AtomicUsize = &self.0, unsafe {
             let existing: Option<T> = transmute_copy(&a.load(Acquire)); // drop the existing value
             a.store(transmute_copy(&value), Release);

@@ -1,5 +1,5 @@
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicPtr};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicPtr, fence};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex};
@@ -30,7 +30,7 @@ use crate::riverdb::pg::message_stream::MessageStream;
 use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::pg::sql::{Query, QueryType};
 use crate::riverdb::pg::PostgresReplicationGroup;
-use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
+use crate::riverdb::common::{AtomicCell, AtomicRefCell, AtomicRef};
 use crate::riverdb::config::{conf, TlsMode};
 
 
@@ -47,9 +47,9 @@ pub struct ClientConn {
     tx_type: AtomicCell<TransactionType>,
     backend: AtomicArc<BackendConn>,
     send_backlog: Backlog,
-    db_cluster: AtomicRef<'static, PostgresCluster>,
-    db_replication_group: AtomicRef<'static, PostgresReplicationGroup>, // the last PostgresReplicationGroup used
-    db_pool: AtomicRef<'static, ConnectionPool>, // the last ConnectionPool used
+    cluster: AtomicRef<'static, PostgresCluster>,
+    replication_group: AtomicRef<'static, PostgresReplicationGroup>, // the last PostgresReplicationGroup used
+    pool: AtomicRef<'static, ConnectionPool>, // the last ConnectionPool used
     buffered: Mutex<Option<Message>>,
     connect_params: UnsafeCell<ServerParams>,
     salt: i32,
@@ -64,16 +64,16 @@ impl ClientConn {
         let mut stream = MessageStream::new(self);
         let mut sender: Option<Arc<BackendConn>> = None;
         loop {
-            // We don't want to clone the Arc everytime, so we clone() it once calling self.get_other_conn()
-            // And then we cache that Arc, checking that it's still the current with self.has_other_conn()
-            // Which is cheaper the the atomic-read-modify-write ops used increment and decrement and Arc.
+            // We don't want to clone the Arc everytime, so we clone() it once and cache it,
+            // checking that it's still the current one with has_backend. That's cheaper
+            // than the atomic-read-modify-write ops used increment and decrement and Arc.
             if sender.is_none() || !self.has_backend(sender.as_ref().unwrap()) {
-                sender = self.get_backend();
+                sender = self.backend();
             }
             let sender_ref = sender.as_ref().map(|arc| arc.as_ref());
 
             let msg = stream.next(sender_ref).await?;
-            client_message::run(self, sender.as_ref(), msg).await?;
+            client_message::run(self, sender_ref, msg).await?;
         }
     }
 
@@ -86,14 +86,7 @@ impl ClientConn {
     }
 
     /// Returns the associated BackendConn, if any.
-    pub fn get_backend(&self) -> Option<Arc<BackendConn>> {
-        self.backend.load()
-    }
-
-    /// Returns true if backend is set as the associated BackendConn.
-    pub fn has_backend(&self, backend: &Arc<BackendConn>) -> bool {
-        self.backend.is(backend)
-    }
+    pub fn backend(&self) -> Option<Arc<BackendConn>> { self.backend.load() }
 
     /// Sets the associated BackendConn. Panics if called on a BackendConn.
     pub fn set_backend(&self, backend: Option<Arc<BackendConn>>) {
@@ -101,27 +94,27 @@ impl ClientConn {
     }
 
     pub fn cluster(&self) -> Option<&'static PostgresCluster> {
-        self.db_cluster.load()
+        self.cluster.load()
     }
 
     pub fn set_cluster(&self, cluster: Option<&'static PostgresCluster>) {
-        self.db_cluster.store(cluster);
+        self.cluster.store(cluster);
     }
 
     pub fn replication_group(&self) -> Option<&'static PostgresReplicationGroup> {
-        self.db_replication_group.load()
+        self.replication_group.load()
     }
 
     pub fn set_replication_group(&self, replication_group: Option<&'static PostgresReplicationGroup>) {
-        self.db_replication_group.store(replication_group);
+        self.replication_group.store(replication_group);
     }
 
     pub fn pool(&self) -> Option<&'static ConnectionPool> {
-        self.db_pool.load()
+        self.pool.load()
     }
 
     pub fn set_pool(&self, pool: Option<&'static ConnectionPool>) {
-        self.db_pool.store(pool);
+        self.pool.store(pool);
     }
 
     pub fn connection_params(&self) -> &ServerParams {
@@ -212,7 +205,7 @@ impl ClientConn {
             PROTOCOL_VERSION => {
                 let mut params= ServerParams::from_startup_message(&msg)?;
                 let cluster = client_connected::run(self, params).await?;
-                self.db_cluster.store(Some(cluster));
+                self.cluster.store(Some(cluster));
                 Ok(())
             },
             SSL_REQUEST => self.ssl_handshake().await,
@@ -282,7 +275,7 @@ impl ClientConn {
         };
 
         if backend.is_none() {
-            let cluster = self.db_cluster.load().expect("missing cluster");
+            let cluster = self.cluster.load().expect("missing cluster");
             let params = self.connection_params();
             let user = params.get("user").expect("missing user");
             let database = params.get("database").expect("missing database");
@@ -368,7 +361,7 @@ impl ClientConn {
     #[instrument]
     pub async fn client_authenticate(&self, _: &mut client_authenticate::Event, auth_type: AuthType, msg: Message) -> Result<()> {
         let params = self.connection_params();
-        let cluster = self.db_cluster.load().expect("expected db_cluster to be set");
+        let cluster = self.cluster.load().expect("expected db_cluster to be set");
 
         match msg.tag() {
             Tag::PASSWORD_MESSAGE => {
@@ -380,10 +373,18 @@ impl ClientConn {
                 if let Some(group) = group {
                     let pool = group.master.load();
                     if let Some(pool) = pool {
-                        let password = {
+                        let password = if auth_type == AuthType::ClearText {
                             let r = MessageReader::new(&msg);
                             r.read_str()?
+                        } else if user == pool.config.user {
+                            pool.config.password.as_str()
+                        } else {
+                            // TODO confirm this is the right error code
+                            let error_msg = format!("unless the user is the configured user, only clear text authentication is supported: {}@{}", user, database);
+                            self.send(Message::new_error(error_codes::INVALID_AUTHORIZATION_SPECIFICATION, &error_msg)).await?;
+                            return Err(Error::new(error_msg))
                         };
+
                         return if cluster.authenticate(user, password, pool).await? {
                             client_complete_startup::run(self, cluster).await?;
                             self.state.transition(self, ClientState::Ready)
@@ -444,7 +445,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_message(&self, _: &mut client_message::Event, backend: Option<&Arc<BackendConn>>, msg: Message) -> Result<()> {
+    pub async fn client_message(&self, _: &mut client_message::Event, backend: Option<&BackendConn>, msg: Message) -> Result<()> {
         let state = self.state.get();
         match state {
             ClientState::StateInitial => {
@@ -485,11 +486,11 @@ impl server::Connection for ClientConn {
             has_send_backlog: Default::default(),
             state: Default::default(),
             tx_type: AtomicCell::default(),
-            backend: Default::default(),
+            backend: AtomicRefCell::default(),
             send_backlog: Mutex::new(VecDeque::new()),
-            db_cluster: AtomicRef::default(),
-            db_replication_group: AtomicRef::default(),
-            db_pool: AtomicRef::default(),
+            cluster: AtomicRef::default(),
+            replication_group: AtomicRef::default(),
+            pool: AtomicRef::default(),
             buffered: Mutex::new(None),
             connect_params: UnsafeCell::new(ServerParams::new()),
             salt: Worker::get().rand32() as i32
@@ -578,9 +579,9 @@ define_event!(client_connected, (client: &'a ClientConn, params: ServerParams) -
 /// ClientConn::client_message is called by default and does further processing on the Message,
 /// including potentially calling the higher-level client_query. Symmetric with backend_message.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_message, (client: &'a ClientConn, backend: Option<&'a Arc<BackendConn>>, msg: Message) -> Result<()>);
+define_event!(client_message, (client: &'a ClientConn, backend: Option<&'a BackendConn>, msg: Message) -> Result<()>);
 
-define_event!(client_query, (client: &'a ClientConn, backend: Option<&'a Arc<BackendConn>>, query: Query) -> Result<usize>);
+define_event!(client_query, (client: &'a ClientConn, backend: Option<&'a BackendConn>, query: Query) -> Result<usize>);
 
 /// client_send_message is called to send a Message to a backend db connection.
 ///     client: &ClientConn : the event source handling the client connection
@@ -599,8 +600,26 @@ define_event!(client_authenticate, (client: &'a ClientConn, auth_type: AuthType,
 
 define_event!(client_complete_startup, (client: &'a ClientConn, cluster: &'static PostgresCluster) -> Result<()>);
 
-define_event!(client_connect_backend, (client: &'a ClientConn, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut Query) -> Result<Arc<BackendConn>>);
+define_event!(client_connect_backend, (
+    client: &'a ClientConn,
+    cluster: &'static PostgresCluster,
+    application_name: &'a str,
+    user: &'a str,
+    database: &'a str,
+    tx_type: TransactionType,
+    query: &'a mut Query) -> Result<Arc<BackendConn>>);
 
-define_event!(client_partition, (client: &'a ClientConn, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut Query) -> Result<Option<&'static PostgresReplicationGroup>>);
+define_event!(client_partition, (
+    client: &'a ClientConn,
+    cluster: &'static PostgresCluster,
+    application_name: &'a str,
+    user: &'a str,
+    database: &'a str,
+    tx_type: TransactionType,
+    query: &'a mut Query) -> Result<Option<&'static PostgresReplicationGroup>>);
 
-define_event!(client_route_query, (client: &'a ClientConn, group: &'static PostgresReplicationGroup, tx_type: TransactionType, query: &'a mut Query) -> Result<Option<&'static ConnectionPool>>);
+define_event!(client_route_query, (
+    client: &'a ClientConn,
+    group: &'static PostgresReplicationGroup,
+    tx_type: TransactionType,
+    query: &'a mut Query) -> Result<Option<&'static ConnectionPool>>);

@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::sync::atomic::{AtomicU32, AtomicBool, AtomicPtr, AtomicI32, AtomicU8};
+use std::sync::atomic::{fence, AtomicU32, AtomicBool, AtomicPtr, AtomicI32, AtomicU8};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
@@ -21,7 +21,7 @@ use crate::riverdb::server::{Transport, Connection as ServerConnection};
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
-use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now, AtomicRef, change_lifetime, AtomicRefCell};
+use crate::riverdb::common::{AtomicCell, coarse_monotonic_now, AtomicRef, change_lifetime, AtomicRefCell};
 use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError, hash_md5_password};
 use crate::riverdb::config::conf;
 use crate::riverdb::pg::message_stream::MessageStream;
@@ -70,16 +70,16 @@ impl BackendConn {
         let mut stream = MessageStream::new(self);
         let mut sender: Option<Arc<ClientConn>> = None;
         loop {
-            // We don't want to clone the Arc everytime, so we clone() it once calling self.get_other_conn()
-            // And then we cache that Arc, checking that it's still the current with self.has_other_conn()
-            // Which is cheaper the the atomic-read-modify-write ops used increment and decrement and Arc.
+            // We don't want to clone the Arc everytime, so we clone() it once and cache it,
+            // checking that it's still the current one with has_client. That's cheaper
+            // than the atomic-read-modify-write ops used increment and decrement and Arc.
             if sender.is_none() || !self.has_client(sender.as_ref().unwrap()) {
                 sender = self.get_client();
             }
             let sender_ref = sender.as_ref().map(|arc| arc.as_ref());
 
             let msg = stream.next(sender_ref).await?;
-            backend_message::run(self, sender.as_ref(), msg).await?;
+            backend_message::run(self, sender_ref, msg).await?;
         }
     }
 
@@ -96,6 +96,15 @@ impl BackendConn {
             if self.pending_requests.load(Relaxed) > 0 {
                 if tag == Tag::READY_FOR_QUERY {
                     if self.rows.is_some() {
+                        // This doesn't work because a new query can see rows as full
+                        // append to pipelined_rows, and then here we see pipelined_rows
+                        // as empty and clear rows. That leaves an orphaned Sender in
+                        // pipelined_rows that we will never check. We can fix it by holding
+                        // the mutex longer in both methods to sync both operations, but
+                        // that makes already fragile and dangerous code much worse.
+                        // There has to be a better way of doing this without having to lock
+                        // the mutex? Or do we double down on the mutex but remove the
+                        // MPSC channel and replace it with just a plain write + wakeup (how?)
                         let next_rows = self.pipelined_rows.lock().unwrap().pop_front();
                         self.rows.store(next_rows);
                     } else {
@@ -239,13 +248,8 @@ impl BackendConn {
     }
 
     /// Returns the associated ClientConn, if any.
-    pub fn get_client(&self) -> Option<Arc<ClientConn>> {
+    pub fn client(&self) -> Option<&Arc<ClientConn>> {
         self.client.load()
-    }
-
-    /// Returns true if client is set as the associated ClientConn.
-    pub fn has_client(&self, client: &Arc<ClientConn>) -> bool {
-        self.client.is(client)
     }
 
     /// Sets the associated ClientConn.
@@ -305,7 +309,7 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn backend_message(&self, _: &mut backend_message::Event, client: Option<&Arc<ClientConn>>, msg: Message) -> Result<()> {
+    pub async fn backend_message(&self, _: &mut backend_message::Event, client: Option<&ClientConn>, msg: Message) -> Result<()> {
         match self.state.get() {
             BackendState::StateInitial | BackendState::SSLHandshake => {
                 Err(Error::new(format!("unexpected message for initial state: {:?}", msg.tag())))
@@ -413,7 +417,7 @@ impl server::Connection for BackendConn {
             tx_isolation_level: AtomicCell::default(),
             state: Default::default(),
             pending_requests: AtomicI32::new(0),
-            client: Default::default(),
+            client: AtomicRefCell::default(),
             send_backlog: Mutex::new(Default::default()),
             pool: AtomicRef::default(),
             rows: AtomicRefCell::default(),
@@ -494,14 +498,14 @@ define_event!(backend_connected, (backend: &'a BackendConn, params: &'a mut Serv
 
 /// backend_message is called when a Postgres protocol.Message is received in a backend db connection.
 ///     backend: &BackendConn : the event source handling the backend connection
-///     client: Option<&'a Arc<ClientConn>> : the associated client connection (if any)
+///     client: Option<&'a ClientConn> : the associated client connection (if any)
 ///     msg: protocol.Message is the received protocol.Message
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
 /// A Message may contain multiple wire protocol messages, see Message::next().
 /// BackendConn::backend_message is called by default and does further processing on the Message,
 /// including potentially forwarding it to associated client session. Symmetric with client_message.
 /// If it returns an error, the associated session is terminated.
-define_event!(backend_message, (backend: &'a BackendConn, client: Option<&'a Arc<ClientConn>>, msg: Message) -> Result<()>);
+define_event!(backend_message, (backend: &'a BackendConn, client: Option<&'a ClientConn>, msg: Message) -> Result<()>);
 
 /// backend_send_message is called to send a Message to a backend db connection.
 ///     backend: &BackendConn : the event source handling the backend connection
