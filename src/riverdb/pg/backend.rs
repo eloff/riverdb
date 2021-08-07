@@ -41,7 +41,8 @@ pub struct BackendConn {
     client: AtomicArc<ClientConn>,
     send_backlog: Backlog,
     pool: AtomicRef<'static, ConnectionPool>,
-    rows: AtomicRefCell<Sender<Message>>,
+    rows: AtomicRefCell<Sender<Message>>, // forwards server messages to the Rows iterator instead of to client
+    pipelined_rows: Mutex<VecDeque<Sender<Message>>>, // additional Rows iterators if there are pipelined queries
     server_params: Mutex<ServerParams>,
     pid: AtomicI32,
     secret: AtomicI32,
@@ -95,13 +96,16 @@ impl BackendConn {
             if self.pending_requests.load(Relaxed) > 0 {
                 if tag == Tag::READY_FOR_QUERY {
                     if self.rows.is_some() {
-                        self.rows.store(None);
+                        let next_rows = self.pipelined_rows.lock().unwrap().pop_front();
+                        self.rows.store(next_rows);
                     } else {
                         sent = client.send(msg).await?;
                     }
 
                     if self.pending_requests.fetch_sub(1, Relaxed) == 1 {
                         // pending_requests has reached zero, we can maybe release the backend to the pool
+                        assert!(self.rows.is_none());
+                        debug_assert!(self.pipelined_rows.lock().unwrap().is_empty());
                         if let Some(backend) = client.release_backend() {
                             self.client.store(None);
                             self.pool.load().unwrap().put(backend);
@@ -199,10 +203,9 @@ impl BackendConn {
         if role.is_empty() {
             self.query(query!("SET application_name TO {}", application_name)).await?;
         } else {
-            // TODO buffers both queries to a single BytesMut and then convert that into a single Message
             try_join!(
-                self.query(query!("SET ROLE {}", role)),
-                self.query(query!("SET application_name TO {}", application_name))
+                self.execute(query!("SET ROLE {}", role)),
+                self.execute(query!("SET application_name TO {}", application_name))
             )?;
         }
 
@@ -211,9 +214,28 @@ impl BackendConn {
 
     pub async fn query(&self, escaped_query: Message) -> Result<Rows> {
         let (tx, rx) = channel(config::ROW_CHANNEL_NUM_MESSAGES_BUFFER);
-        self.rows.store(Some(tx));
+        self.add_sender(tx);
         self.send(escaped_query).await?;
         Ok(Rows::new(rx))
+    }
+
+    pub async fn execute(&self, escaped_query: Message) -> Result<i32> {
+        let (tx, rx) = channel(1);
+        self.add_sender(tx);
+        self.send(escaped_query).await?;
+        let mut rows = Rows::new(rx);
+        let has_next = rows.next().await?;
+        assert!(!has_next);
+        Ok(rows.affected())
+    }
+
+    fn add_sender(&self, tx: Sender<Message>) {
+        match self.rows.compare_exchange(&None, Some(tx)) {
+            Ok(_) => (),
+            Err(tx) => {
+                self.pipelined_rows.lock().unwrap().push_back(tx.unwrap());
+            }
+        }
     }
 
     /// Returns the associated ClientConn, if any.
@@ -395,6 +417,7 @@ impl server::Connection for BackendConn {
             send_backlog: Mutex::new(Default::default()),
             pool: AtomicRef::default(),
             rows: AtomicRefCell::default(),
+            pipelined_rows: Mutex::new(VecDeque::new()),
             server_params: Mutex::new(ServerParams::default()),
             pid: AtomicI32::new(0),
             secret: AtomicI32::new(0),

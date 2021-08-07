@@ -22,10 +22,15 @@ impl Header {
             return Ok(None);
         }
         let tag = Tag::new(bytes[0])?;
-        let len = u32::from_be_bytes((&bytes[1..5]).try_into().unwrap());
+        let start = if tag != Tag::UNTAGGED { 1 } else { 0 };
+        let len = u32::from_be_bytes((&bytes[start..start+4]).try_into().unwrap());
+        if len < 4 {
+            return Err(Error::protocol_error("length of message frame cannot be < 4"));
+        }
         Ok(Some(Header{
             tag,
-            length: NonZeroU32::new(len).ok_or_else(|| Error::protocol_error("length of message frame cannot be 0"))?,
+            // Safety: we already checked len != 0 above
+            length: unsafe { NonZeroU32::new_unchecked(len) },
         }))
     }
 

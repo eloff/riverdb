@@ -6,7 +6,7 @@ use bytes::{Bytes, Buf};
 
 use crate::riverdb::Result;
 use crate::riverdb::pg::protocol::{Tag, MessageReader, MessageErrorBuilder, ErrorSeverity};
-use crate::riverdb::pg::protocol::message_parser::Header;
+use crate::riverdb::pg::protocol::message_parser::{Header, MIN_MESSAGE_LEN};
 use crate::riverdb::common::unsplit_bytes;
 
 
@@ -15,6 +15,8 @@ pub struct Message(Bytes);
 
 impl Message {
     pub fn new(buf: Bytes) -> Self {
+        let len = buf.len() as u32;
+        assert!(len == 0 || len >= MIN_MESSAGE_LEN);
         Message(buf)
     }
 
@@ -63,10 +65,8 @@ impl Message {
     }
 
     /// header returns the message Header of the first message or panics if self.is_empty()
-    pub fn header(&self) -> Header {
-        Header::parse(&self.0.chunk()[..5])
-            .expect("invalid Message")
-            .expect("empty Message")
+    pub fn header(&self) -> Result<Header> {
+        Ok(Header::parse(&self.0.chunk()[..5])?.expect("empty message"))
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -88,25 +88,38 @@ impl Message {
         self.0.as_ptr() == other.0.as_ptr()
     }
 
+    /// Returns the number of complete protocol messages in this Message. 0 if empty.
+    /// This method is O(N) where N is the number of messages.
     pub fn count(&self) -> usize {
-        todo!()
+        let mut count = 0;
+        let mut pos = 0;
+        while pos < self.0.len() {
+            if let Ok(Some(hdr)) = Header::parse(&self.0.chunk()[pos..pos+5]) {
+                count += 1;
+                pos += hdr.len() as usize;
+            } else {
+                // This is an invalid message header, ignore everything from this point forward
+                break;
+            }
+        }
+        count
     }
 
-    /// If there is another message in the buffer, returns a new Message object starting
-    /// at the next message. This increments the reference count of the underlying buffer,
-    /// but does not copy data. Returns None if there isn't another message.
-    pub fn next(&self) -> Option<Message> {
-        // Note: it's tempting to try to implement Iterator with a wrapper struct
-        // but that's not possible. It's really a streaming iterator and not compatible
-        // without fully materializing the iterator as a Vec<Message> (at which point
-        // it would be more useful to just have a method that returns a Vec<Message>.)
-        // See: https://stackoverflow.com/a/30422716/152580
-        if self.is_empty() {
-            return None;
+    /// Returns true if there is more than one protocol message in this Message.
+    pub fn has_multiple_messages(&self) -> bool {
+        if !self.is_empty() {
+            if let Ok(hdr) = self.header() {
+                if hdr.len() < self.len() {
+                    return true;
+                }
+            }
         }
+        false
+    }
 
-        let len = self.header().len() as usize;
-        Some(Message::new(self.0.slice(len..)))
+    /// Returns an Iterator over the protocol messages in this Message
+    pub fn iter(&self) -> MessageIter {
+        MessageIter(self.clone())
     }
 
     /// If other follows directly after self in memory, this merges other into self and returns self.
@@ -138,5 +151,30 @@ impl Debug for Message {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         self::Display::fmt(self, f)?;
         f.write_str(" Message")
+    }
+}
+
+pub struct MessageIter(Message);
+
+impl Iterator for MessageIter {
+    type Item = Message;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.0.is_empty() {
+            if let Ok(hdr) = self.0.header() {
+                let len = hdr.len();
+                let msg = std::mem::replace(&mut self.0, Message::default());
+                return Some(if len == self.0.len() {
+                    // It's the only Message, just return it
+                    msg
+                } else {
+                    let mut bytes = msg.into_bytes();
+                    let next = bytes.split_to(len as usize);
+                    self.0 = Message(bytes);
+                    Message(next)
+                })
+            }
+        }
+        None
     }
 }

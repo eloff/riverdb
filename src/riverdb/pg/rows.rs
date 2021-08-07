@@ -30,6 +30,13 @@ impl Rows {
         }
     }
 
+    /// Returns the number of affected rows. Can only be called once next() returns false.
+    /// Panics if next() has not returned false.
+    pub fn affected(&self) -> i32 {
+        assert!(self.affected >= 0);
+        self.affected
+    }
+
     pub fn data_row(&self) -> &Message {
         &self.cur
     }
@@ -141,6 +148,8 @@ impl Rows {
                     let cmd_tag = r.read_str()?;
                     if let Some(i) = cmd_tag.rfind(' ') {
                         self.affected = (&cmd_tag[i+1..]).parse::<i32>().unwrap_or(0);
+                    } else {
+                        self.affected = 0;
                     }
                     self.raw = Vec::new();
                     self.cur = Message::default();

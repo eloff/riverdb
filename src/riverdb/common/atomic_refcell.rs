@@ -49,6 +49,16 @@ impl<T> AtomicRefCell<T> {
         }};
         unreachable!();
     }
+
+    #[inline]
+    pub fn compare_exchange(&self, expected: &Option<T>, value: Option<T>) -> Result<Option<T>, Option<T>> {
+        atomic! { Option<T>, a: &AtomicUsize = &self.0, unsafe {
+            let v: usize = transmute_copy(&value);
+            std::mem::forget(value);
+            return transmute_copy(&a.compare_exchange(transmute_copy(expected), v, AcqRel, Acquire));
+        }};
+        unreachable!();
+    }
 }
 
 impl<T> Default for AtomicRefCell<T> {
