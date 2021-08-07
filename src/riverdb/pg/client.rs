@@ -187,11 +187,19 @@ impl ClientConn {
         }
     }
 
-    async fn send_command_successful(&self, command: &str) -> Result<usize> {
+    /// Sends a COMMAND_COMPLETE message. Command should usually be a single word that identifies the completed SQL command.
+    /// For an INSERT command, the tag is INSERT 0 rows, where rows is the number of rows inserted.
+    /// For a DELETE command, the tag is DELETE rows where rows is the number of rows deleted.
+    /// For an UPDATE command, the tag is UPDATE rows where rows is the number of rows updated.
+    /// For a SELECT or CREATE TABLE AS command, the tag is SELECT rows where rows is the number of rows retrieved.
+    /// For a MOVE command, the tag is MOVE rows where rows is the number of rows the cursor's position has been changed by.
+    /// For a FETCH command, the tag is FETCH rows where rows is the number of rows that have been retrieved from the cursor.
+    /// For a COPY command, the tag is COPY rows where rows is the number of rows copied.
+    async fn send_command_successful(&self, command: &str, tx_status: char) -> Result<usize> {
         let mut mb = MessageBuilder::new(Tag::COMMAND_COMPLETE);
         mb.write_str(command);
         mb.add_new(Tag::READY_FOR_QUERY);
-        mb.write_byte('I' as u8);
+        mb.write_byte(tx_status as u8);
         self.send(mb.finish()).await
     }
 
@@ -251,7 +259,7 @@ impl ClientConn {
                     // Behave the same as Postgres, give a warning and ignore the second one.
                     let msg = Message::new_warning(error_codes::ACTIVE_SQL_TRANSACTION, "there is already a transaction in progress");
                     self.send(msg).await?;
-                    self.send_command_successful(query.normalized()).await?;
+                    self.send_command_successful("BEGIN", 'T').await?;
                     return Ok(0);
                 }
             },
@@ -262,7 +270,7 @@ impl ClientConn {
                     self.state.transition(self, ClientState::Ready)?;
 
                     // Tell the client the command succeeded
-                    self.send_command_successful(query.normalized()).await?;
+                    self.send_command_successful("ROLLBACK", 'I').await?;
                 } else {
                     let error_msg = "current transaction is aborted, commands ignored until end of transaction block";
                     let msg = Message::new_error(error_codes::IN_FAILED_SQL_TRANSACTION, error_msg);

@@ -5,7 +5,7 @@ use std::mem;
 /// This is very unsafe, but it's safer than transmute because you can only
 /// change the lifetime, not the type.
 #[inline(always)]
-pub unsafe fn change_lifetime<'a, 'b, T>(x: &'a T) -> &'b T {
+pub unsafe fn change_lifetime<'a, 'b, T: ?Sized>(x: &'a T) -> &'b T {
     std::mem::transmute(x)
 }
 
@@ -14,7 +14,7 @@ pub unsafe fn change_lifetime<'a, 'b, T>(x: &'a T) -> &'b T {
 /// This is very unsafe, but it's safer than transmute because you can only
 /// change the lifetime, not the type.
 #[inline(always)]
-pub unsafe fn change_lifetime_mut<'a, 'b, T>(x: &'a mut T) -> &'b mut T {
+pub unsafe fn change_lifetime_mut<'a, 'b, T: ?Sized>(x: &'a mut T) -> &'b mut T {
     std::mem::transmute(x)
 }
 

@@ -43,7 +43,7 @@ fn partition_fmt_str(s: &str) -> (&str, &str) {
     panic!("{}", "expected format placeholder {...}");
 }
 
-pub fn write_escaped<'a, T: Any + Display>(out: &'_ mut BytesMut, fmt_str: &'a str, value: &'_ T) -> &'a str {
+pub fn write_escaped<'a, 'b, 'c, T: Any + Display>(out: &'b mut BytesMut, fmt_str: &'a str, value: &'c T) -> &'a str {
     let value_any = value as &dyn Any;
     let (prefix, fmt_remainder) = partition_fmt_str(fmt_str);
     let _ = out.write_str(prefix);
@@ -59,7 +59,7 @@ pub fn write_escaped<'a, T: Any + Display>(out: &'_ mut BytesMut, fmt_str: &'a s
 
 /// Writes s to f as a safely escaped single-quoted SQL string
 pub fn escape_str(out: &mut BytesMut, s: &str) {
-    // Escape all single quotes with '' to escape them, an then wrap the string in single quotes
+    // Escape all single quotes by doubling them up '' to escape them, and wrap the string in single quotes
     const SQ: u8 = '\'' as u8;
     out.put_u8(SQ);
     for c in s.as_bytes().iter().cloned() {
@@ -84,8 +84,8 @@ macro_rules! query {
     (@$out: ident, $f: expr,) => {};
     (@$out: ident, $f: expr, $arg: expr) => {
         let tail = crate::riverdb::pg::sql::write_escaped($out, $f, &$arg);
-        crate::riverdb::pg::sql::escape::check_formatting_placeholders_consumed(tail);
-        let _ = $out.write_str(tail);
+        crate::riverdb::pg::sql::check_formatting_placeholders_consumed(tail);
+        let _ = std::fmt::Write::write_str($out, tail);
     };
     (@$out: ident, $f: expr, $arg: expr, $($args: expr),*) => {
         let tmp = crate::riverdb::pg::sql::write_escaped($out, $f, &$arg);

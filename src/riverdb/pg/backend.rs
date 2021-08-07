@@ -8,18 +8,20 @@ use std::net::SocketAddr;
 use chrono::{Local, DateTime};
 use tokio::net::TcpStream;
 use tokio::io::Interest;
+use tokio::sync::mpsc::{channel, Sender};
 use tracing::{debug, error, info, warn, instrument};
 use bytes::Bytes;
+use futures::try_join;
 
-use crate::define_event;
+use crate::{define_event, query};
 use crate::riverdb::{config, Error, Result};
 use crate::riverdb::config::TlsMode;
-use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool, IsolationLevel};
+use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool, IsolationLevel, Rows};
 use crate::riverdb::server::{Transport, Connection as ServerConnection};
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
-use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now, AtomicRef, change_lifetime};
+use crate::riverdb::common::{AtomicCell, AtomicArc, coarse_monotonic_now, AtomicRef, change_lifetime, AtomicRefCell};
 use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError, hash_md5_password};
 use crate::riverdb::config::conf;
 use crate::riverdb::pg::message_stream::MessageStream;
@@ -39,6 +41,7 @@ pub struct BackendConn {
     client: AtomicArc<ClientConn>,
     send_backlog: Backlog,
     pool: AtomicRef<'static, ConnectionPool>,
+    rows: AtomicRefCell<Sender<Message>>,
     server_params: Mutex<ServerParams>,
     pid: AtomicI32,
     secret: AtomicI32,
@@ -85,12 +88,18 @@ impl BackendConn {
     }
 
     pub async fn forward(&self, client: Option<&Arc<ClientConn>>, msg: Message) -> Result<usize> {
+        let mut sent = 0;
         if let Some(client) = client {
             let tag = msg.tag();
-            client.send(msg).await?;
 
             if self.pending_requests.load(Relaxed) > 0 {
                 if tag == Tag::READY_FOR_QUERY {
+                    if self.rows.is_some() {
+                        self.rows.store(None);
+                    } else {
+                        sent = client.send(msg).await?;
+                    }
+
                     if self.pending_requests.fetch_sub(1, Relaxed) == 1 {
                         // pending_requests has reached zero, we can maybe release the backend to the pool
                         if let Some(backend) = client.release_backend() {
@@ -98,10 +107,16 @@ impl BackendConn {
                             self.pool.load().unwrap().put(backend);
                         }
                     }
+                } else if let Some(rows) = self.rows.load() {
+                    // If this fails, it's because the Rows was dropped, so drop the message.
+                    // Don't set rows to None here, do that as normal above when handling READY_FOR_QUERY.
+                    let _ = rows.send(msg).await;
+                } else {
+                    sent = client.send(msg).await?;
                 }
             }
         }
-        Ok(0)
+        Ok(sent)
     }
 
     pub async fn test_auth(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<()> {
@@ -173,22 +188,32 @@ impl BackendConn {
     }
 
     pub async fn check_health_and_set_role(&self, application_name: &str, role: &str) -> Result<()> {
-        // TODO SET role, SET application_name
-        // try_join!(
-        //     self.execute(escape_query!("SET ROLE {}", role))
-        //     self.execute(escape_query!("SET application_name TO {}", application_name))
-        // ).await;
+        if self.state.get() == BackendState::InPool {
+            self.state.transition(self, BackendState::Ready)?;
+            self.added_to_pool.store(0, Relaxed);
+        }
+
+        // Safety: I don't know why this is required here. Rust bug?
+        let role: &'static str = unsafe { change_lifetime(role) };
+        let application_name: &'static str = unsafe { change_lifetime(application_name) };
+        if role.is_empty() {
+            self.query(query!("SET application_name TO {}", application_name)).await?;
+        } else {
+            // TODO buffers both queries to a single BytesMut and then convert that into a single Message
+            try_join!(
+                self.query(query!("SET ROLE {}", role)),
+                self.query(query!("SET application_name TO {}", application_name))
+            )?;
+        }
+
         Ok(())
     }
 
-    pub async fn query(&self, escaped_query: &str) -> Result<()> { // TODO Result<Arc<Rows>>
-        // TODO write escape_query!() formatting macro
-
-        // TODO let run() keep pumping the message loop, and just put it in a state of
-        // ReceiveResult or something, store a reference to Rows on self, and feed it the messages
-        // as they're received (which it can buffer in a VecDeque until ready to process them.)
-        // We can use an Arc<Rows> for that.
-        todo!()
+    pub async fn query(&self, escaped_query: Message) -> Result<Rows> {
+        let (tx, rx) = channel(config::ROW_CHANNEL_NUM_MESSAGES_BUFFER);
+        self.rows.store(Some(tx));
+        self.send(escaped_query).await?;
+        Ok(Rows::new(rx))
     }
 
     /// Returns the associated ClientConn, if any.
@@ -347,7 +372,7 @@ impl BackendConn {
         }
         match msg.tag() {
             Tag::QUERY => { // TODO what other tags expect a response?
-                self.pending_requests.fetch_add(1, Relaxed);
+                self.pending_requests.fetch_add(msg.count() as i32, Relaxed);
             },
             _ => (),
         }
@@ -369,6 +394,7 @@ impl server::Connection for BackendConn {
             client: Default::default(),
             send_backlog: Mutex::new(Default::default()),
             pool: AtomicRef::default(),
+            rows: AtomicRefCell::default(),
             server_params: Mutex::new(ServerParams::default()),
             pid: AtomicI32::new(0),
             secret: AtomicI32::new(0),

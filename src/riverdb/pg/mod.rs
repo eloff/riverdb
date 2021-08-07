@@ -12,6 +12,7 @@ mod cluster;
 mod group;
 mod message_stream;
 mod transaction;
+mod rows;
 
 pub use self::service::PostgresService;
 pub use self::client_state::ClientConnState;
@@ -24,3 +25,4 @@ pub use self::group::PostgresReplicationGroup;
 pub use self::pool::ConnectionPool;
 pub use self::isolation::IsolationLevel;
 pub use self::transaction::TransactionType;
+pub use self::rows::Rows;

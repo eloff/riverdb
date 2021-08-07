@@ -21,6 +21,7 @@ pub const CHECK_TIMEOUTS_INTERVAL: u64 = 5 * 60;
 pub const LISTEN_BACKLOG: u32 = 1024;
 /// COARSE_CLOCK_GRANULARITY_SECONDS is the number of seconds between ticks of the clock, when it's updated
 pub const COARSE_CLOCK_GRANULARITY_SECONDS: u64 = 5;
+pub const ROW_CHANNEL_NUM_MESSAGES_BUFFER: usize = 32;
 
 pub type ConfigMap = FnvHashMap<String, Value>;
 

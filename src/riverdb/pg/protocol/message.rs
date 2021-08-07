@@ -88,6 +88,10 @@ impl Message {
         self.0.as_ptr() == other.0.as_ptr()
     }
 
+    pub fn count(&self) -> usize {
+        todo!()
+    }
+
     /// If there is another message in the buffer, returns a new Message object starting
     /// at the next message. This increments the reference count of the underlying buffer,
     /// but does not copy data. Returns None if there isn't another message.
@@ -111,6 +115,12 @@ impl Message {
     pub unsafe fn unsplit(self, other: Self) -> (Option<Self>, Option<Self>) {
         let (b1, b2) = unsplit_bytes(self.0, other.0);
         (b1.and_then(|b|Some(Self::new(b))), b2.and_then(|b| Some(Self::new(b))))
+    }
+}
+
+impl Default for Message {
+    fn default() -> Self {
+        Self(Bytes::new())
     }
 }
 

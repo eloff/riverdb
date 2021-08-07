@@ -125,21 +125,19 @@ impl<'a> MessageReader<'a> {
     pub fn read_bytes(&self, len: u32) -> Result<&'a [u8]> {
         let pos = self.pos.get();
         let new_pos = pos + len;
-        if new_pos > self.msg.len() {
-            self.read_past_end.set(true);
-            return Err(self.error().unwrap_err());
-        }
+        self.seek(new_pos)?;
 
         let bytes = &self.msg.as_slice()[pos as usize..new_pos as usize];
         self.pos.set(new_pos);
         Ok(bytes)
     }
 
-    pub fn seek(&self, pos: u32) -> u32 {
+    pub fn seek(&self, pos: u32) -> Result<u32> {
         if pos > self.len() {
-            panic!("cannot seek beyond end");
+            self.read_past_end.set(true);
+            return Err(self.error().unwrap_err());
         }
-        self.pos.replace(pos)
+        Ok(self.pos.replace(pos))
     }
 
     pub fn tell(&self) -> u32 {

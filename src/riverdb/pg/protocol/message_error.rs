@@ -31,8 +31,9 @@ pub struct PostgresError {
 
 impl PostgresError {
     pub fn new(msg: Message) -> Result<Self> {
-        if msg.tag() != Tag::ERROR_RESPONSE {
-            return Err(Error::protocol_error("message not an error message"));
+        match msg.tag() {
+            Tag::ERROR_RESPONSE | Tag::NOTICE_RESPONSE => (),
+            _ => { return Err(Error::protocol_error("message not an error message")); }
         }
 
         let mut err = Self{

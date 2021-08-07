@@ -10,6 +10,7 @@ mod message_error_builder;
 mod server_params;
 mod auth_type;
 mod auth_md5;
+mod row_description;
 
 pub use self::tag::*;
 pub use self::message::Message;
@@ -22,3 +23,4 @@ pub use self::message_error::PostgresError;
 pub use self::server_params::ServerParams;
 pub use self::auth_type::AuthType;
 pub use self::auth_md5::hash_md5_password;
+pub use self::row_description::{RowDescription, FieldDescription};
