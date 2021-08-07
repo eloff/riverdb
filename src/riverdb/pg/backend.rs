@@ -230,7 +230,7 @@ impl BackendConn {
     }
 
     fn add_sender(&self, tx: Sender<Message>) {
-        match self.rows.compare_exchange(&None, Some(tx)) {
+        match self.rows.compare_exchange(None, Some(tx)) {
             Ok(_) => (),
             Err(tx) => {
                 self.pipelined_rows.lock().unwrap().push_back(tx.unwrap());

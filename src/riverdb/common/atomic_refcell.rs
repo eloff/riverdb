@@ -11,7 +11,7 @@ pub struct AtomicRefCell<T>(UnsafeCell<Option<T>>);
 impl<T> AtomicRefCell<T> {
     pub fn new(value: T) -> Self {
         // We could use static_assertions, but debug-only runtime assertions don't hurt compile time as much
-        debug_assert!(std::mem::size_of::<T>() <= std::mem::size_of::<usize>());
+        debug_assert!(std::mem::size_of::<Option<T>>() == std::mem::size_of::<usize>());
         Self(UnsafeCell::new(Some(value)))
     }
 
@@ -25,6 +25,9 @@ impl<T> AtomicRefCell<T> {
         !self.is_none()
     }
 
+    /// Returns Some(&T) or None. Using this reference should be considered a Relaxed load.
+    /// To synchronize with the Release store in store, swap, or compare_exchange, use a
+    /// fence with ordering >= Acquire *immediately after* reading from this reference.
     #[inline]
     pub fn load(&self) -> Option<&T> {
         let r = unsafe { &*(self.0.get() as *const Option<T>) };
@@ -51,11 +54,20 @@ impl<T> AtomicRefCell<T> {
     }
 
     #[inline]
-    pub fn compare_exchange(&self, expected: &Option<T>, value: Option<T>) -> Result<Option<T>, Option<T>> {
+    pub fn compare_exchange(&self, expected: Option<&T>, value: Option<T>) -> Result<Option<T>, Option<T>> {
         atomic! { Option<T>, a: &AtomicUsize = &self.0, unsafe {
             let v: usize = transmute_copy(&value);
-            std::mem::forget(value);
-            return transmute_copy(&a.compare_exchange(transmute_copy(expected), v, AcqRel, Acquire));
+            let expected = match expected {
+                None => transmute_copy(&expected),
+                Some(r) => transmute_copy(r)
+            };
+            return match a.compare_exchange(expected, v, AcqRel, Acquire) {
+                Ok(prev) => {
+                    std::mem::forget(value);
+                    Ok(transmute_copy(&prev))
+                },
+                Err(_) => Err(value),
+            };
         }};
         unreachable!();
     }
@@ -69,3 +81,95 @@ impl<T> Default for AtomicRefCell<T> {
 
 // Safety: we use UnsafeCell in a thread-safe manner by transmuting it to atomic types
 unsafe impl<T> Sync for AtomicRefCell<T> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_atomic_refcell_load() {
+        let a = Arc::new(12);
+        let aa = AtomicRefCell::new(a.clone());
+        assert_eq!(Arc::strong_count(&a), 2);
+        let a_ref = aa.load();
+        assert_eq!(Arc::strong_count(&a), 2);
+        assert_eq!(a_ref, Some(&a));
+        assert!(!aa.is_none());
+        assert!(aa.is_some());
+        assert_eq!(AtomicRefCell::<u32>::default().load(), None);
+    }
+
+    #[test]
+    fn test_atomic_refcell_store() {
+        let a = Arc::new(12);
+        let aa = AtomicRefCell::default();
+        assert_eq!(aa.load(), None);
+        assert!(aa.is_none());
+        assert!(!aa.is_some());
+        aa.store(Some(a.clone()));
+        assert_eq!(aa.load(), Some(&a));
+        assert!(!aa.is_none());
+        assert!(aa.is_some());
+        let b = Arc::new(42);
+        assert_eq!(Arc::strong_count(&a), 2);
+        aa.store(Some(b.clone()));
+        assert_eq!(Arc::strong_count(&a), 1);
+        assert_eq!(aa.load(), Some(&b));
+    }
+
+    #[test]
+    fn test_atomic_refcell_swap() {
+        let a = Arc::new(12);
+        let b = Arc::new(42);
+        let aa = AtomicRefCell::default();
+        assert!(aa.is_none());
+        let empty = aa.swap(Some(a.clone()));
+        assert!(!aa.is_none());
+        assert!(empty.is_none());
+
+        let a_clone = aa.swap(Some(b.clone()));
+        assert!(!aa.is_none());
+        assert!(a_clone.is_some());
+        assert_eq!(Arc::strong_count(&a), 2);
+        assert_eq!(Some(a), a_clone);
+
+        let b_clone = aa.swap(None);
+        assert!(aa.is_none());
+        assert!(b_clone.is_some());
+        assert_eq!(Arc::strong_count(&b), 2);
+        assert_eq!(Some(b), b_clone);
+    }
+
+    #[test]
+    fn test_atomic_refcell_compare_exchange() {
+        let a = Arc::new(12);
+        let b = Arc::new(42);
+        let aa = AtomicRefCell::default();
+        assert!(aa.is_none());
+        let empty = aa.compare_exchange(None, Some(a.clone()));
+        assert!(!aa.is_none());
+        assert!(empty.is_ok());
+        assert!(empty.unwrap().is_none());
+
+        {
+            let a_clone = aa.compare_exchange(Some(&a), Some(b.clone()));
+            assert!(!aa.is_none());
+            assert!(a_clone.is_ok());
+            assert_eq!(Arc::strong_count(&a), 2);
+            assert_eq!(Ok(Some(a.clone())), a_clone);
+        }
+        assert_eq!(Arc::strong_count(&a), 1);
+
+        let a_clone = aa.compare_exchange(None, Some(a.clone()));
+        assert!(aa.is_some());
+        assert!(a_clone.is_err());
+        assert_eq!(Arc::strong_count(&a), 2);
+        assert_eq!(Err(Some(a)), a_clone);
+
+        let b_clone = aa.compare_exchange(Some(&b), None);
+        assert!(aa.is_none());
+        assert!(b_clone.is_ok());
+        assert_eq!(Arc::strong_count(&b), 2);
+        assert_eq!(Ok(Some(b)), b_clone);
+    }
+}
