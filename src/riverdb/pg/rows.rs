@@ -1,28 +1,31 @@
+use std::sync::Arc;
 use std::convert::TryInto;
 
-use tokio::sync::mpsc::{Receiver};
 use tracing::{warn};
+use tokio::sync::Notify;
 
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::{BackendConn};
+use crate::riverdb::pg::{BackendConn, MessageQueue};
 use crate::riverdb::pg::protocol::{Message, MessageReader, Tag, RowDescription, PostgresError};
 use crate::riverdb::common::change_lifetime;
 
 
 const FIELD_INDEX_OUT_OF_RANGE: &str = "field index out of range";
 
-pub struct Rows {
-    receiver: Receiver<Message>,
-    pub fields: RowDescription,
-    cur: Message, // a DATA_ROW message
+pub struct Rows<'a> {
+    message_queue: Option<&'a MessageQueue>,
+    notifier: Option<&'a Notify>,
+    fields: RowDescription,
+    cur: Message, // the current message being processed
     raw: Vec<&'static [u8]>, // these point into cur, they're not static
     affected: i32,
 }
 
-impl Rows {
-    pub fn new(receiver: Receiver<Message>) -> Self {
+impl<'a> Rows<'a> {
+    pub fn new(message_queue: &'a MessageQueue, notifier: &'a Notify) -> Self {
         Self{
-            receiver,
+            message_queue: Some(message_queue),
+            notifier: Some(notifier),
             fields: RowDescription::default(),
             cur: Message::default(),
             raw: Vec::new(),
@@ -37,11 +40,13 @@ impl Rows {
         self.affected
     }
 
-    pub fn data_row(&self) -> &Message {
+    pub fn fields(&self) -> &RowDescription { &self.fields }
+
+    pub fn message(&self) -> &Message {
         &self.cur
     }
 
-    pub fn take_data_row(&mut self) -> Message {
+    pub fn take_message(&mut self) -> Message {
         self.raw.clear();
         std::mem::replace(&mut self.cur, Message::default())
     }
@@ -112,8 +117,62 @@ impl Rows {
         }
     }
 
+    pub async fn finish(&mut self) -> Result<i32> {
+        if self.affected >= 0 {
+            return Ok(self.affected);
+        }
+
+        if let Some(notify) = self.notifier {
+            // Wait for our turn with the message queue
+            notify.notified().await;
+            self.notifier = None;
+        }
+
+        self.raw = Vec::new();
+        self.cur = Message::default();
+
+        loop {
+            let msg = self.message_queue.unwrap().pop().await;
+            match msg.tag() {
+                Tag::COMMAND_COMPLETE => {
+                    let r = MessageReader::new(&msg);
+                    // For all command tags that have a row count, it's the last part of the tag after a space
+                    let cmd_tag = r.read_str()?;
+                    if let Some(i) = cmd_tag.rfind(' ') {
+                        self.affected = (&cmd_tag[i+1..]).parse::<i32>().unwrap_or(0);
+                    } else {
+                        self.affected = 0;
+                    }
+                    self.message_queue = None;
+                    return Ok(self.affected);
+                },
+                Tag::ERROR_RESPONSE => {
+                    let e = PostgresError::new(msg)?;
+                    return Err(Error::from(e));
+                },
+                Tag::NOTICE_RESPONSE => {
+                    let e = PostgresError::new(msg)?;
+                    warn!(%e, "notice received while iterating over result in Rows");
+                },
+                _ => (),
+            }
+        }
+    }
+
     pub async fn next(&mut self) -> Result<bool> {
-        while let Some(msg) = self.receiver.recv().await {
+        if let Some(notify) = self.notifier {
+            // Wait for our turn with the message queue
+            notify.notified().await;
+            self.notifier = None;
+        }
+
+        if self.message_queue.is_none() {
+            // Already iterated to completion
+            return Ok(false);
+        }
+
+        loop {
+            let msg = self.message_queue.unwrap().pop().await;
             match msg.tag() {
                 Tag::DATA_ROW => {
                     self.raw.clear();
@@ -153,6 +212,7 @@ impl Rows {
                     }
                     self.raw = Vec::new();
                     self.cur = Message::default();
+                    self.message_queue = None;
                     return Ok(false);
                 },
                 Tag::ERROR_RESPONSE => {
@@ -168,7 +228,12 @@ impl Rows {
                 }
             }
         }
-        Ok(false)
+    }
+}
+
+impl<'a> Drop for Rows<'a> {
+    fn drop(&mut self) {
+        assert!(self.affected >= 0, "you MUST call Rows::next() until it returns false or an error");
     }
 }
 

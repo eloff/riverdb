@@ -7,7 +7,8 @@ mod util;
 mod atomic_cell;
 mod version;
 mod atomic_ref;
-mod atomic_refcell;
+mod atomic_arc;
+mod spsc;
 
 pub use self::errors::*;
 pub use self::bytes::*;
@@ -17,4 +18,5 @@ pub use self::util::*;
 pub use self::version::*;
 pub use self::atomic_cell::AtomicCell;
 pub use self::atomic_ref::AtomicRef;
-pub use self::atomic_refcell::AtomicRefCell;
+pub use self::atomic_arc::AtomicArc;
+pub use self::spsc::SpscQueue;

@@ -19,7 +19,7 @@ pub use self::client_state::ClientConnState;
 pub use self::backend_state::BackendConnState;
 pub use self::connection::{Connection};
 pub use self::client::ClientConn;
-pub use self::backend::BackendConn;
+pub use self::backend::{BackendConn, MessageQueue};
 pub use self::cluster::PostgresCluster;
 pub use self::group::PostgresReplicationGroup;
 pub use self::pool::ConnectionPool;

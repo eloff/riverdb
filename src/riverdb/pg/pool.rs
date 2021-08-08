@@ -85,7 +85,6 @@ impl ConnectionPool {
                     if let IsolationLevel::None = isolation {
                         // TODO Check the isolation level and record it
                     }
-                    conn.set_isolation_level(isolation);
 
                     created = true;
                     conn

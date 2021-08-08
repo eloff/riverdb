@@ -30,7 +30,7 @@ use crate::riverdb::pg::message_stream::MessageStream;
 use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::pg::sql::{Query, QueryType};
 use crate::riverdb::pg::PostgresReplicationGroup;
-use crate::riverdb::common::{AtomicCell, AtomicRefCell, AtomicRef};
+use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
 use crate::riverdb::config::{conf, TlsMode};
 
 
@@ -66,7 +66,7 @@ impl ClientConn {
         loop {
             // We don't want to clone the Arc everytime, so we clone() it once and cache it,
             // checking that it's still the current one with has_backend. That's cheaper
-            // than the atomic-read-modify-write ops used increment and decrement and Arc.
+            // than the atomic-read-modify-write ops used to increment and decrement and Arc.
             if sender.is_none() || !self.has_backend(sender.as_ref().unwrap()) {
                 sender = self.backend();
             }
@@ -87,6 +87,11 @@ impl ClientConn {
 
     /// Returns the associated BackendConn, if any.
     pub fn backend(&self) -> Option<Arc<BackendConn>> { self.backend.load() }
+
+    /// Returns true if client is set as the associated ClientConn.
+    pub fn has_backend(&self, backend: &Arc<BackendConn>) -> bool {
+        self.backend.is(backend)
+    }
 
     /// Sets the associated BackendConn. Panics if called on a BackendConn.
     pub fn set_backend(&self, backend: Option<Arc<BackendConn>>) {
@@ -132,7 +137,7 @@ impl ClientConn {
 
     /// forwards msg to the backend via backend.send. If backend is None, runs client_connect_backend
     /// to acquire a backend connection. Panics unless in Ready, Transaction, or FailedTransaction states.
-    pub async fn forward(&self, backend: Option<&Arc<BackendConn>>, msg: Message) -> Result<usize> {
+    pub async fn forward(&self, backend: Option<&BackendConn>, msg: Message) -> Result<usize> {
         let query = Query::new(msg);
         client_query::run(self, backend, query).await
     }
@@ -233,7 +238,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_query(&self, _: &mut client_query::Event, backend: Option<&Arc<BackendConn>>, mut query: Query) -> Result<usize> {
+    pub async fn client_query(&self, _: &mut client_query::Event, backend: Option<&BackendConn>, mut query: Query) -> Result<usize> {
         let begins_tx = self.begins_transaction(&query)?;
 
         let state = self.state.get();
@@ -486,7 +491,7 @@ impl server::Connection for ClientConn {
             has_send_backlog: Default::default(),
             state: Default::default(),
             tx_type: AtomicCell::default(),
-            backend: AtomicRefCell::default(),
+            backend: AtomicArc::default(),
             send_backlog: Mutex::new(VecDeque::new()),
             cluster: AtomicRef::default(),
             replication_group: AtomicRef::default(),

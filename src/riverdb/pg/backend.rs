@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::net::SocketAddr;
+use std::pin::Pin;
 
 use chrono::{Local, DateTime};
 use tokio::net::TcpStream;
@@ -21,11 +22,13 @@ use crate::riverdb::server::{Transport, Connection as ServerConnection};
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
-use crate::riverdb::common::{AtomicCell, coarse_monotonic_now, AtomicRef, change_lifetime, AtomicRefCell};
+use crate::riverdb::common::{SpscQueue, AtomicCell, AtomicArc, AtomicRef, coarse_monotonic_now, change_lifetime};
 use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError, hash_md5_password};
 use crate::riverdb::config::conf;
 use crate::riverdb::pg::message_stream::MessageStream;
+use tokio::sync::Notify;
 
+pub type MessageQueue = SpscQueue<Message, 32>;
 
 pub struct BackendConn {
     transport: Transport,
@@ -35,14 +38,13 @@ pub struct BackendConn {
     added_to_pool: AtomicU32,
     has_send_backlog: AtomicBool,
     for_transaction: AtomicBool,
-    tx_isolation_level: AtomicCell<IsolationLevel>, // do we need this?
     state: BackendConnState,
     pending_requests: AtomicI32,
     client: AtomicArc<ClientConn>,
     send_backlog: Backlog,
     pool: AtomicRef<'static, ConnectionPool>,
-    rows: AtomicRefCell<Sender<Message>>, // forwards server messages to the Rows iterator instead of to client
-    pipelined_rows: Mutex<VecDeque<Sender<Message>>>, // additional Rows iterators if there are pipelined queries
+    iterator_messages: MessageQueue, // messages queued for Rows iterators
+    iterators: SpscQueue<Notify, 16>,
     server_params: Mutex<ServerParams>,
     pid: AtomicI32,
     secret: AtomicI32,
@@ -72,9 +74,9 @@ impl BackendConn {
         loop {
             // We don't want to clone the Arc everytime, so we clone() it once and cache it,
             // checking that it's still the current one with has_client. That's cheaper
-            // than the atomic-read-modify-write ops used increment and decrement and Arc.
+            // than the atomic-read-modify-write ops used to increment and decrement and Arc.
             if sender.is_none() || !self.has_client(sender.as_ref().unwrap()) {
-                sender = self.get_client();
+                sender = self.client();
             }
             let sender_ref = sender.as_ref().map(|arc| arc.as_ref());
 
@@ -88,42 +90,43 @@ impl BackendConn {
         backend_send_message::run(self, msg).await
     }
 
-    pub async fn forward(&self, client: Option<&Arc<ClientConn>>, msg: Message) -> Result<usize> {
+    pub async fn forward(&self, client: Option<&ClientConn>, msg: Message) -> Result<usize> {
         let mut sent = 0;
         if let Some(client) = client {
             let tag = msg.tag();
 
             if self.pending_requests.load(Relaxed) > 0 {
                 if tag == Tag::READY_FOR_QUERY {
-                    if self.rows.is_some() {
-                        // This doesn't work because a new query can see rows as full
-                        // append to pipelined_rows, and then here we see pipelined_rows
-                        // as empty and clear rows. That leaves an orphaned Sender in
-                        // pipelined_rows that we will never check. We can fix it by holding
-                        // the mutex longer in both methods to sync both operations, but
-                        // that makes already fragile and dangerous code much worse.
-                        // There has to be a better way of doing this without having to lock
-                        // the mutex? Or do we double down on the mutex but remove the
-                        // MPSC channel and replace it with just a plain write + wakeup (how?)
-                        let next_rows = self.pipelined_rows.lock().unwrap().pop_front();
-                        self.rows.store(next_rows);
-                    } else {
+                    // If there were no iterators, that can't change yet because
+                    // you can't start a command/query before receiving the READY_FOR_QUERY message.
+                    // So we don't have to a worry that a new iterator will prevent this message
+                    // from being forwarded to the client.
+                    if self.iterators.is_empty() {
                         sent = client.send(msg).await?;
                     }
 
                     if self.pending_requests.fetch_sub(1, Relaxed) == 1 {
                         // pending_requests has reached zero, we can maybe release the backend to the pool
-                        assert!(self.rows.is_none());
-                        debug_assert!(self.pipelined_rows.lock().unwrap().is_empty());
                         if let Some(backend) = client.release_backend() {
                             self.client.store(None);
                             self.pool.load().unwrap().put(backend);
                         }
                     }
-                } else if let Some(rows) = self.rows.load() {
-                    // If this fails, it's because the Rows was dropped, so drop the message.
-                    // Don't set rows to None here, do that as normal above when handling READY_FOR_QUERY.
-                    let _ = rows.send(msg).await;
+                } else if !self.iterators.is_empty() {
+                    match tag {
+                        Tag::ROW_DESCRIPTION => {
+                            // This is a new rows result, wake the iterator
+                            self.iterators.peek().unwrap().notify_one();
+                        },
+                        Tag::COMMAND_COMPLETE | Tag::ERROR_RESPONSE => {
+                            // If we didn't notify the iterator above to consume it's messages, now's the last chance
+                            // This happens if the result wasn't a rows result, but just a command to execute.
+                            self.iterators.peek().unwrap().notify_one();
+                            self.iterators.pop().await;
+                        },
+                        _ => (),
+                    }
+                    self.iterator_messages.put(msg).await;
                 } else {
                     sent = client.send(msg).await?;
                 }
@@ -210,7 +213,7 @@ impl BackendConn {
         let role: &'static str = unsafe { change_lifetime(role) };
         let application_name: &'static str = unsafe { change_lifetime(application_name) };
         if role.is_empty() {
-            self.query(query!("SET application_name TO {}", application_name)).await?;
+            self.execute(query!("SET application_name TO {}", application_name)).await?;
         } else {
             try_join!(
                 self.execute(query!("SET ROLE {}", role)),
@@ -221,35 +224,35 @@ impl BackendConn {
         Ok(())
     }
 
-    pub async fn query(&self, escaped_query: Message) -> Result<Rows> {
-        let (tx, rx) = channel(config::ROW_CHANNEL_NUM_MESSAGES_BUFFER);
-        self.add_sender(tx);
+    /// Issue a query and return a Rows iterator over the results. You must call Rows::next()
+    /// until it returns false or Rows::finish() to consume the entire result, even if you
+    /// don't intend to use it.
+    pub async fn query<'a>(&'a self, escaped_query: Message) -> Result<Rows<'a>> {
+        let notifier = self.iterators.put(Notify::new()).await;
+        let rows = Rows::new(&self.iterator_messages, notifier);
         self.send(escaped_query).await?;
-        Ok(Rows::new(rx))
+        Ok(rows)
     }
 
+    /// Issue a command and wait for the result. If this is awaited with other query/execute
+    /// futures then it will pipeline the queries. Returns the number of affected rows.
     pub async fn execute(&self, escaped_query: Message) -> Result<i32> {
-        let (tx, rx) = channel(1);
-        self.add_sender(tx);
+        let notifier = self.iterators.put(Notify::new()).await;
+        let mut rows = Rows::new(&self.iterator_messages, notifier);
         self.send(escaped_query).await?;
-        let mut rows = Rows::new(rx);
         let has_next = rows.next().await?;
         assert!(!has_next);
         Ok(rows.affected())
     }
 
-    fn add_sender(&self, tx: Sender<Message>) {
-        match self.rows.compare_exchange(None, Some(tx)) {
-            Ok(_) => (),
-            Err(tx) => {
-                self.pipelined_rows.lock().unwrap().push_back(tx.unwrap());
-            }
-        }
+    /// Returns the associated ClientConn, if any.
+    pub fn client(&self) -> Option<Arc<ClientConn>> {
+        self.client.load()
     }
 
-    /// Returns the associated ClientConn, if any.
-    pub fn client(&self) -> Option<&Arc<ClientConn>> {
-        self.client.load()
+    /// Returns true if client is set as the associated ClientConn.
+    pub fn has_client(&self, client: &Arc<ClientConn>) -> bool {
+        self.client.is(client)
     }
 
     /// Sets the associated ClientConn.
@@ -263,14 +266,6 @@ impl BackendConn {
 
     pub(crate) fn set_created_for_transaction(&self, value: bool) {
         self.for_transaction.store(value, Relaxed)
-    }
-
-    pub fn isolation_level(&self) -> IsolationLevel {
-        self.tx_isolation_level.load()
-    }
-
-    pub fn set_isolation_level(&self, level: IsolationLevel) {
-        self.tx_isolation_level.store(level);
     }
 
     pub fn in_pool(&self) -> bool {
@@ -414,14 +409,13 @@ impl server::Connection for BackendConn {
             added_to_pool: Default::default(),
             has_send_backlog: Default::default(),
             for_transaction: Default::default(),
-            tx_isolation_level: AtomicCell::default(),
             state: Default::default(),
             pending_requests: AtomicI32::new(0),
-            client: AtomicRefCell::default(),
+            client: AtomicArc::default(),
             send_backlog: Mutex::new(Default::default()),
             pool: AtomicRef::default(),
-            rows: AtomicRefCell::default(),
-            pipelined_rows: Mutex::new(VecDeque::new()),
+            iterator_messages: MessageQueue::new(),
+            iterators: SpscQueue::new(),
             server_params: Mutex::new(ServerParams::default()),
             pid: AtomicI32::new(0),
             secret: AtomicI32::new(0),
