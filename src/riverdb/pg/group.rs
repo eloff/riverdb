@@ -80,7 +80,7 @@ pub(crate) fn merge_server_params(master: &mut ServerParams, server: &ServerPara
                     if let Ok(server_version) = Version::from_str(val) {
                         if server_version < master_version {
                             warn!("server has lower version {} to master {}, using the lower version", val, master_val);
-                            master.set(key, val);
+                            master.set(key.to_string(), val.to_string());
                         }
                     }
                 }

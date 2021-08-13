@@ -1,4 +1,4 @@
-use crate::riverdb::pg::protocol::{Tag, MessageBuilder, ErrorSeverity, ErrorFieldTag, Message};
+use crate::riverdb::pg::protocol::{Tag, MessageBuilder, ErrorSeverity, ErrorFieldTag, Messages};
 
 pub struct MessageErrorBuilder(MessageBuilder);
 
@@ -19,7 +19,7 @@ impl MessageErrorBuilder {
         self
     }
 
-    pub fn finish(mut self) -> Message {
+    pub fn finish(mut self) -> Messages {
         self.0.write_byte(ErrorFieldTag::NULL_TERMINATOR.as_u8());
         self.0.finish()
     }

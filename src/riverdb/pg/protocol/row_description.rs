@@ -2,22 +2,23 @@ use std::slice::Iter;
 use std::convert::TryInto;
 
 use crate::riverdb::common::{Error, Result};
-use crate::riverdb::pg::protocol::{Message, MessageReader, Tag};
+use crate::riverdb::pg::protocol::{Messages, MessageReader, Tag};
 use std::iter::{Cloned, Map};
 
 
 const FIELD_DESCRIPTION_SIZE: u32 = 3*4 + 3*2;
 
 pub struct RowDescription {
-    msg: Message,
+    msg: Messages,
     fields: Vec<FieldOffset>,
 }
 
 impl RowDescription {
-    pub fn new(msg: Message) -> Result<Self> {
-        assert_eq!(msg.tag(), Tag::ROW_DESCRIPTION);
+    pub fn new(msg: Messages) -> Result<Self> {
+        let m = msg.first().unwrap();
+        assert_eq!(m.tag(), Tag::ROW_DESCRIPTION);
 
-        let r = MessageReader::new(&msg);
+        let r = m.reader();
         let num_fields = r.read_i16();
         let mut fields = Vec::with_capacity(num_fields as usize);
         for i in 0..num_fields as usize {
@@ -40,14 +41,10 @@ impl RowDescription {
     }
 
     pub fn get(&self, index: usize) -> Option<FieldDescription> {
-        self.fields.get(index).cloned().map(|off| FieldDescription::new(&self.msg, off))
+        self.fields.get(index).cloned().map(|off| FieldDescription::new(self.msg.as_slice(), off))
     }
 
-    pub fn message(&self) -> &Message {
-        &self.msg
-    }
-
-    pub fn into_message(self) -> Message {
+    pub fn into_message(self) -> Messages {
         self.msg
     }
 }
@@ -55,66 +52,66 @@ impl RowDescription {
 impl Default for RowDescription {
     fn default() -> Self {
         Self{
-            msg: Message::default(),
+            msg: Messages::default(),
             fields: Vec::new(),
         }
     }
 }
 
 pub struct FieldDescription<'a> {
-    msg: &'a Message,
+    data: &'a [u8],
     offset: FieldOffset,
 }
 
 impl<'a> FieldDescription<'a> {
-    pub fn new(msg: &'a Message, offset: FieldOffset) -> Self {
+    pub fn new(data: &'a [u8], offset: FieldOffset) -> Self {
         Self{
-            msg,
+            data,
             offset
         }
     }
 
     /// Returns the field name.
     pub fn name(&self) -> Result<&str> {
-        let name = &self.msg.as_slice()[self.offset.offset()..self.offset.name_end()-1];
+        let name = &self.data[self.offset.offset()..self.offset.name_end()-1];
         std::str::from_utf8(name).map_err(Error::from)
     }
 
     /// Returns the object ID of the table if the field can be identified as a column of a specific table, otherwise 0.
     pub fn table_oid(&self) -> i32 {
         let start = self.offset.name_end();
-        i32::from_be_bytes((&self.msg.as_slice()[start..start+4]).try_into().unwrap())
+        i32::from_be_bytes((&self.data[start..start+4]).try_into().unwrap())
     }
 
     /// Returns the attribute number of the column, if the field can be identified as a table column, otherwise 0.
     pub fn column_attribute_num(&self) -> i16 {
         let start = self.offset.name_end() + 4;
-        i16::from_be_bytes((&self.msg.as_slice()[start..start+2]).try_into().unwrap())
+        i16::from_be_bytes((&self.data[start..start+2]).try_into().unwrap())
     }
 
     /// Returns the object ID of the field's data type.
     pub fn type_oid(&self) -> i32 {
         let start = self.offset.name_end() + 6;
-        i32::from_be_bytes((&self.msg.as_slice()[start..start+4]).try_into().unwrap())
+        i32::from_be_bytes((&self.data[start..start+4]).try_into().unwrap())
     }
 
     /// Returns the data type size (see pg_type.typlen). Note that negative values denote variable-width types.
     pub fn type_len(&self) -> i16 {
         let start = self.offset.name_end() + 10;
-        i16::from_be_bytes((&self.msg.as_slice()[start..start+2]).try_into().unwrap())
+        i16::from_be_bytes((&self.data[start..start+2]).try_into().unwrap())
     }
 
     /// Returns the type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
     pub fn type_mod(&self) -> i32 {
         let start = self.offset.name_end() + 12;
-        i32::from_be_bytes((&self.msg.as_slice()[start..start+4]).try_into().unwrap())
+        i32::from_be_bytes((&self.data[start..start+4]).try_into().unwrap())
     }
 
     /// Returns the format code being used for the field. Currently will be zero (text) or one (binary).
     /// In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
     pub fn format_code(&self) -> FormatCode {
         let start = self.offset.name_end() + 16;
-        match self.msg.as_slice().get(start).unwrap() {
+        match self.data.get(start).unwrap() {
             0 => FormatCode::Text,
             1 => FormatCode::Binary,
             _ => FormatCode::Binary,

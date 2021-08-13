@@ -11,9 +11,11 @@ mod server_params;
 mod auth_type;
 mod auth_md5;
 mod row_description;
+mod messages;
 
 pub use self::tag::*;
 pub use self::message::Message;
+pub use self::messages::{MessageIter, Messages};
 pub use self::message_reader::MessageReader;
 pub use self::message_parser::MessageParser;
 pub use self::message_builder::MessageBuilder;

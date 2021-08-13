@@ -5,18 +5,22 @@ use std::convert::TryInto;
 use rustls::Connection;
 
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::protocol::Message;
+use crate::riverdb::pg::protocol::Messages;
 use crate::riverdb::config::conf;
 use crate::riverdb::pg::protocol::Tag;
 
 pub const MIN_MESSAGE_LEN: u32 = 5;
 
+#[derive(Copy, Clone)]
 pub struct Header {
     pub tag: Tag,
     pub length: NonZeroU32,
 }
 
 impl Header {
+    /// Returns the parsed frame Header if successful.
+    /// If there wasn't enough data for a frame header, it returns Ok(None).
+    /// Else if the frame header was invalid, it returns an error.
     pub fn parse(bytes: &[u8]) -> Result<Option<Self>> {
         if (bytes.len() as u32) < MIN_MESSAGE_LEN {
             return Ok(None);
@@ -70,23 +74,43 @@ impl MessageParser {
 
     /// Parses and returns the next Message in the buffer without copying,
     /// or None if there isn't a complete message.
-    pub fn next(&mut self) -> Option<Result<Message>> {
-        match Header::parse(self.data.chunk()) {
-            Err(e) => Some(Err(e)),
-            Ok(None) => None,
-            Ok(Some(hdr)) => {
-                let msg_len = hdr.len();
-                if msg_len <= self.data.len() as u32 {
-                    // We have the full message, split it off and return it
-                    let msg = Message::new(self.data.split_to(msg_len as usize).freeze());
-                    Some(Ok(msg))
-                } else {
-                    // We don't have the message, make sure buffer is large enough for it
-                    self.data.reserve(msg_len as usize - self.data.len());
-                    None
+    pub fn next(&mut self) -> Option<Result<Messages>> {
+        let mut pos = 0;
+        let mut reserve_extra = 0;
+        let data = self.data.chunk();
+        loop {
+            match Header::parse(&data[pos..]) {
+                Err(e) => { return Some(Err(e)) },
+                Ok(None) => { break; },
+                Ok(Some(hdr)) => {
+                    let msg_end = pos + hdr.len() as usize;
+                    if msg_end <= self.data.len() {
+                        // We have the full message. Start after this message and loop again.
+                        pos = msg_end;
+                        continue;
+                    } else {
+                        // We don't have this last message, make sure buffer is large enough for it
+                        reserve_extra = msg_end - self.data.len();
+                        break;
+                    }
                 }
             }
         }
+
+        let result = if pos != 0 {
+            let msg = Messages::new(self.data.split_to(pos as usize).freeze());
+            Some(Ok(msg))
+        } else {
+            None
+        };
+
+        // Doing this after splitting off the parsed data lets reserve
+        // allocate a new buffer without copying as much existing data.
+        if reserve_extra != 0 {
+            self.data.reserve(reserve_extra);
+        }
+
+        result
     }
 
     /// Returns a mutable reference to the underlying BytesMut buffer.

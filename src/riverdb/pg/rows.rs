@@ -6,7 +6,7 @@ use tokio::sync::Notify;
 
 use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::{BackendConn, MessageQueue};
-use crate::riverdb::pg::protocol::{Message, MessageReader, Tag, RowDescription, PostgresError};
+use crate::riverdb::pg::protocol::{Message, Messages, MessageReader, Tag, RowDescription, PostgresError};
 use crate::riverdb::common::change_lifetime;
 
 
@@ -16,8 +16,9 @@ pub struct Rows<'a> {
     message_queue: Option<&'a MessageQueue>,
     notifier: Option<&'a Notify>,
     fields: RowDescription,
-    cur: Message, // the current message being processed
+    msgs: Messages, // messages to be processed next
     raw: Vec<&'static [u8]>, // these point into cur, they're not static
+    cur_pos: u32, // the offset of the current message being processed in msgs
     affected: i32,
 }
 
@@ -27,8 +28,9 @@ impl<'a> Rows<'a> {
             message_queue: Some(message_queue),
             notifier: Some(notifier),
             fields: RowDescription::default(),
-            cur: Message::default(),
+            msgs: Messages::default(),
             raw: Vec::new(),
+            cur_pos: 0,
             affected: -1,
         }
     }
@@ -42,13 +44,8 @@ impl<'a> Rows<'a> {
 
     pub fn fields(&self) -> &RowDescription { &self.fields }
 
-    pub fn message(&self) -> &Message {
-        &self.cur
-    }
-
-    pub fn take_message(&mut self) -> Message {
-        self.raw.clear();
-        std::mem::replace(&mut self.cur, Message::default())
+    pub fn message(&self) -> Messages {
+        self.msgs.split_message_at(self.cur_pos as usize)
     }
 
     pub fn get_raw(&self) -> &[&[u8]] {
@@ -128,34 +125,28 @@ impl<'a> Rows<'a> {
             self.notifier = None;
         }
 
+        assert!(self.affected < 0); // already iterated to completion
         self.raw = Vec::new();
-        self.cur = Message::default();
-
         loop {
-            let msg = self.message_queue.unwrap().pop().await;
-            match msg.tag() {
-                Tag::COMMAND_COMPLETE => {
-                    let r = MessageReader::new(&msg);
-                    // For all command tags that have a row count, it's the last part of the tag after a space
-                    let cmd_tag = r.read_str()?;
-                    if let Some(i) = cmd_tag.rfind(' ') {
-                        self.affected = (&cmd_tag[i+1..]).parse::<i32>().unwrap_or(0);
-                    } else {
-                        self.affected = 0;
-                    }
-                    self.message_queue = None;
-                    return Ok(self.affected);
-                },
-                Tag::ERROR_RESPONSE => {
-                    let e = PostgresError::new(msg)?;
-                    return Err(Error::from(e));
-                },
-                Tag::NOTICE_RESPONSE => {
-                    let e = PostgresError::new(msg)?;
-                    warn!(%e, "notice received while iterating over result in Rows");
-                },
-                _ => (),
+            for msg in self.msgs.iter(self.cur_pos as usize) {
+                match msg.tag() {
+                    Tag::COMMAND_COMPLETE => {
+                        self.affected = parse_affected_rows(&msg)?;
+                        self.message_queue = None;
+                        return Ok(self.affected);
+                    },
+                    Tag::ERROR_RESPONSE => {
+                        let e = PostgresError::new(self.msgs.split_message(&msg))?;
+                        return Err(Error::from(e));
+                    },
+                    Tag::NOTICE_RESPONSE => {
+                        let e = PostgresError::new(self.msgs.split_message(&msg))?;
+                        warn!(%e, "notice received while iterating over result in Rows");
+                    },
+                    _ => (),
+                }
             }
+            self.msgs = self.message_queue.unwrap().pop().await;
         }
     }
 
@@ -171,62 +162,57 @@ impl<'a> Rows<'a> {
             return Ok(false);
         }
 
+        assert!(self.affected < 0); // already iterated to completion
         loop {
-            let msg = self.message_queue.unwrap().pop().await;
-            match msg.tag() {
-                Tag::DATA_ROW => {
-                    self.raw.clear();
-                    let r = MessageReader::new(&msg);
-                    let num_fields = r.read_i16() as usize;
-                    let bytes = msg.as_slice();
-                    for _ in 0..num_fields {
-                        let len = r.read_i32();
-                        if len <= 0 {
-                            self.raw.push(&[]); // null
-                        } else {
-                            let start = r.tell() as usize;
-                            let data = &bytes[start..start+(len as usize)];
-                            // Safety: we fake a 'static lifetime here, but we ensure the references
-                            // don't outlive the buffer in msg (see call to raw.clear() at the top,
-                            // and raw = Vec::new() in COMMAND_COMPLETE section below.
-                            unsafe {
-                                self.raw.push(change_lifetime(data));
+            for msg in self.msgs.iter(self.cur_pos as usize) {
+                match msg.tag() {
+                    Tag::DATA_ROW => {
+                        self.raw.clear();
+                        let r = msg.reader();
+                        let num_fields = r.read_i16() as usize;
+                        let bytes = msg.as_slice();
+                        for _ in 0..num_fields {
+                            let len = r.read_i32();
+                            if len <= 0 {
+                                self.raw.push(&[]); // null
+                            } else {
+                                let start = r.tell() as usize;
+                                let data = &bytes[start..start + (len as usize)];
+                                // Safety: we fake a 'static lifetime here, but we ensure the references
+                                // don't outlive the buffer in msg (see call to raw.clear() at the top,
+                                // and raw = Vec::new() in COMMAND_COMPLETE section below.
+                                unsafe {
+                                    self.raw.push(change_lifetime(data));
+                                }
                             }
                         }
+                        self.cur_pos = msg.offset() as u32;
+                        return Ok(true);
+                    },
+                    Tag::ROW_DESCRIPTION => {
+                        self.fields = RowDescription::new(self.msgs.split_message(&msg))?;
+                        self.raw.reserve(self.fields.len());
+                    },
+                    Tag::COMMAND_COMPLETE => {
+                        self.affected = parse_affected_rows(&msg)?;
+                        self.raw = Vec::new();
+                        self.message_queue = None;
+                        return Ok(false);
+                    },
+                    Tag::ERROR_RESPONSE => {
+                        let e = PostgresError::new(self.msgs.split_message(&msg))?;
+                        return Err(Error::from(e));
+                    },
+                    Tag::NOTICE_RESPONSE => {
+                        let e = PostgresError::new(self.msgs.split_message(&msg))?;
+                        warn!(%e, "notice received while iterating over result in Rows");
+                    },
+                    _ => {
+                        return Err(Error::new(format!("unexpected message in result {:?}", msg.tag())));
                     }
-                    self.cur = msg;
-                    return Ok(true);
-                },
-                Tag::ROW_DESCRIPTION => {
-                    self.fields = RowDescription::new(msg)?;
-                    self.raw.reserve(self.fields.len());
-                },
-                Tag::COMMAND_COMPLETE => {
-                    let r = MessageReader::new(&msg);
-                    // For all command tags that have a row count, it's the last part of the tag after a space
-                    let cmd_tag = r.read_str()?;
-                    if let Some(i) = cmd_tag.rfind(' ') {
-                        self.affected = (&cmd_tag[i+1..]).parse::<i32>().unwrap_or(0);
-                    } else {
-                        self.affected = 0;
-                    }
-                    self.raw = Vec::new();
-                    self.cur = Message::default();
-                    self.message_queue = None;
-                    return Ok(false);
-                },
-                Tag::ERROR_RESPONSE => {
-                    let e = PostgresError::new(msg)?;
-                    return Err(Error::from(e));
-                },
-                Tag::NOTICE_RESPONSE => {
-                    let e = PostgresError::new(msg)?;
-                    warn!(%e, "notice received while iterating over result in Rows");
-                },
-                _ => {
-                    return Err(Error::new(format!("unexpected message in result {:?}", msg.tag())));
                 }
             }
+            self.msgs = self.message_queue.unwrap().pop().await;
         }
     }
 }
@@ -237,5 +223,14 @@ impl<'a> Drop for Rows<'a> {
     }
 }
 
-
+fn parse_affected_rows(msg: &Message<'_>) -> Result<i32> {
+    let r = msg.reader();
+    // For all command tags that have a row count, it's the last part of the tag after a space
+    let cmd_tag = r.read_str()?;
+    Ok(if let Some(i) = cmd_tag.rfind(' ') {
+        (&cmd_tag[i + 1..]).parse::<i32>().unwrap_or(0)
+    } else {
+        0
+    })
+}
 

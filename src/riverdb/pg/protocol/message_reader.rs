@@ -10,21 +10,21 @@ use std::ops::Deref;
 
 
 pub struct MessageReader<'a> {
-    pub msg: &'a Message,
+    pub msg: &'a Message<'a>,
     pos: Cell<u32>, // track position for read_xxx methods
     read_past_end: Cell<bool>, // true if we tried to read past the end of the message
 }
 
 impl<'a> MessageReader<'a> {
-    pub fn new(msg: &'a Message) -> Self {
+    pub fn new(msg: &'a Message<'a>) -> Self {
         MessageReader{
             msg,
-            pos: Cell::new(msg.body_start()),
+            pos: Cell::new(msg.body_start() as u32),
             read_past_end: Cell::new(false),
         }
     }
 
-    pub fn new_at(msg: &'a Message, pos: u32) -> Self {
+    pub fn new_at(msg: &'a Message<'a>, pos: u32) -> Self {
         assert!(pos <= msg.len());
         MessageReader{
             msg,
@@ -35,10 +35,6 @@ impl<'a> MessageReader<'a> {
 
     pub fn len(&self) -> u32 {
         self.msg.len()
-    }
-
-    pub fn slice(&self, start: u32, end: u32) -> Bytes {
-        self.msg.bytes().slice(start as usize .. end as usize)
     }
 
     /// error returns an Error if has_error() is true

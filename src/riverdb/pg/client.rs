@@ -16,7 +16,7 @@ use crate::define_event;
 use crate::riverdb::{Error, Result, common};
 use crate::riverdb::worker::{Worker};
 use crate::riverdb::pg::protocol::{
-    Message, MessageReader, MessageParser, ServerParams, Tag, PostgresError,
+    Messages, MessageReader, MessageParser, ServerParams, Tag, PostgresError,
     PROTOCOL_VERSION, SSL_REQUEST, AuthType, MessageBuilder, MessageErrorBuilder,
     error_codes, ErrorSeverity, SSL_ALLOWED, SSL_NOT_ALLOWED
 };
@@ -50,7 +50,7 @@ pub struct ClientConn {
     cluster: AtomicRef<'static, PostgresCluster>,
     replication_group: AtomicRef<'static, PostgresReplicationGroup>, // the last PostgresReplicationGroup used
     pool: AtomicRef<'static, ConnectionPool>, // the last ConnectionPool used
-    buffered: Mutex<Option<Message>>,
+    buffered: Mutex<Option<Messages>>,
     connect_params: UnsafeCell<ServerParams>,
     salt: i32,
 }
@@ -72,17 +72,17 @@ impl ClientConn {
             }
             let sender_ref = sender.as_ref().map(|arc| arc.as_ref());
 
-            let msg = stream.next(sender_ref).await?;
-            client_message::run(self, sender_ref, msg).await?;
+            let msgs = stream.next(sender_ref).await?;
+            client_messages::run(self, sender_ref, msgs).await?;
         }
     }
 
     #[inline]
-    pub async fn send(&self, msg: Message) -> Result<usize> {
-        if msg.is_empty() {
+    pub async fn send(&self, msgs: Messages) -> Result<usize> {
+        if msgs.is_empty() {
             return Ok(0);
         }
-        client_send_message::run(self, msg).await
+        client_send_messages::run(self, msgs).await
     }
 
     /// Returns the associated BackendConn, if any.
@@ -135,11 +135,16 @@ impl ClientConn {
         }
     }
 
-    /// forwards msg to the backend via backend.send. If backend is None, runs client_connect_backend
-    /// to acquire a backend connection. Panics unless in Ready, Transaction, or FailedTransaction states.
-    pub async fn forward(&self, backend: Option<&BackendConn>, msg: Message) -> Result<usize> {
-        let query = Query::new(msg);
-        client_query::run(self, backend, query).await
+    /// For each Message in msgs, constructs a Query object and runs client_query.
+    /// Which forwards the Query or Message to the backend via backend.send.
+    /// If backend is None, runs client_connect_backend to acquire a backend connection.
+    /// Panics unless in Ready, Transaction, or FailedTransaction states.
+    pub async fn forward(&self, backend: Option<&BackendConn>, mut msgs: Messages) -> Result<()> {
+        for msg in msgs.iter(0) {
+            let query = Query::new(msgs.split_message(&msg));
+            client_query::run(self, backend, query).await?;
+        }
+        Ok(())
     }
 
     pub fn release_backend(&self) -> Option<Arc<BackendConn>> {
@@ -202,9 +207,14 @@ impl ClientConn {
     }
 
     #[instrument]
-    async fn startup(&self, msg: Message) -> Result<()> {
+    async fn startup(&self, msgs: Messages) -> Result<()> {
+        if msgs.count() != 1 {
+            return Err(Error::new("startup expects exactly one Message"));
+        }
+
+        let msg = msgs.first().unwrap(); // see msgs.count() condition above
         assert_eq!(msg.tag(), Tag::UNTAGGED); // was previously checked by msg_is_allowed
-        let r = MessageReader::new(&msg);
+        let r = msg.reader();
         let protocol_version = r.read_i32();
         match protocol_version {
             PROTOCOL_VERSION => {
@@ -238,7 +248,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_query(&self, _: &mut client_query::Event, backend: Option<&BackendConn>, mut query: Query) -> Result<usize> {
+    pub async fn client_query(&self, _: &mut client_query::Event, mut backend: Option<&BackendConn>, mut query: Query) -> Result<()> {
         let begins_tx = self.begins_transaction(&query)?;
 
         let state = self.state.get();
@@ -248,17 +258,17 @@ impl ClientConn {
                     {
                         let mut buffered = self.buffered.lock().unwrap();
                         if buffered.is_none() {
-                            *buffered = Some(query.into_message());
-                            return Ok(0);
+                            *buffered = Some(query.into_messages());
+                            return Ok(());
                         }
                     }
 
                     // There shouldn't have been anything buffered, we received two begin statements back to back
                     // Behave the same as Postgres, give a warning and ignore the second one.
-                    let msg = Message::new_warning(error_codes::ACTIVE_SQL_TRANSACTION, "there is already a transaction in progress");
+                    let msg = Messages::new_warning(error_codes::ACTIVE_SQL_TRANSACTION, "there is already a transaction in progress");
                     self.send(msg).await?;
                     self.send_command_successful("BEGIN", 'T').await?;
-                    return Ok(0);
+                    return Ok(());
                 }
             },
             ClientState::FailedTransaction => {
@@ -271,10 +281,10 @@ impl ClientConn {
                     self.send_command_successful("ROLLBACK", 'I').await?;
                 } else {
                     let error_msg = "current transaction is aborted, commands ignored until end of transaction block";
-                    let msg = Message::new_error(error_codes::IN_FAILED_SQL_TRANSACTION, error_msg);
+                    let msg = Messages::new_error(error_codes::IN_FAILED_SQL_TRANSACTION, error_msg);
                     self.send(msg).await?;
                 }
-                return Ok(0);
+                return Ok(());
             }
             _ => panic!("forward called in unexpected state {:?}", state)
         };
@@ -286,21 +296,21 @@ impl ClientConn {
             let database = params.get("database").expect("missing database");
             let application_name = params.get("application_name").unwrap_or("riverdb");
             let tx_type = self.tx_type.load();
-            let backend = client_connect_backend::run(self, cluster, application_name, user, database, tx_type, &mut query).await?;
+            let backend_arc = client_connect_backend::run(self, cluster, application_name, user, database, tx_type, &mut query).await?;
 
             // If we have buffered messages, flush them now
             // TODO not necessarily if defer_begin is enabled
-            let msg = self.buffered.lock().unwrap().take();
-            if let Some(msg) = msg {
-                backend.send(msg).await?;
+            let msgs = self.buffered.lock().unwrap().take();
+            if let Some(msgs) = msgs {
+                backend_arc.send(msgs).await?;
             }
 
-            let n = backend.send(query.into_message()).await?;
-            self.set_backend(Some(backend));
-            Ok(n)
+            backend_arc.send(query.into_messages()).await?;
+            self.set_backend(Some(backend_arc));
         } else {
-            backend.unwrap().send(query.into_message()).await
+            backend.unwrap().send(query.into_messages()).await?;
         }
+        Ok(())
     }
 
     #[instrument]
@@ -325,12 +335,12 @@ impl ClientConn {
         }
 
         let error_msg = "no database available for query";
-        self.send(Message::new_error(error_code, error_msg)).await?;
+        self.send(Messages::new_error(error_code, error_msg)).await?;
         Err(Error::new(error_msg))
     }
 
     #[instrument]
-    pub async fn client_partition<'a>(&'a self, _: &'a mut client_partition::Event, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut Query) -> Result<Option<&'static PostgresReplicationGroup>> {
+    pub async fn client_partition<'a>(&'a self, _: &'a mut client_partition::Event, cluster: &'static PostgresCluster, _application_name: &'a str, _user: &'a str, database: &'a str, _tx_type: TransactionType, _query: &'a mut Query) -> Result<Option<&'static PostgresReplicationGroup>> {
         Ok(cluster.get_by_database(database))
     }
 
@@ -364,10 +374,15 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_authenticate(&self, _: &mut client_authenticate::Event, auth_type: AuthType, msg: Message) -> Result<()> {
+    pub async fn client_authenticate(&self, _: &mut client_authenticate::Event, auth_type: AuthType, msgs: Messages) -> Result<()> {
         let params = self.connection_params();
         let cluster = self.cluster.load().expect("expected db_cluster to be set");
 
+        if msgs.count() != 1 {
+            return Err(Error::new("client_authenticate expects exactly one Message"));
+        }
+
+        let msg = msgs.first().unwrap(); // see msgs.count() condition above
         match msg.tag() {
             Tag::PASSWORD_MESSAGE => {
                 // user and database exist, see ServerParams::from_startup_message
@@ -379,14 +394,13 @@ impl ClientConn {
                     let pool = group.master.load();
                     if let Some(pool) = pool {
                         let password = if auth_type == AuthType::ClearText {
-                            let r = MessageReader::new(&msg);
-                            r.read_str()?
+                            msg.reader().read_str()?
                         } else if user == pool.config.user {
                             pool.config.password.as_str()
                         } else {
                             // TODO confirm this is the right error code
                             let error_msg = format!("unless the user is the configured user, only clear text authentication is supported: {}@{}", user, database);
-                            self.send(Message::new_error(error_codes::INVALID_AUTHORIZATION_SPECIFICATION, &error_msg)).await?;
+                            self.send(Messages::new_error(error_codes::INVALID_AUTHORIZATION_SPECIFICATION, &error_msg)).await?;
                             return Err(Error::new(error_msg))
                         };
 
@@ -395,18 +409,18 @@ impl ClientConn {
                             self.state.transition(self, ClientState::Ready)
                         } else {
                             let error_msg = format!("password authentication failed for user \"{}\"", user);
-                            self.send(Message::new_error(error_codes::INVALID_PASSWORD, &error_msg)).await?;
+                            self.send(Messages::new_error(error_codes::INVALID_PASSWORD, &error_msg)).await?;
                             Err(Error::new(error_msg))
                         };
                     }
                 }
 
                 let error_msg = format!("database \"{}\" does not exist", database);
-                self.send(Message::new_error(error_codes::INVALID_CATALOG_NAME, &error_msg)).await?;
+                self.send(Messages::new_error(error_codes::INVALID_CATALOG_NAME, &error_msg)).await?;
                 Err(Error::new(error_msg))
             },
             _ => {
-                Err(Error::new(format!("unexpected message {}", msg.tag())))
+                Err(Error::new(format!("unexpected {}", msgs)))
             }
         }
     }
@@ -450,34 +464,34 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_message(&self, _: &mut client_message::Event, backend: Option<&BackendConn>, msg: Message) -> Result<()> {
+    pub async fn client_messages(&self, _: &mut client_messages::Event, backend: Option<&BackendConn>, msgs: Messages) -> Result<()> {
         let state = self.state.get();
         match state {
             ClientState::StateInitial => {
-                self.startup(msg).await
+                self.startup(msgs).await
             },
             ClientState::Authentication => {
                 let auth_type = self.auth_type.load();
-                client_authenticate::run(self, auth_type, msg).await
+                client_authenticate::run(self, auth_type, msgs).await
             },
             ClientState::Ready | ClientState::Transaction | ClientState::FailedTransaction => {
-                self.forward(backend, msg).await;
+                self.forward(backend, msgs).await;
                 Ok(())
             },
             ClientState::Closed => {
                 Err(Error::closed())
             },
             _ => {
-                let error_msg = format!("received unexpected {:?} message while in {:?}", msg.tag(), state);
-                self.send(Message::new_error(error_codes::PROTOCOL_VIOLATION, &error_msg)).await?;
+                let error_msg = format!("received unexpected {:?} while in {:?}", msgs, state);
+                self.send(Messages::new_error(error_codes::PROTOCOL_VIOLATION, &error_msg)).await?;
                 Err(Error::new(error_msg))
             }
         }
     }
 
     #[instrument]
-    pub async fn client_send_message(&self, _: &mut client_send_message::Event, msg: Message) -> Result<usize> {
-        self.write_or_buffer(msg.into_bytes())
+    pub async fn client_send_messages(&self, _: &mut client_send_messages::Event, msgs: Messages) -> Result<usize> {
+        self.write_or_buffer(msgs.into_bytes())
     }
 }
 
@@ -584,9 +598,9 @@ define_event!(client_connected, (client: &'a ClientConn, params: ServerParams) -
 /// ClientConn::client_message is called by default and does further processing on the Message,
 /// including potentially calling the higher-level client_query. Symmetric with backend_message.
 /// If it returns an error, the associated session is terminated.
-define_event!(client_message, (client: &'a ClientConn, backend: Option<&'a BackendConn>, msg: Message) -> Result<()>);
+define_event!(client_messages, (client: &'a ClientConn, backend: Option<&'a BackendConn>, msgs: Messages) -> Result<()>);
 
-define_event!(client_query, (client: &'a ClientConn, backend: Option<&'a BackendConn>, query: Query) -> Result<usize>);
+define_event!(client_query, (client: &'a ClientConn, backend: Option<&'a BackendConn>, query: Query) -> Result<()>);
 
 /// client_send_message is called to send a Message to a backend db connection.
 ///     client: &ClientConn : the event source handling the client connection
@@ -597,11 +611,11 @@ define_event!(client_query, (client: &'a ClientConn, backend: Option<&'a Backend
 /// ClientConn::client_send_message is called by default and sends the Message to the connected client.
 /// If it returns an error, the associated session is terminated.
 /// Returns the number of bytes actually written (not buffered.)
-define_event!(client_send_message, (client: &'a ClientConn, msg: Message) -> Result<usize>);
+define_event!(client_send_messages, (client: &'a ClientConn, msgs: Messages) -> Result<usize>);
 
 define_event!(client_auth_challenge, (client: &'a ClientConn, params: ServerParams) -> Result<AuthType>);
 
-define_event!(client_authenticate, (client: &'a ClientConn, auth_type: AuthType, msg: Message) -> Result<()>);
+define_event!(client_authenticate, (client: &'a ClientConn, auth_type: AuthType, msgs: Messages) -> Result<()>);
 
 define_event!(client_complete_startup, (client: &'a ClientConn, cluster: &'static PostgresCluster) -> Result<()>);
 

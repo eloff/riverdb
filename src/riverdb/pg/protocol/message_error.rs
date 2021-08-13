@@ -2,14 +2,15 @@ use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::str::FromStr;
 
-pub use crate::riverdb::{Error, Result};
-pub use crate::riverdb::pg::protocol::{Tag, Message, MessageReader};
-pub use crate::riverdb::pg::protocol::{ErrorSeverity, ErrorFieldTag};
+use crate::riverdb::common::change_lifetime;
+use crate::riverdb::{Error, Result};
+use crate::riverdb::pg::protocol::{Tag, Messages, MessageReader};
+use crate::riverdb::pg::protocol::{ErrorSeverity, ErrorFieldTag};
 
 
 pub struct PostgresError {
-    pub msg: Message,
-    pub severity: ErrorSeverity,
+    msg: Messages,
+    severity: ErrorSeverity,
     _severity: u32,
     _code: u32,
     _column_name: u32,
@@ -30,12 +31,7 @@ pub struct PostgresError {
 }
 
 impl PostgresError {
-    pub fn new(msg: Message) -> Result<Self> {
-        match msg.tag() {
-            Tag::ERROR_RESPONSE | Tag::NOTICE_RESPONSE => (),
-            _ => { return Err(Error::protocol_error("message not an error message")); }
-        }
-
+    pub fn new(msg: Messages) -> Result<Self> {
         let mut err = Self{
             msg,
             severity: ErrorSeverity::Error,
@@ -58,7 +54,13 @@ impl PostgresError {
             _where: 0
         };
 
-        let r = MessageReader::new(&err.msg);
+        let m = err.msg.first().unwrap();
+        match m.tag() {
+            Tag::ERROR_RESPONSE | Tag::NOTICE_RESPONSE => (),
+            _ => { return Err(Error::protocol_error("message not an error message")); }
+        }
+
+        let r = m.reader();
         loop {
             let field = ErrorFieldTag::new(r.read_byte())?;
             if field == ErrorFieldTag::NULL_TERMINATOR {
@@ -104,9 +106,11 @@ impl PostgresError {
         if pos == 0 {
             return "";
         }
-        let r = MessageReader::new(&self.msg);
-        r.seek(pos);
-        r.read_str().expect("expected null-terminated string")
+        let m = &self.msg.first().unwrap();
+        let r = MessageReader::new_at(m, pos);
+        let s = r.read_str().expect("expected null-terminated string");
+        // Safety: s isn't borrowed from m here, it's borrowed from self.msg
+        unsafe { change_lifetime(s) }
     }
 
     pub fn severity_name(&self) -> &str {
@@ -178,7 +182,7 @@ impl PostgresError {
         self.read_str_at(self._where)
     }
 
-    pub fn into_message(self) -> Message {
+    pub fn into_messages(self) -> Messages {
         self.msg
     }
 }

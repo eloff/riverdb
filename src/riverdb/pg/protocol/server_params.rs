@@ -5,99 +5,56 @@ use bytes::{BytesMut, BufMut, Bytes, Buf};
 
 use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::protocol::{MessageReader, Message, Tag};
+use std::slice::Iter;
 
 
 pub struct ServerParams {
-    params: Vec<Bytes>,
-    buffer: Option<BytesMut>,
+    params: Vec<(String, String)>,
 }
 
 impl ServerParams {
     pub const fn new() -> Self {
-        Self{params: Vec::new(), buffer: None}
+        Self{params: Vec::new()}
     }
 
-    pub fn from_startup_message(msg: &Message) -> Result<Self> {
+    pub fn from_startup_message(msg: &Message<'_>) -> Result<Self> {
         assert_eq!(msg.tag(), Tag::UNTAGGED);
-        let mut start = msg.body_start() + 4;
-        let mut buffer = BytesMut::from(&msg.as_slice()[start as usize..]);
+        let mut start = msg.body_start() + 4; // skip the version number
+        let r = MessageReader::new_at(&msg, start as u32);
 
-        let msg = Message::new(buffer.split().freeze());
-        let r = MessageReader::new_at(&msg, 0);
-
+        let mut result = Self::new();
         let mut user: Option<&str> = None;
         let mut have_database = false;
-        let mut params = Vec::new();
-        start = 0;
-        while start < r.len() {
-            let name = r.read_str()?;
+        while let Ok(name) = r.read_str() {
             let value = r.read_str()?;
             match name {
                 "user" => user = Some(value),
                 "database" => have_database = true,
                 _ => (),
             }
-            let end = r.tell();
-            params.push(r.slice(start, end));
-            start = end;
+            result.add(name.to_string(), value.to_string());
         }
 
         if user.is_none() {
             return Err(Error::new("user is a required parameter"));
         }
 
-        let mut result = Self{
-            params,
-            buffer: Some(buffer),
-        };
-
         if !have_database {
-            result.add("database", user.unwrap());
+            result.add("database".to_string(), user.unwrap().to_string());
         }
 
         Ok(result)
     }
 
-    pub fn from_parameter_status_messages<Iter: Iterator<Item=Message>>(params: Iter) -> Result<Self>
-    {
-        let params = params.map(|m| {
-            assert_eq!(m.tag(), Tag::PARAMETER_STATUS);
-            let start = m.body_start();
-            let r = MessageReader::new_at(&m, start);
-            r.read_str()?;
-            r.read_str()?;
-            let mut buf = m.into_bytes();
-            Ok(buf.split_off(start as usize))
-        }).collect::<Result<Vec<Bytes>>>()?;
-        Ok(Self{params, buffer: None})
+    pub fn add(&mut self, k: String, v: String) {
+        self.params.push((k, v));
     }
 
-    pub fn add(&mut self, k: &str, v: &str) {
-        let space_needed = k.len() + v.len() + 2;
-        if self.buffer.is_none() || self.buffer.as_mut().unwrap().remaining_mut() < space_needed {
-            self.buffer = Some(BytesMut::with_capacity(space_needed * 12));
-        }
-
-        // We don't write a full message, just the null-terminated key and value (message body)
-        // This is fine, because we don't expose the Message at all, we only read the body.
-        let buf = self.buffer.as_mut().unwrap();
-        buf.write_str(k).unwrap();
-        buf.write_char(0 as char).unwrap();
-        buf.write_str(v).unwrap();
-        buf.write_char(0 as char).unwrap();
-        self.params.push(buf.split_to(space_needed).freeze());
-    }
-
-    pub fn set(&mut self, k: &str, v: &str) {
-        for (i, buf) in self.params.iter().enumerate() {
-            if let Some(key) = read_null_terminated_str(buf, 0) {
-                if k == key {
-                    // Add the new (k, v) pair to the end, and then swap it into params[i],
-                    // removing the value at i.
-                    self.add(k, v);
-                    self.params.swap_remove(i);
-                    return;
-                }
+    pub fn set(&mut self, k: String, v: String) {
+        for (i, (key, _)) in self.params.iter().enumerate() {
+            if &k == key {
+                self.params.get_mut(i).unwrap().1 = v;
+                return;
             }
         }
         // The key doesn't exist, add it to the end
@@ -106,11 +63,9 @@ impl ServerParams {
 
     pub fn get<'a>(&'a self, k: &'_ str) -> Option<&'a str>
     {
-        for buf in &self.params {
-            if let Some(key) = read_null_terminated_str(buf, 0) {
-                if k == key {
-                    return read_null_terminated_str(buf, key.len()+1);
-                }
+        for (key, val) in &self.params {
+            if k == key.as_str() {
+                return Some(val);
             }
         }
         None
@@ -120,18 +75,14 @@ impl ServerParams {
         self.params.len()
     }
 
-    pub fn iter(&self) -> ParamsIter {
-        ParamsIter::new(&self.params)
+    pub fn iter(&self) -> Iter<(String, String)> {
+        self.params.iter()
     }
 }
 
 impl Clone for ServerParams {
     fn clone(&self) -> Self {
-        let mut copy = Self::default();
-        for (k, v) in self.iter() {
-            copy.add(k, v);
-        }
-        copy
+        Self{params: self.params.clone()}
     }
 }
 
@@ -156,36 +107,5 @@ impl Debug for ServerParams {
             f.write_str(val)?;
         }
         f.write_char('}')
-    }
-}
-
-pub struct ParamsIter<'a> {
-    params: &'a Vec<Bytes>,
-    index: usize,
-}
-
-impl<'a> ParamsIter<'a> {
-    pub fn new(params: &'a Vec<Bytes>) -> Self {
-        Self{params, index: 0}
-    }
-}
-
-impl<'a> Iterator for ParamsIter<'a> {
-    type Item = (&'a str, &'a str);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let buf = self.params.get(self.index)?;
-        let key = read_null_terminated_str(buf, 0)?;
-        let val = read_null_terminated_str(buf, key.len()+1)?;
-        Some((key, val))
-    }
-}
-
-fn read_null_terminated_str(buf: &Bytes, start: usize) -> Option<&str> {
-    let slice = &buf.chunk()[start..];
-    if let Some(i) = memchr::memchr(0, slice) {
-        std::str::from_utf8(&slice[..i]).ok()
-    } else {
-        None
     }
 }

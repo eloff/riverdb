@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::sync::atomic::{fence, AtomicU32, AtomicBool, AtomicPtr, AtomicI32, AtomicU8};
+use std::sync::atomic::{fence, AtomicU32, AtomicBool, AtomicPtr, AtomicI32, AtomicU8, AtomicU64};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
@@ -10,6 +10,7 @@ use chrono::{Local, DateTime};
 use tokio::net::TcpStream;
 use tokio::io::Interest;
 use tokio::sync::mpsc::{channel, Sender};
+use tokio::sync::Notify;
 use tracing::{debug, error, info, warn, instrument};
 use bytes::Bytes;
 use futures::try_join;
@@ -23,12 +24,16 @@ use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::common::{SpscQueue, AtomicCell, AtomicArc, AtomicRef, coarse_monotonic_now, change_lifetime};
-use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError, hash_md5_password};
+use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, Messages, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError, hash_md5_password};
 use crate::riverdb::config::conf;
 use crate::riverdb::pg::message_stream::MessageStream;
-use tokio::sync::Notify;
 
-pub type MessageQueue = SpscQueue<Message, 32>;
+const MAX_PENDING_REQUESTS: u32 = 32;
+const CLIENT_REQUEST: u64 = 1;
+const BACKEND_REQUEST: u64 = 2;
+const REQUEST_TYPE_MASK: u64 = 3;
+
+pub type MessageQueue = SpscQueue<Messages, 32>;
 
 pub struct BackendConn {
     transport: Transport,
@@ -39,10 +44,10 @@ pub struct BackendConn {
     has_send_backlog: AtomicBool,
     for_transaction: AtomicBool,
     state: BackendConnState,
-    pending_requests: AtomicI32,
     client: AtomicArc<ClientConn>,
     send_backlog: Backlog,
     pool: AtomicRef<'static, ConnectionPool>,
+    pending_requests: AtomicU64, // a bitfield identifying client and backend (iterator) requests
     iterator_messages: MessageQueue, // messages queued for Rows iterators
     iterators: SpscQueue<Notify, 16>,
     server_params: Mutex<ServerParams>,
@@ -80,58 +85,120 @@ impl BackendConn {
             }
             let sender_ref = sender.as_ref().map(|arc| arc.as_ref());
 
-            let msg = stream.next(sender_ref).await?;
-            backend_message::run(self, sender_ref, msg).await?;
+            let msgs = stream.next(sender_ref).await?;
+            backend_messages::run(self, sender_ref, msgs).await?;
         }
     }
 
     #[inline]
-    pub async fn send(&self, msg: Message) -> Result<usize> {
-        backend_send_message::run(self, msg).await
+    pub async fn send(&self, msgs: Messages) -> Result<usize> {
+        backend_send_messages::run(self, msgs, true).await
     }
 
-    pub async fn forward(&self, client: Option<&ClientConn>, msg: Message) -> Result<usize> {
+    /// Dispatches msgs received from the database server to the client and/or backend requests (iterators).
+    /// Safety: only the thread that calls run() can call this.
+    pub async unsafe fn forward(&self, client: Option<&ClientConn>, mut msgs: Messages) -> Result<usize> {
         let mut sent = 0;
-        if let Some(client) = client {
-            let tag = msg.tag();
 
-            if self.pending_requests.load(Relaxed) > 0 {
-                if tag == Tag::READY_FOR_QUERY {
-                    // If there were no iterators, that can't change yet because
-                    // you can't start a command/query before receiving the READY_FOR_QUERY message.
-                    // So we don't have to a worry that a new iterator will prevent this message
-                    // from being forwarded to the client.
-                    if self.iterators.is_empty() {
-                        sent = client.send(msg).await?;
-                    }
+        let mut pending_original = self.pending_requests.load(Acquire);
+        let mut pending = pending_original;
+        let pending_count = pending.count_ones();
+        let mut requests_completed = 0;
+        let mut offset = 0;
 
-                    if self.pending_requests.fetch_sub(1, Relaxed) == 1 {
-                        // pending_requests has reached zero, we can maybe release the backend to the pool
-                        if let Some(backend) = client.release_backend() {
-                            self.client.store(None);
-                            self.pool.load().unwrap().put(backend);
-                        }
+        while offset < msgs.len() as usize {
+            if pending == 0 {
+                // We don't have any requests in-flight, just forward the messages
+                return if let Some(client) = client {
+                    client.send(msgs).await
+                } else {
+                    // TODO log that we're dropping msgs on the floor
+                    return Ok(0);
+                };
+            }
+
+            let mut wake = false;
+            let request_type = pending & REQUEST_TYPE_MASK;
+            for msg in msgs.iter(offset) {
+                let tag = msg.tag();
+
+                if request_type == CLIENT_REQUEST {
+                    if tag == Tag::READY_FOR_QUERY {
+                        requests_completed += 1;
+
+                        offset = msg.offset() + msg.len() as usize;
+                        pending >>= 2;
+                        break;
                     }
-                } else if !self.iterators.is_empty() {
+                } else {
+                    debug_assert_eq!(request_type, BACKEND_REQUEST);
+                    assert!(!self.iterators.is_empty());
+
                     match tag {
                         Tag::ROW_DESCRIPTION => {
                             // This is a new rows result, wake the iterator
-                            self.iterators.peek().unwrap().notify_one();
+                            wake = true;
                         },
                         Tag::COMMAND_COMPLETE | Tag::ERROR_RESPONSE => {
                             // If we didn't notify the iterator above to consume it's messages, now's the last chance
                             // This happens if the result wasn't a rows result, but just a command to execute.
-                            self.iterators.peek().unwrap().notify_one();
+                            wake = true;
+                            offset = msg.offset() + msg.len() as usize;
                             self.iterators.pop().await;
+                            break;
                         },
+                        Tag::READY_FOR_QUERY => {
+                            requests_completed += 1;
+                            pending >>= 2;
+
+                            // We ignore READY_FOR_QUERY messages in iterator mode
+                            offset = msg.offset() + msg.len() as usize;
+                            debug_assert_eq!(msgs.count(), 1);
+                            break;
+                        }
                         _ => (),
                     }
-                    self.iterator_messages.put(msg).await;
+                }
+            }
+
+            let out = msgs.split_to(offset);
+            if request_type == CLIENT_REQUEST {
+                if let Some(client) = client {
+                    sent += client.send(out).await?;
                 } else {
-                    sent = client.send(msg).await?;
+                    // TODO log that we're dropping before on the floor
+                }
+            } else {
+                debug_assert_eq!(request_type, BACKEND_REQUEST);
+
+                if wake {
+                    // Notify first, then put messages, otherwise put may block forever
+                    self.iterators.peek().unwrap().notify_one();
+                }
+                self.iterator_messages.put(out).await;
+            }
+        }
+
+        if requests_completed != 0 {
+            if pending_count == requests_completed {
+                // pending_requests has reached zero, we can maybe release the backend to the pool
+                if let Some(client) = client {
+                    if let Some(backend) = client.release_backend() {
+                        self.client.store(None);
+                        self.pool.load().unwrap().put(backend);
+                    }
+                }
+            }
+
+            loop {
+                let val = pending_original >> (requests_completed * 2);
+                match self.pending_requests.compare_exchange_weak(pending_original, val, Release, Relaxed) {
+                    Ok(_) => break,
+                    Err(val) => pending_original = val,
                 }
             }
         }
+
         Ok(sent)
     }
 
@@ -142,9 +209,9 @@ impl BackendConn {
 
         let mut stream = MessageStream::<Self, ClientConn>::new(self);
         loop {
-            let msg = stream.next(None).await?;
+            let msgs = stream.next(None).await?;
 
-            backend_message::run(self, None, msg).await?;
+            backend_messages::run(self, None, msgs).await?;
             if self.state.get() == BackendState::Startup {
                 return Ok(())
             }
@@ -153,19 +220,19 @@ impl BackendConn {
 
     async fn start(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<()> {
         let mut params = ServerParams::default();
-        params.add("database", &pool.config.database);
-        params.add("user", user);
-        params.add("client_encoding", "UTF8");
+        params.add("database".to_string(), pool.config.database.clone());
+        params.add("user".to_string(), user.to_string());
+        params.add("client_encoding".to_string(), "UTF8".to_string());
         // We can't customize the application_name at connection, which happens once.
         // We need to do it in check_health_and_set_role which happens for each session that uses the connection.
-        params.add("application_name", "riverdb");
+        params.add("application_name".to_string(), "riverdb".to_string());
 
         // Remember the user and password in the server_params, we'll need it during authentication
         // We'll overwrite them later when processing the server's startup response.
         {
             let mut server_params = self.server_params.lock().unwrap();
-            server_params.add("password", password);
-            server_params.add("user", user);
+            server_params.add("password".to_string(), password.to_string());
+            server_params.add("user".to_string(), user.to_string());
         }
 
         let cluster = pool.config.cluster.unwrap();
@@ -181,7 +248,7 @@ impl BackendConn {
 
     pub async fn ssl_handshake(&self, pool: &ConnectionPool, cluster: &config::PostgresCluster) -> Result<()> {
         const SSL_REQUEST_MSG: &[u8] = &[0, 0, 0, 8, 4, 210, 22, 47];
-        let ssl_request = Message::new(Bytes::from_static(SSL_REQUEST_MSG));
+        let ssl_request = Messages::new(Bytes::from_static(SSL_REQUEST_MSG));
 
         self.state.transition(self, BackendState::SSLHandshake)?;
         self.send(ssl_request).await?;
@@ -227,19 +294,26 @@ impl BackendConn {
     /// Issue a query and return a Rows iterator over the results. You must call Rows::next()
     /// until it returns false or Rows::finish() to consume the entire result, even if you
     /// don't intend to use it.
-    pub async fn query<'a>(&'a self, escaped_query: Message) -> Result<Rows<'a>> {
+    #[must_use = "you must call Rows::next() until it returns false or Rows::finish() to consume the entire result"]
+    pub async fn query<'a>(&'a self, escaped_query: Messages) -> Result<Rows<'a>> {
+        if escaped_query.count() != 1 {
+            return Err(Error::new("startup expects exactly one Message"));
+        }
         let notifier = self.iterators.put(Notify::new()).await;
         let rows = Rows::new(&self.iterator_messages, notifier);
-        self.send(escaped_query).await?;
+        backend_send_messages::run(self, escaped_query, false).await?;
         Ok(rows)
     }
 
     /// Issue a command and wait for the result. If this is awaited with other query/execute
     /// futures then it will pipeline the queries. Returns the number of affected rows.
-    pub async fn execute(&self, escaped_query: Message) -> Result<i32> {
+    pub async fn execute(&self, escaped_query: Messages) -> Result<i32> {
+        if escaped_query.count() != 1 {
+            return Err(Error::new("startup expects exactly one Message"));
+        }
         let notifier = self.iterators.put(Notify::new()).await;
         let mut rows = Rows::new(&self.iterator_messages, notifier);
-        self.send(escaped_query).await?;
+        backend_send_messages::run(self, escaped_query, false).await?;
         let has_next = rows.next().await?;
         assert!(!has_next);
         Ok(rows.affected())
@@ -291,6 +365,10 @@ impl BackendConn {
         self.server_params.lock().unwrap()
     }
 
+    pub fn pending_requests(&self) -> u32 {
+        self.pending_requests.load(Relaxed).count_ones()
+    }
+
     #[instrument]
     pub async fn backend_connected(&self, _: &mut backend_connected::Event, params: &mut ServerParams) -> Result<()> {
         let mut mb = MessageBuilder::new(Tag::UNTAGGED);
@@ -304,31 +382,39 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn backend_message(&self, _: &mut backend_message::Event, client: Option<&ClientConn>, msg: Message) -> Result<()> {
+    pub async fn backend_messages(&self, _: &mut backend_messages::Event, client: Option<&ClientConn>, msgs: Messages) -> Result<()> {
         match self.state.get() {
             BackendState::StateInitial | BackendState::SSLHandshake => {
-                Err(Error::new(format!("unexpected message for initial state: {:?}", msg.tag())))
+                Err(Error::new(format!("unexpected message for initial state: {:?}", msgs)))
             },
             BackendState::Authentication => {
-                backend_authenticate::run(self, msg).await
+                backend_authenticate::run(self, msgs).await
             },
             BackendState::Startup => {
                 // TODO ???
                 Ok(())
             },
             BackendState::InPool => {
-                if msg.tag() == Tag::PARAMETER_STATUS {
-                    todo!(); // TODO set param in server_params
-                } else if msg.tag() == Tag::ERROR_RESPONSE {
-                    todo!(); // TODO log error and close the connection
+                for msg in msgs.iter(0) {
+                    match msg.tag() {
+                        Tag::PARAMETER_STATUS => {
+                            todo!(); // TODO set param in server_params
+                        },
+                        Tag::ERROR_RESPONSE => {
+                            todo!(); // TODO log error and close the connection
+                        },
+                        _ => {
+                            // Else ignore the message
+                            // TODO log that we're ignoring a message of type msg.tag()
+                        },
+                    }
                 }
-                // Else ignore the message
-                // TODO log that we're ignoring a message of type msg.tag()
                 Ok(())
             },
             _ => {
                 // Forward the message to the client, if there is one
-                self.forward(client, msg).await?;
+                // Safety: this is safe to call from the run() thread, and backend_messages is called by run().
+                unsafe { self.forward(client, msgs).await?; }
                 // TODO else this is part of a query workflow, do what with it???
                 Ok(())
             }
@@ -336,10 +422,15 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, msg: Message) -> Result<()> {
+    pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, msgs: Messages) -> Result<()> {
+        if msgs.count() != 1 {
+            return Err(Error::new("startup expects exactly one Message"));
+        }
+
+        let msg = msgs.first().unwrap(); // see msgs.count() condition above
         match msg.tag() {
             Tag::AUTHENTICATION_OK => {
-                let r = MessageReader::new(&msg);
+                let r = msg.reader();
                 let auth_type = r.read_i32();
                 if auth_type == 0 {
                     r.error()?;
@@ -380,24 +471,42 @@ impl BackendConn {
                 }
             },
             Tag::ERROR_RESPONSE => {
-                Err(Error::from(PostgresError::new(msg)?))
+                Err(Error::from(PostgresError::new(msgs)?))
             },
             _ => Err(Error::new(format!("unexpected message {}", msg.tag())))
         }
     }
 
     #[instrument]
-    pub async fn backend_send_message(&self, _: &mut backend_send_message::Event, msg: Message) -> Result<usize> {
-        if msg.is_empty() {
+    pub async fn backend_send_messages(&self, _: &mut backend_send_messages::Event, msgs: Messages, from_client: bool) -> Result<usize> {
+        if msgs.is_empty() {
             return Ok(0);
         }
-        match msg.tag() {
-            Tag::QUERY => { // TODO what other tags expect a response?
-                self.pending_requests.fetch_add(msg.count() as i32, Relaxed);
-            },
-            _ => (),
+        for msg in msgs.iter(0) {
+            match msg.tag() {
+                Tag::QUERY => { // TODO what other tags expect a response?
+                    let request_flag = if from_client {
+                        CLIENT_REQUEST
+                    } else {
+                        BACKEND_REQUEST
+                    };
+                    let mut pending = self.pending_requests.load(Relaxed);
+                    loop {
+                        let pending_count = pending.count_ones();
+                        if pending_count == MAX_PENDING_REQUESTS {
+                            return Err(Error::new(format!("reached maximum number of pipelined requests {}", MAX_PENDING_REQUESTS)));
+                        }
+                        let val = pending | (request_flag << pending_count);
+                        match self.pending_requests.compare_exchange_weak(pending, val, Release, Relaxed) {
+                            Ok(_) => break,
+                            Err(val) => pending = val,
+                        }
+                    }
+                },
+                _ => (),
+            }
         }
-        self.write_or_buffer(msg.into_bytes())
+        self.write_or_buffer(msgs.into_bytes())
     }
 }
 
@@ -410,10 +519,10 @@ impl server::Connection for BackendConn {
             has_send_backlog: Default::default(),
             for_transaction: Default::default(),
             state: Default::default(),
-            pending_requests: AtomicI32::new(0),
             client: AtomicArc::default(),
             send_backlog: Mutex::new(Default::default()),
             pool: AtomicRef::default(),
+            pending_requests: AtomicU64::new(0),
             iterator_messages: MessageQueue::new(),
             iterators: SpscQueue::new(),
             server_params: Mutex::new(ServerParams::default()),
@@ -499,18 +608,19 @@ define_event!(backend_connected, (backend: &'a BackendConn, params: &'a mut Serv
 /// BackendConn::backend_message is called by default and does further processing on the Message,
 /// including potentially forwarding it to associated client session. Symmetric with client_message.
 /// If it returns an error, the associated session is terminated.
-define_event!(backend_message, (backend: &'a BackendConn, client: Option<&'a ClientConn>, msg: Message) -> Result<()>);
+define_event!(backend_messages, (backend: &'a BackendConn, client: Option<&'a ClientConn>, msgs: Messages) -> Result<()>);
 
 /// backend_send_message is called to send a Message to a backend db connection.
 ///     backend: &BackendConn : the event source handling the backend connection
 ///     msg: protocol.Message is the protocol.Message to send
-///     prefer_buffer: bool : passed to write_or_buffer, see docs for that method
+///     from_client: bool : true if any requests are from the client, false if from the "backend"
+///                         (e.g. from query or execute methods on BackendConn)
 /// You can replace msg by creating and passing a new Message object to ev.next(...)
 /// A Message may contain multiple wire protocol messages, see Message::next().
 /// BackendConn::backend_send_message is called by default and sends the Message to the db server.
 /// If it returns an error, the associated session is terminated.
 /// /// Returns the number of bytes actually written (not buffered.)
-define_event!(backend_send_message, (backend: &'a BackendConn, msg: Message) -> Result<usize>);
+define_event!(backend_send_messages, (backend: &'a BackendConn, msgs: Messages, from_client: bool) -> Result<usize>);
 
 /// backend_authenticate is called with each Message received while in the Authentication state
-define_event!(backend_authenticate, (backend: &'a BackendConn, msg: Message) -> Result<()>);
+define_event!(backend_authenticate, (backend: &'a BackendConn, msgs: Messages) -> Result<()>);

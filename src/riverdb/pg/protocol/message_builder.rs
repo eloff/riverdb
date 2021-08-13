@@ -1,6 +1,6 @@
 use bytes::{BytesMut, Buf, BufMut};
 
-use crate::riverdb::pg::protocol::{Tag, Message, ServerParams};
+use crate::riverdb::pg::protocol::{Tag, Messages, ServerParams};
 use crate::riverdb::pg::protocol::message_parser::MIN_MESSAGE_LEN;
 use crate::riverdb::common::bytes_to_slice_mut;
 
@@ -41,9 +41,9 @@ impl MessageBuilder {
 
     /// Completes the Message by setting the message length field to the current length
     /// and returning the data as a Message, consuming self.
-    pub fn finish(mut self) -> Message {
+    pub fn finish(mut self) -> Messages {
         self.complete_message();
-        Message::new( self.data.freeze())
+        Messages::new( self.data.freeze())
     }
 
     /// Completes the prior Message (if any) by setting the message length field

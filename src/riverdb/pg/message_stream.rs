@@ -5,7 +5,7 @@ use tracing::{debug};
 
 use crate::riverdb::Result;
 use crate::riverdb::pg::connection::Connection;
-use crate::riverdb::pg::protocol::{Message, MessageParser};
+use crate::riverdb::pg::protocol::{Messages, MessageParser};
 use crate::riverdb::pg::connection::read_and_flush_backlog;
 
 pub struct MessageStream<'a, R: Connection, W: Connection> {
@@ -23,16 +23,13 @@ impl<'a, R: Connection, W: Connection> MessageStream<'a, R, W> {
         }
     }
 
-    pub async fn next(&mut self, sender: Option<&W>) -> Result<Message> {
+    pub async fn next(&mut self, sender: Option<&W>) -> Result<Messages> {
         loop {
             if let Some(result) = self.parser.next() {
-                let msg = result?;
-                let tag = msg.tag();
-                debug!(%tag, sender=?self.read_conn, "received message");
+                let msgs = result?;
+                debug!(msgs=?&msgs, sender=?self.read_conn, "received messages");
 
-                return self.read_conn
-                    .msg_is_allowed(msg.tag())
-                    .and(Ok(msg));
+                return Ok(msgs);
             } else {
                 read_and_flush_backlog(
                     self.read_conn,
