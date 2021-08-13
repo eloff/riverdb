@@ -6,7 +6,7 @@ use crate::riverdb::pg::sql::QueryType;
 pub struct Query {
     msgs: Messages,
     normalized_query: String,
-    pub query_type: QueryType,
+    query_type: QueryType,
 }
 
 impl Query {
@@ -23,6 +23,10 @@ impl Query {
 
         // TODO figure out the actual query type here
         Self{msgs, normalized_query, query_type: QueryType::Other}
+    }
+
+    pub fn query_type(&self) -> QueryType {
+        self.query_type
     }
 
     pub fn into_messages(self) -> Messages {

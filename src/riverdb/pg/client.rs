@@ -139,7 +139,7 @@ impl ClientConn {
     /// Which forwards the Query or Message to the backend via backend.send.
     /// If backend is None, runs client_connect_backend to acquire a backend connection.
     /// Panics unless in Ready, Transaction, or FailedTransaction states.
-    pub async fn forward(&self, backend: Option<&BackendConn>, mut msgs: Messages) -> Result<()> {
+    pub async fn forward(&self, backend: Option<&BackendConn>, msgs: Messages) -> Result<()> {
         for msg in msgs.iter(0) {
             let query = Query::new(msgs.split_message(&msg));
             client_query::run(self, backend, query).await?;
@@ -166,7 +166,7 @@ impl ClientConn {
     }
 
     fn begins_transaction(&self, query: &Query) -> Result<bool> {
-        match query.query_type {
+        match query.query_type() {
             QueryType::Begin | QueryType::SetTransaction => {
                 let tx_type = TransactionType::parse_from_query(query.normalized());
                 if tx_type == TransactionType::Default {
@@ -273,7 +273,7 @@ impl ClientConn {
             },
             ClientState::FailedTransaction => {
                 // Only ROLLBACK is permitted
-                if query.query_type == QueryType::Rollback {
+                if query.query_type() == QueryType::Rollback {
                     // We already rolled back the backend and returned it to the pool
                     self.state.transition(self, ClientState::Ready)?;
 
