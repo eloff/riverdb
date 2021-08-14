@@ -130,6 +130,7 @@ impl MessageParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::BufMut;
 
     #[test]
     fn test_parse_header_untagged() {
@@ -153,5 +154,29 @@ mod tests {
     #[test]
     fn test_parse_not_enough_data() {
         assert!(Header::parse(&[0, 0, 0, 4]).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_parse_messages() {
+        let mut parser = MessageParser::new();
+        for b in &[0u8,0,0,8,0,0,0,0] {
+            assert!(parser.next().is_none());
+            parser.bytes_mut().put_u8(*b);
+            assert_eq!(parser.peek().unwrap(), 0);
+        }
+        let msgs = parser.next()
+            .expect("expected a message")
+            .expect("parse error");
+        assert_eq!(msgs.len(), 8);
+
+        for b in &['P' as u8,0,0,0,4] {
+            assert!(parser.next().is_none());
+            parser.bytes_mut().put_u8(*b);
+            assert_eq!(parser.peek().unwrap(), 'P' as u8);
+        }
+        let msgs = parser.next()
+            .expect("expected a message")
+            .expect("parse error");
+        assert_eq!(msgs.len(), 5);
     }
 }
