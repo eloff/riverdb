@@ -61,7 +61,7 @@ impl Tag {
 
     pub fn new(b: u8) -> Result<Self> {
         if let Some(name) = TAG_NAMES.get(b as usize) {
-            if name.is_empty() {
+            if !name.is_empty() {
                 return Ok(Tag(b));
             }
         }

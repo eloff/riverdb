@@ -12,7 +12,7 @@ macro_rules! atomic {
             let $a = unsafe { &*($init as *const _ as *const $atomic) };
             $atomic_op
         } else {
-            println!("could not convert {} to {}", stringify!($t), stringify!($atomic));
+            panic!("could not convert {} to {}", stringify!($t), stringify!($atomic));
         }
     };
 

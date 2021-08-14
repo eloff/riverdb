@@ -17,7 +17,7 @@ pub use self::tag::*;
 pub use self::message::Message;
 pub use self::messages::{MessageIter, Messages};
 pub use self::message_reader::MessageReader;
-pub use self::message_parser::MessageParser;
+pub use self::message_parser::{Header, MessageParser};
 pub use self::message_builder::MessageBuilder;
 pub use self::message_error_builder::MessageErrorBuilder;
 pub use self::errors::{ErrorFieldTag, ErrorSeverity};

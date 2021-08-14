@@ -3,6 +3,7 @@ use bytes::{BytesMut, Buf, BufMut};
 use crate::riverdb::pg::protocol::{Tag, Messages, ServerParams};
 use crate::riverdb::pg::protocol::message_parser::MIN_MESSAGE_LEN;
 use crate::riverdb::common::bytes_to_slice_mut;
+use std::convert::TryInto;
 
 pub struct MessageBuilder {
     data: BytesMut,
@@ -68,13 +69,13 @@ impl MessageBuilder {
             panic!("Message too short");
         }
         unsafe {
-            let mut pos = self.start + 1;
-            if *self.data.get_unchecked(self.start) == Tag::UNTAGGED.as_u8() {
-                pos = self.start;
-            } else {
+            let mut pos = self.start;
+            if *self.data.get_unchecked(self.start) != Tag::UNTAGGED.as_u8() {
+                pos += 1;
                 len -= 1;
             }
-            (&mut self.as_slice_mut()[pos..pos+4]).put_i32(len as i32);
+            let mut dest = (&mut self.as_slice_mut()[pos..]);
+            dest.put_i32(len as i32);
         }
     }
 

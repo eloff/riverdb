@@ -78,6 +78,7 @@ macro_rules! query {
             let mut mb = crate::riverdb::pg::protocol::MessageBuilder::new(crate::riverdb::pg::protocol::Tag::QUERY);
             let out_ref = mb.bytes_mut();
             query!(@out_ref, $f, $($args),+);
+            mb.write_byte(0);
             mb.finish()
         }
     };
@@ -96,12 +97,15 @@ macro_rules! query {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::riverdb::pg::protocol::Header;
+
 
     #[test]
     fn test_escape() {
-        let buf = query!("a {} b {} c {}{} d", "fo'o", "ba'r".to_string(), 42, 12.56);
-        let result = std::str::from_utf8(&buf.as_slice()[buf.body_start() as usize..]).unwrap();
-        assert_eq!(result, "a 'fo''o' b 'ba''r' c 4212.56 d");
+        let buf = query!("a {} b {} c {} d {}{} e", "fo'o", "ba'r".to_string(), "no quotes", 42, 12.56);
+        let msg = buf.first().expect("no message returned");
+        let result = msg.reader().read_str().unwrap();
+        assert_eq!(result, "a 'fo''o' b 'ba''r' c 'no quotes' d 4212.56 e");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use bytes::{BytesMut, Buf};
 use std::num::NonZeroU32;
 use std::convert::TryInto;
+use std::fmt::{Display, Formatter};
 
 use rustls::Connection;
 
@@ -9,9 +10,10 @@ use crate::riverdb::pg::protocol::Messages;
 use crate::riverdb::config::conf;
 use crate::riverdb::pg::protocol::Tag;
 
+
 pub const MIN_MESSAGE_LEN: u32 = 5;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Header {
     pub tag: Tag,
     pub length: NonZeroU32,
@@ -46,6 +48,12 @@ impl Header {
         } else {
             len + 1
         }
+    }
+}
+
+impl Display for Header {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}(len={})", &self.tag, self.length.get()))
     }
 }
 
