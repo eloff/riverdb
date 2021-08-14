@@ -17,6 +17,10 @@ async fn test_backend_auth() -> Result<(), Box<dyn Error>> {
     backend.test_auth(common::TEST_USER, common::TEST_PASSWORD, pool).await?;
 
     assert_eq!(backend.state(), BackendState::Ready);
+    let params = backend.params();
+    assert_eq!(params.get("application_name"), Some("riverdb"));
+    assert_eq!(params.get("client_encoding"), Some("UTF8"));
+    assert_eq!(params.get("session_authorization"), Some(common::TEST_USER));
 
     unsafe { Box::from_raw(cluster as *const PostgresCluster as *mut PostgresCluster); }
     Ok(())

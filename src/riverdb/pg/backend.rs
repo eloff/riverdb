@@ -212,8 +212,9 @@ impl BackendConn {
             let msgs = stream.next(None).await?;
 
             backend_messages::run(self, None, msgs).await?;
-            if self.state() == BackendState::Startup {
-                return Ok(())
+            match self.state() {
+                BackendState::Startup | BackendState::Ready => return Ok(()),
+                _ => (),
             }
         }
     }
@@ -399,21 +400,51 @@ impl BackendConn {
                     backend_authenticate::run(self, client, first).await?;
                 },
                 BackendState::Startup => {
-                    // TODO ???
-                    break;
-                },
-                BackendState::InPool => {
+                    let mut params = self.server_params.lock().unwrap();
                     for msg in msgs.iter(0) {
                         match msg.tag() {
                             Tag::PARAMETER_STATUS => {
-                                todo!(); // TODO set param in server_params
+                                let r = msg.reader();
+                                let key = r.read_str()?;
+                                let val = r.read_str()?;
+                                params.set(key.to_string(), val.to_string());
+                            },
+                            Tag::BACKEND_KEY_DATA => {
+                                let r = msg.reader();
+                                // The mutex release will publish these writes
+                                self.pid.store(r.read_i32(), Relaxed);
+                                self.secret.store(r.read_i32(), Relaxed);
+                            },
+                            Tag::READY_FOR_QUERY => {
+                                self.state.transition(self, BackendState::Ready)?;
                             },
                             Tag::ERROR_RESPONSE => {
-                                todo!(); // TODO log error and close the connection
+                                return Err(Error::from(PostgresError::new(msgs.split_message(&msg))?));
                             },
                             _ => {
                                 // Else ignore the message
-                                // TODO log that we're ignoring a message of type msg.tag()
+                                error!(?msg, "ignoring unexpected message");
+                            },
+                        }
+                    }
+                    break;
+                },
+                BackendState::InPool => {
+                    let mut params = self.server_params.lock().unwrap();
+                    for msg in msgs.iter(0) {
+                        match msg.tag() {
+                            Tag::PARAMETER_STATUS => {
+                                let r = msg.reader();
+                                let key = r.read_str()?;
+                                let val = r.read_str()?;
+                                params.set(key.to_string(), val.to_string());
+                            },
+                            Tag::ERROR_RESPONSE => {
+                                return Err(Error::from(PostgresError::new(msgs.split_message(&msg))?));
+                            },
+                            _ => {
+                                // Else ignore the message
+                                error!(?msg, "ignoring unexpected message");
                             },
                         }
                     }

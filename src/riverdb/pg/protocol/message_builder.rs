@@ -74,7 +74,7 @@ impl MessageBuilder {
                 pos += 1;
                 len -= 1;
             }
-            let mut dest = (&mut self.as_slice_mut()[pos..]);
+            let mut dest = &mut self.as_slice_mut()[pos..];
             dest.put_i32(len as i32);
         }
     }

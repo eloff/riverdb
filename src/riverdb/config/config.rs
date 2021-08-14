@@ -88,7 +88,6 @@ pub fn conf() -> &'static Settings {
         {
             return &*test_config_mut();
         }
-        println!("not a test build!");
         &*SETTINGS.as_ptr()
     }
 }

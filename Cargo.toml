@@ -6,9 +6,15 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+main = []
+
+[lib]
+doctest = false
+
 [profile.dev]
 panic = "abort"
-
+features = ["main"]
 
 [dependencies]
 tokio = { version = "1.5.0", features = ["full"] }

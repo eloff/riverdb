@@ -1,3 +1,4 @@
+#![cfg(feature = "main")]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 

@@ -110,6 +110,7 @@ impl Messages {
     }
 
     /// Splits and returns the first Message. Afterwards self contains the remaining messages, which may be empty.
+    /// If self is empty, the returned Messages object is also empty.
     pub fn split_first(&mut self) -> Messages {
         if self.is_empty() {
             return Messages::default();
