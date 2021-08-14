@@ -205,14 +205,14 @@ impl BackendConn {
     pub async fn test_auth(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<()> {
         self.start(user, password, pool).await?;
 
-        debug_assert_eq!(self.state.get(), BackendState::Authentication);
+        debug_assert_eq!(self.state(), BackendState::Authentication);
 
         let mut stream = MessageStream::<Self, ClientConn>::new(self);
         loop {
             let msgs = stream.next(None).await?;
 
             backend_messages::run(self, None, msgs).await?;
-            if self.state.get() == BackendState::Startup {
+            if self.state() == BackendState::Startup {
                 return Ok(())
             }
         }
@@ -271,7 +271,7 @@ impl BackendConn {
     }
 
     pub async fn check_health_and_set_role(&self, application_name: &str, role: &str) -> Result<()> {
-        if self.state.get() == BackendState::InPool {
+        if self.state() == BackendState::InPool {
             self.state.transition(self, BackendState::Ready)?;
             self.added_to_pool.store(0, Relaxed);
         }
@@ -297,7 +297,7 @@ impl BackendConn {
     #[must_use = "you must call Rows::next() until it returns false or Rows::finish() to consume the entire result"]
     pub async fn query<'a>(&'a self, escaped_query: Messages) -> Result<Rows<'a>> {
         if escaped_query.count() != 1 {
-            return Err(Error::new("startup expects exactly one Message"));
+            return Err(Error::new("query expects exactly one Message"));
         }
         let notifier = self.iterators.put(Notify::new()).await;
         let rows = Rows::new(&self.iterator_messages, notifier);
@@ -309,7 +309,7 @@ impl BackendConn {
     /// futures then it will pipeline the queries. Returns the number of affected rows.
     pub async fn execute(&self, escaped_query: Messages) -> Result<i32> {
         if escaped_query.count() != 1 {
-            return Err(Error::new("startup expects exactly one Message"));
+            return Err(Error::new("execute expects exactly one Message"));
         }
         let notifier = self.iterators.put(Notify::new()).await;
         let mut rows = Rows::new(&self.iterator_messages, notifier);
@@ -317,6 +317,10 @@ impl BackendConn {
         let has_next = rows.next().await?;
         assert!(!has_next);
         Ok(rows.affected())
+    }
+
+    pub fn state(&self) -> BackendState {
+        self.state.get()
     }
 
     /// Returns the associated ClientConn, if any.
@@ -343,7 +347,7 @@ impl BackendConn {
     }
 
     pub fn in_pool(&self) -> bool {
-        if let BackendState::InPool = self.state.get() {
+        if let BackendState::InPool = self.state() {
             debug_assert_ne!(self.added_to_pool.load(Relaxed), 0);
             true
         } else {
@@ -374,6 +378,7 @@ impl BackendConn {
         let mut mb = MessageBuilder::new(Tag::UNTAGGED);
         mb.write_i32(PROTOCOL_VERSION);
         mb.write_params(params);
+        mb.write_byte(0); // null-terminator at end of startup packet
 
         self.state.transition(self, BackendState::Authentication);
 
@@ -382,52 +387,55 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn backend_messages(&self, _: &mut backend_messages::Event, client: Option<&ClientConn>, msgs: Messages) -> Result<()> {
-        match self.state.get() {
-            BackendState::StateInitial | BackendState::SSLHandshake => {
-                Err(Error::new(format!("unexpected message for initial state: {:?}", msgs)))
-            },
-            BackendState::Authentication => {
-                backend_authenticate::run(self, msgs).await
-            },
-            BackendState::Startup => {
-                // TODO ???
-                Ok(())
-            },
-            BackendState::InPool => {
-                for msg in msgs.iter(0) {
-                    match msg.tag() {
-                        Tag::PARAMETER_STATUS => {
-                            todo!(); // TODO set param in server_params
-                        },
-                        Tag::ERROR_RESPONSE => {
-                            todo!(); // TODO log error and close the connection
-                        },
-                        _ => {
-                            // Else ignore the message
-                            // TODO log that we're ignoring a message of type msg.tag()
-                        },
+    pub async fn backend_messages(&self, _: &mut backend_messages::Event, client: Option<&ClientConn>, mut msgs: Messages) -> Result<()> {
+        while !msgs.is_empty() {
+            match self.state() {
+                BackendState::StateInitial | BackendState::SSLHandshake => {
+                    return Err(Error::new(format!("unexpected message for initial state: {:?}", msgs)));
+                },
+                BackendState::Authentication => {
+                    let first = msgs.split_first();
+                    assert!(!first.is_empty());
+                    backend_authenticate::run(self, client, first).await?;
+                },
+                BackendState::Startup => {
+                    // TODO ???
+                    break;
+                },
+                BackendState::InPool => {
+                    for msg in msgs.iter(0) {
+                        match msg.tag() {
+                            Tag::PARAMETER_STATUS => {
+                                todo!(); // TODO set param in server_params
+                            },
+                            Tag::ERROR_RESPONSE => {
+                                todo!(); // TODO log error and close the connection
+                            },
+                            _ => {
+                                // Else ignore the message
+                                // TODO log that we're ignoring a message of type msg.tag()
+                            },
+                        }
                     }
+                    break;
+                },
+                _ => {
+                    // Forward the message to the client, if there is one
+                    // Safety: this is safe to call from the run() thread, and backend_messages is called by run().
+                    unsafe { self.forward(client, msgs).await?; }
+                    // TODO else this is part of a query workflow, do what with it???
+                    break;
                 }
-                Ok(())
-            },
-            _ => {
-                // Forward the message to the client, if there is one
-                // Safety: this is safe to call from the run() thread, and backend_messages is called by run().
-                unsafe { self.forward(client, msgs).await?; }
-                // TODO else this is part of a query workflow, do what with it???
-                Ok(())
             }
         }
+        Ok(())
     }
 
     #[instrument]
-    pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, msgs: Messages) -> Result<()> {
-        if msgs.count() != 1 {
-            return Err(Error::new("startup expects exactly one Message"));
-        }
+    pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, client: Option<&ClientConn>, mut msgs: Messages) -> Result<()> {
+        assert_eq!(msgs.count(), 1);
 
-        let msg = msgs.first().unwrap(); // see msgs.count() condition above
+        let msg = msgs.first().unwrap(); // see assert above
         match msg.tag() {
             Tag::AUTHENTICATION_OK => {
                 let r = msg.reader();
@@ -567,7 +575,7 @@ impl Connection for BackendConn {
     }
 
     fn is_closed(&self) -> bool {
-        if let BackendState::Closed = self.state.get() {
+        if let BackendState::Closed = self.state() {
             true
         } else {
             false
@@ -578,7 +586,7 @@ impl Connection for BackendConn {
         if self.state.msg_is_allowed(tag) {
             Ok(())
         } else {
-            Err(Error::new(format!("unexpected backend message {} for state {:?}", tag, self.state.get())))
+            Err(Error::new(format!("unexpected backend message {} for state {:?}", tag, self.state())))
         }
     }
 }
@@ -623,4 +631,4 @@ define_event!(backend_messages, (backend: &'a BackendConn, client: Option<&'a Cl
 define_event!(backend_send_messages, (backend: &'a BackendConn, msgs: Messages, from_client: bool) -> Result<usize>);
 
 /// backend_authenticate is called with each Message received while in the Authentication state
-define_event!(backend_authenticate, (backend: &'a BackendConn, msgs: Messages) -> Result<()>);
+define_event!(backend_authenticate, (backend: &'a BackendConn, client: Option<&ClientConn>, msgs: Messages) -> Result<()>);

@@ -4,6 +4,9 @@ use bytes::{BytesMut, BufMut, Bytes};
 /// Safety: this is unsafe because the bytes from [len, capacity) may be uninitialized.
 /// Do not attempt to read from this region before writing to it.
 pub unsafe fn bytes_to_slice_mut(buf: &mut BytesMut) -> &mut [u8] {
+    if buf.capacity() == 0 {
+        buf.reserve(256);
+    }
     std::slice::from_raw_parts_mut(buf.as_mut_ptr(), buf.capacity())
 }
 

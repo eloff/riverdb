@@ -14,8 +14,8 @@ use crate::riverdb::pg::protocol::ServerParams;
 
 pub struct PostgresReplicationGroup {
     pub config: &'static config::Postgres,
-    pub master: AtomicRef<'static, ConnectionPool>,
-    pub replicas: Vec<&'static ConnectionPool>,
+    master: AtomicRef<'static, ConnectionPool>,
+    replicas: Vec<&'static ConnectionPool>,
     next_replica: AtomicU32,
 }
 
@@ -28,6 +28,10 @@ impl PostgresReplicationGroup {
             replicas,
             next_replica: AtomicU32::new(0),
         }
+    }
+
+    pub fn master(&self) -> Option<&'static ConnectionPool> {
+        self.master.load()
     }
 
     pub fn has_query_replica(&self) -> bool {

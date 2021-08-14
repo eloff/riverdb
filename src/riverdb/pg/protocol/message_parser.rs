@@ -1,4 +1,4 @@
-use bytes::{BytesMut, Buf};
+use bytes::{BytesMut, Buf, BufMut};
 use std::num::NonZeroU32;
 use std::convert::TryInto;
 use std::fmt::{Display, Formatter};
@@ -63,6 +63,7 @@ pub struct MessageParser {
 
 impl MessageParser {
     pub fn new() -> Self {
+        println!("capacity should be {}", conf().recv_buffer_size);
         Self {
             data: BytesMut::with_capacity(conf().recv_buffer_size as usize),
         }
@@ -83,6 +84,7 @@ impl MessageParser {
     /// Parses and returns the next Message in the buffer without copying,
     /// or None if there isn't a complete message.
     pub fn next(&mut self) -> Option<Result<Messages>> {
+        println!("capacity={} remaining_mut={}", self.data.capacity(), self.data.remaining_mut());
         let mut pos = 0;
         let mut reserve_extra = 0;
         let data = self.data.chunk();

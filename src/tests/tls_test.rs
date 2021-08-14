@@ -1,15 +1,15 @@
-mod common;
-
-use tokio;
-use tokio::net::TcpStream;
-
 use std::error::Error;
 use std::sync::Arc;
 
-use riverdb::config::TlsMode;
-use riverdb::server::{DangerousCertificateNonverifier, Transport};
-use rustls::{PrivateKey, Certificate};
+use tokio;
+use tokio::net::TcpStream;
 use tokio::io::Interest;
+use rustls::{PrivateKey, Certificate};
+
+use crate::tests::common;
+use crate::riverdb::config::TlsMode;
+use crate::riverdb::server::{DangerousCertificateNonverifier, Transport};
+
 
 const SSL_REQUEST: &[u8] = &[0, 0, 0, 8, 4, 210, 22, 47];
 

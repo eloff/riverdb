@@ -127,7 +127,7 @@ const fn default_max_db_connections() -> u32 { 100 }
 const fn default_idle_timeout_seconds() -> u32 { 30 * 60 }
 
 impl PostgresCluster {
-    pub(crate) fn load(&mut self) -> Result<()> {
+    pub fn load(&mut self) -> Result<()> {
         match self.client_tls {
             TlsMode::Invalid => {
                 self.client_tls = TlsMode::Disabled;
@@ -218,7 +218,7 @@ impl PostgresCluster {
 }
 
 impl Postgres {
-    pub(crate) fn load(&mut self, cluster: *const PostgresCluster, defaults: &Postgres, is_master: bool) -> Result<()> {
+    pub fn load(&mut self, cluster: *const PostgresCluster, defaults: &Postgres, is_master: bool) -> Result<()> {
         self.is_master = is_master;
         if self.database.is_empty() {
             self.database = defaults.database.clone();

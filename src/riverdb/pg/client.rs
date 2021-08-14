@@ -320,7 +320,7 @@ impl ClientConn {
         if let Some(group) = group {
             self.set_replication_group(Some(group));
             let pool = if !group.has_query_replica() || tx_type != TransactionType::ReadOnly {
-                group.master.load()
+                group.master()
             } else {
                 client_route_query::run(self, group, tx_type, query).await?
             };
@@ -346,7 +346,7 @@ impl ClientConn {
 
     #[instrument]
     pub async fn client_route_query<'a>(&'a self, _: &'a mut client_route_query::Event, group: &'static PostgresReplicationGroup, _tx_type: TransactionType, _query: &'a mut Query) -> Result<Option<&'static ConnectionPool>> {
-        Ok(group.master.load())
+        Ok(group.master())
     }
 
     #[instrument]
@@ -391,7 +391,7 @@ impl ClientConn {
 
                 let group = cluster.get_by_database(database);
                 if let Some(group) = group {
-                    let pool = group.master.load();
+                    let pool = group.master();
                     if let Some(pool) = pool {
                         let password = if auth_type == AuthType::ClearText {
                             msg.reader().read_str()?

@@ -51,6 +51,11 @@ impl<'a> MessageReader<'a> {
         self.read_past_end.get()
     }
 
+    pub fn peek(&self) -> Option<u8> {
+        let pos = self.pos.get();
+        self.msg.as_slice().get(pos as usize).cloned()
+    }
+
     /// read_byte reads a single byte and returns it.
     /// Returns 0 if no bytes left, use error() or has_error() to distinguish between that and an actual 0.
     pub fn read_byte(&self) -> u8 {
@@ -108,8 +113,10 @@ impl<'a> MessageReader<'a> {
 
     /// read_null_terminated_bytes reads and returns a null-terminated slice of bytes
     pub fn read_null_terminated_bytes(&self) -> Result<&'a [u8]> {
-        let bytes = &self.msg.as_slice()[self.pos.get() as usize..];
+        let pos = self.pos.get();
+        let bytes = &self.msg.as_slice()[pos as usize..];
         if let Some(i) = memchr::memchr(0, bytes) {
+            self.pos.set(pos + i as u32 + 1);
             Ok(&bytes[..i])
         } else {
             self.read_past_end.set(true);

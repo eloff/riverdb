@@ -6,7 +6,7 @@ use strum::{EnumString};
 
 use crate::riverdb::{Error, Result};
 
-#[derive(EnumString, Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(EnumString, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Debug)]
 #[strum(serialize_all = "UPPERCASE")]
 #[repr(u8)]
 pub enum ErrorSeverity {

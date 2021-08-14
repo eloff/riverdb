@@ -119,7 +119,9 @@ pub trait Connection: server::Connection {
         let mut read_bytes = 0;
         let start = buf.len();
         // Safety: safe because we don't attempt to read from any possibly uninitialized bytes
+        let capacity = buf.capacity();
         let bytes = unsafe { bytes_to_slice_mut(buf) };
+        println!("start={} capacity={} slice={}", start, capacity, bytes.len());
         let mut n = self.transport().try_read(&mut bytes[start..])?;
         read_bytes += n;
         if n > 0 && n < bytes.len() {

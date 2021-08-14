@@ -88,6 +88,7 @@ pub fn conf() -> &'static Settings {
         {
             return &*test_config_mut();
         }
+        println!("not a test build!");
         &*SETTINGS.as_ptr()
     }
 }
@@ -95,14 +96,18 @@ pub fn conf() -> &'static Settings {
 #[cfg(test)]
 pub fn test_config_mut() -> &'static mut Settings {
     TEST_SETTINGS.with(|settings| {
-        unsafe {
+        let result = unsafe {
             &mut *settings.get()
+        };
+        if result.recv_buffer_size == 0 {
+            result.load(PathBuf::new()).expect("error initializing test settings");
         }
+        result
     })
 }
 
 impl Settings {
-    pub(crate) fn load(&mut self, path: PathBuf) -> Result<()> {
+    pub fn load(&mut self, path: PathBuf) -> Result<()> {
         self.config_path = path;
         if self.recv_buffer_size < 4096 {
             self.recv_buffer_size = default_recv_buffer_size();

@@ -15,8 +15,8 @@ mod transaction;
 mod rows;
 
 pub use self::service::PostgresService;
-pub use self::client_state::ClientConnState;
-pub use self::backend_state::BackendConnState;
+pub use self::client_state::{ClientConnState, ClientState};
+pub use self::backend_state::{BackendConnState, BackendState};
 pub use self::connection::{Connection};
 pub use self::client::ClientConn;
 pub use self::backend::{BackendConn, MessageQueue};

@@ -10,7 +10,7 @@ use tokio::net::{TcpStream};
 #[cfg(unix)]
 use tokio::net::{UnixStream};
 use tokio::io::{Interest, Ready};
-use tracing::{warn, info};
+use tracing::{warn, info, debug};
 use rustls::{ClientConfig, ServerConfig, ClientConnection, ServerConnection, Connection, ServerName};
 
 use crate::riverdb::{Error, Result};
@@ -61,9 +61,9 @@ impl Transport
         self.is_tls_protected.load(Relaxed)
     }
 
-    /// is_open returns true if the connection is not closed or in the process of closing
-    pub fn is_open(&self) -> bool {
-        !self.is_closing.load(Relaxed)
+    /// is_closed returns true if the connection is not closed or in the process of closing
+    pub fn is_closed(&self) -> bool {
+        self.is_closing.load(Relaxed)
     }
 
     pub fn can_use_tls(&self) -> bool {
@@ -91,12 +91,12 @@ impl Transport
     /// try_read functions like tokio::TcpStream::try_read, but the underlying stream might be TLS encrypted.
     /// If the underlying stream returns WouldBlock, this returns Ok(0).
     /// If the underlying stream is closed (internally returned Ok(0)),
-    /// then this returns Error::closed(), subsequent calls to self.is_open() will return false,
+    /// then this returns Error::closed(), subsequent calls to self.is_closed() will return true,
     /// and subsequent calls to try_read and try_write will immediately return Error::closed().
     /// This panics if buf.len() == 0.
     pub fn try_read(&self, buf: &mut [u8]) -> Result<usize> {
         assert_ne!(buf.len(), 0);
-        if !self.is_open() {
+        if self.is_closed() {
             return Err(Error::closed());
         }
 
@@ -106,13 +106,8 @@ impl Transport
             self.stream.try_read(buf)
         };
 
-        if let Ok(n) = result {
-            if n == 0 {
-                info!("EOF reading from socket (remote end is closed)");
-                self.is_closing.store(true, Release);
-            } else {
-                self.last_active.store(common::coarse_monotonic_now(), Relaxed);
-            }
+        if result.is_ok() {
+            self.last_active.store(common::coarse_monotonic_now(), Relaxed);
         }
         result
     }
@@ -120,12 +115,12 @@ impl Transport
     /// try_write functions like tokio::TcpStream::try_write, but the underlying stream might be TLS encrypted.
     /// If the underlying stream returns WouldBlock, this returns Ok(0).
     /// If the underlying stream is closed (internally returned Ok(0)),
-    /// then this returns Error::closed(), subsequent calls to self.is_open() will return false,
+    /// then this returns Error::closed(), subsequent calls to self.is_closed() will return true,
     /// and subsequent calls to try_read and try_write will immediately return Error::closed().
     /// This panics if buf.len() == 0.
     pub fn try_write(&self, buf: &[u8]) -> Result<usize> {
         assert_ne!(buf.len(), 0);
-        if !self.is_open() {
+        if self.is_closed() {
             return Err(Error::closed());
         }
 
@@ -135,13 +130,8 @@ impl Transport
             self.stream.try_write(buf)
         };
 
-        if let Ok(n) = result {
-            if n == 0 {
-                info!("EOF writing to socket (remote end is closed)");
-                self.is_closing.store(true, Release);
-            } else {
-                self.last_active.store(common::coarse_monotonic_now(), Relaxed);
-            }
+        if result.is_ok() {
+            self.last_active.store(common::coarse_monotonic_now(), Relaxed);
         }
         result
     }
@@ -149,27 +139,12 @@ impl Transport
     fn tls_read(&self, buf: &mut [u8]) -> Result<usize> {
         let mut session = self.tls.lock().map_err(Error::from)?;
         if session.wants_read() {
-            match session.read_tls(&mut StreamReaderWriter::new(&self.stream)) {
-                Err(e) => {
-                    if e.kind() == io::ErrorKind::WouldBlock {
-                        return Ok(0);
-                    }
-                    warn!(?e, "TLS read error");
-                    return Err(Error::from(e));
-                },
-                Ok(0) => {
-                    // EOF
-                    info!("EOF reading from TLS socket (remote end is closed)");
-                    // Relaxed because the mutex release below is a global barrier
-                    self.is_closing.store(true, Relaxed);
-                    return Err(Error::closed());
-                },
-                Ok(n) => {
-                    // Reading some TLS data might have yielded new TLS
-                    // messages to process.  Errors from this indicate
-                    // TLS protocol problems and are fatal.
-                    session.process_new_packets().map_err(Error::from)?;
-                }
+            let n = convert_io_result(session.read_tls(&mut StreamReaderWriter::new(&self.stream)))?;
+            if n > 0 {
+                // Reading some TLS data might have yielded new TLS
+                // messages to process.  Errors from this indicate
+                // TLS protocol problems and are fatal.
+                session.process_new_packets().map_err(Error::from)?;
             }
         }
 
@@ -257,6 +232,7 @@ impl Transport
     }
 
     pub fn close(&self) {
+        debug!("called close() on transport");
         self.is_closing.store(true, Relaxed);
         self.stream.close();
     }

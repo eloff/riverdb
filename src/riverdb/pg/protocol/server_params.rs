@@ -100,7 +100,7 @@ impl Debug for ServerParams {
             if !first {
                 f.write_str(", ");
             } else {
-                first = true;
+                first = false;
             }
             f.write_str(key)?;
             f.write_str(": ")?;

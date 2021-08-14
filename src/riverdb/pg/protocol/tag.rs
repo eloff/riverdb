@@ -144,9 +144,9 @@ static TAG_NAMES: [&'static str; ('z' as usize) + 1] = [
     "",
     "",
     "NotificationResponse",
-    "",
+    "Bind",
     "CommandComplete",
-    "DataRow", // also Describe
+    "DataRow",
     "ErrorResponse",
     "FunctionCall",
     "CopyInResponse",

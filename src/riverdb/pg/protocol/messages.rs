@@ -109,6 +109,17 @@ impl Messages {
         self.iter(0).next()
     }
 
+    /// Splits and returns the first Message. Afterwards self contains the remaining messages, which may be empty.
+    pub fn split_first(&mut self) -> Messages {
+        if self.is_empty() {
+            return Messages::default();
+        }
+
+        let first = self.iter(0).next().unwrap();
+        let after_first = first.len() as usize;
+        self.split_to(after_first)
+    }
+
     /// Splits self after message end, so that self contains [offset, len)
     /// and the returned Messages contains [0, offset). Zero-copy, just adjusts
     /// offsets and reference counts.

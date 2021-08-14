@@ -11,8 +11,6 @@ macro_rules! atomic {
         if crate::riverdb::common::can_transmute::<$t, $atomic>() {
             let $a = unsafe { &*($init as *const _ as *const $atomic) };
             $atomic_op
-        } else {
-            panic!("could not convert {} to {}", stringify!($t), stringify!($atomic));
         }
     };
 

@@ -36,3 +36,7 @@ ctor = "0.1.20"
 gensym = "0.1.0"
 nanorand = { version = "0.6.0", features = ["std", "wyrand"] }
 hex = "0.4.3"
+
+[dev-dependencies]
+env_logger = "0.8.4" # required by test-env-log
+test-env-log = { version = "0.2.7", features = ["trace"] } # configure tracing in tests from env variables
