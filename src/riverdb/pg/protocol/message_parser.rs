@@ -126,3 +126,32 @@ impl MessageParser {
         &mut self.data
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_header_untagged() {
+        let hdr = Header::parse(&[0, 0, 0, 8, 0, 0, 0, 0]).expect("parse error").expect("not enough data");
+        assert_eq!(hdr.tag, Tag::UNTAGGED);
+        assert_eq!(hdr.len(), 8);
+    }
+
+    #[test]
+    fn test_parse_header() {
+        let hdr = Header::parse(&['Q' as u8, 0, 0, 0, 4]).expect("parse error").expect("not enough data");
+        assert_eq!(hdr.tag, Tag::QUERY);
+        assert_eq!(hdr.len(), 5);
+    }
+
+    #[test]
+    fn test_parse_invalid_header() {
+        assert_eq!(Header::parse(&[0, 0, 0, 3, 0, 0, 0]).unwrap_err().to_string(), "length of message frame cannot be < 4");
+    }
+
+    #[test]
+    fn test_parse_not_enough_data() {
+        assert!(Header::parse(&[0, 0, 0, 4]).unwrap().is_none());
+    }
+}

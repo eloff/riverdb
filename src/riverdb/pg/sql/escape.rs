@@ -97,8 +97,6 @@ macro_rules! query {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::riverdb::pg::protocol::Header;
-
 
     #[test]
     fn test_escape() {
