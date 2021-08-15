@@ -198,29 +198,29 @@ macro_rules! define_event {
 /// to the plugins repository to update the list of community plugins.
 #[macro_export]
 macro_rules! event_listener {
-    ($event_name:ident, $l:lifetime, $event:ident, $src:ident, $p:ident: $plugin_type:ty, ($($arg:ident: $arg_ty:ty),*) -> $result:ty $body:block) => {
+    ($plugin_type:ty:$event_name:ident, $l:lifetime, $src:ident, ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
         gensym::gensym!{
-            _event_listener_impl!{$event_name, $l, $event, $src, $p: $plugin_type, $result, $body, ($($arg: $arg_ty),*), }
+            _event_listener_impl!{$event_name, $l, $src, $plugin_type, $result, ($($arg: $arg_ty),*), }
         }
     };
 
-    ($event_name:ident, $l:lifetime, $event:ident, mut $src:ident, $p:ident: $plugin_type:ty, ($($arg:ident: $arg_ty:ty),*) -> $result:ty $body:block) => {
+    ($plugin_type:ty:$event_name:ident, $l:lifetime, mut $src:ident, ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
         gensym::gensym!{
-            _event_listener_impl!{$event_name, $l, $event, $src, $p: $plugin_type, $result, $body, ($($arg: $arg_ty),*), mut}
+            _event_listener_impl!{$event_name, $l, $src, $plugin_type, $result, ($($arg: $arg_ty),*), mut}
         }
     };
 }
 
 macro_rules! _event_listener_impl {
-    ($singleton:ident, $event_name:ident, $l:lifetime, $event:ident, $src:ident, $p:ident: $plugin_type:ty, $result:ty, $body:block, ($($arg:ident: $arg_ty:ty),*), $($mod:tt)?) => {
+    ($singleton:ident, $event_name:ident, $l:lifetime, $src:ident, $plugin_type:ty, $result:ty, ($($arg:ident: $arg_ty:ty),*), $($mod:tt)?) => {
         const _: () = {
             static mut $singleton: std::mem::MaybeUninit<$plugin_type> = std::mem::MaybeUninit::uninit();
 
-            fn plugin_fn<$l>($event: &$l mut $event_name::Event, $src: &$l $($mod)? $event_name::Source, $($arg: $arg_ty),*)
+            fn plugin_fn<$l>(ev: &$l mut $event_name::Event, $src: &$l $($mod)? $event_name::Source, $($arg: $arg_ty),*)
                 -> std::pin::Pin<Box<dyn std::future::Future<Output=$result> + Send + Sync + $l>>
             {
-                let $p = unsafe { &*$singleton.as_ptr() };
-                Box::pin(async move { $body })
+                let plugin = unsafe { &*$singleton.as_ptr() };
+                Box::pin(plugin.$event_name(ev, $src, $($arg),*))
             }
 
             fn plugin_ctor() -> Result<i32> {
@@ -269,6 +269,15 @@ mod tests {
         bar: i32
     }
 
+    impl Listener2 {
+        pub async fn record_changed(&self, ev: &mut record_changed::Event, monitor: &mut RecordMonitor, payload: &str) -> Result<String> {
+            monitor.state += self.bar;
+            let s = "-2b-".to_string() + &ev.next(monitor, payload).await? + "-2a-";
+            monitor.state *= self.bar;
+            Ok(s)
+        }
+    }
+
     impl Plugin for Listener2 {
         fn create(settings: Option<&'static ConfigMap>) -> Result<Self> {
             Ok(Self{foo: 0, bar: 5})
@@ -279,16 +288,20 @@ mod tests {
         }
     }
 
-    event_listener!(record_changed, 'a, ev, mut monitor, this: Listener2, (payload: &'a str) -> Result<String> {
-        monitor.state += this.bar;
-        let s = "-2b-".to_string() + &ev.next(monitor, payload).await? + "-2a-";
-        monitor.state *= this.bar;
-        Ok(s)
-    });
+    event_listener!(Listener2:record_changed, 'a, mut monitor, (payload: &'a str) -> Result<String>);
 
     struct Listener {
         foo: i32,
         bar: i32
+    }
+
+    impl Listener {
+        pub async fn record_changed(&self, ev: &mut record_changed::Event, monitor: &mut RecordMonitor, payload: &str) -> Result<String> {
+            monitor.state += self.foo;
+            let s = "-1b-".to_string() + &ev.next(monitor, payload).await? + "-1a-";
+            monitor.state *= self.foo;
+            Ok(s)
+        }
     }
 
     impl Plugin for Listener {
@@ -301,12 +314,7 @@ mod tests {
         }
     }
 
-    event_listener!(record_changed, 'a, ev, mut monitor, this: Listener, (payload: &'a str) -> Result<String> {
-        monitor.state += this.foo;
-        let s = "-1b-".to_string() + &ev.next(monitor, payload).await? + "-1a-";
-        monitor.state *= this.foo;
-        Ok(s)
-    });
+    event_listener!(Listener:record_changed, 'a, mut monitor, (payload: &'a str) -> Result<String>);
 
     #[tokio::test]
     async fn test_event() {
