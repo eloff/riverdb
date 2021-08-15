@@ -198,29 +198,29 @@ macro_rules! define_event {
 /// to the plugins repository to update the list of community plugins.
 #[macro_export]
 macro_rules! event_listener {
-    ($plugin_type:ty:$event_name:ident, $l:lifetime, $src:ident, ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
+    ($plugin_type:ty:$event_name:ident, $l:lifetime ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
         gensym::gensym!{
-            _event_listener_impl!{$event_name, $l, $src, $plugin_type, $result, ($($arg: $arg_ty),*), }
+            _event_listener_impl!{$event_name, $l, $plugin_type, $result, ($($arg: $arg_ty),*), }
         }
     };
 
-    ($plugin_type:ty:$event_name:ident, $l:lifetime, mut $src:ident, ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
+    ($plugin_type:ty:$event_name:ident, $l:lifetime mut ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
         gensym::gensym!{
-            _event_listener_impl!{$event_name, $l, $src, $plugin_type, $result, ($($arg: $arg_ty),*), mut}
+            _event_listener_impl!{$event_name, $l, $plugin_type, $result, ($($arg: $arg_ty),*), mut}
         }
     };
 }
 
 macro_rules! _event_listener_impl {
-    ($singleton:ident, $event_name:ident, $l:lifetime, $src:ident, $plugin_type:ty, $result:ty, ($($arg:ident: $arg_ty:ty),*), $($mod:tt)?) => {
+    ($singleton:ident, $event_name:ident, $l:lifetime, $plugin_type:ty, $result:ty, ($($arg:ident: $arg_ty:ty),*), $($mod:tt)?) => {
         const _: () = {
             static mut $singleton: std::mem::MaybeUninit<$plugin_type> = std::mem::MaybeUninit::uninit();
 
-            fn plugin_fn<$l>(ev: &$l mut $event_name::Event, $src: &$l $($mod)? $event_name::Source, $($arg: $arg_ty),*)
+            fn plugin_fn<$l>(ev: &$l mut $event_name::Event, src: &$l $($mod)? $event_name::Source, $($arg: $arg_ty),*)
                 -> std::pin::Pin<Box<dyn std::future::Future<Output=$result> + Send + Sync + $l>>
             {
                 let plugin = unsafe { &*$singleton.as_ptr() };
-                Box::pin(plugin.$event_name(ev, $src, $($arg),*))
+                Box::pin(plugin.$event_name(ev, src, $($arg),*))
             }
 
             fn plugin_ctor() -> Result<i32> {
@@ -288,7 +288,7 @@ mod tests {
         }
     }
 
-    event_listener!(Listener2:record_changed, 'a, mut monitor, (payload: &'a str) -> Result<String>);
+    event_listener!(Listener2:record_changed, 'a mut (payload: &'a str) -> Result<String>);
 
     struct Listener {
         foo: i32,
@@ -314,7 +314,7 @@ mod tests {
         }
     }
 
-    event_listener!(Listener:record_changed, 'a, mut monitor, (payload: &'a str) -> Result<String>);
+    event_listener!(Listener:record_changed, 'a mut (payload: &'a str) -> Result<String>);
 
     #[tokio::test]
     async fn test_event() {
