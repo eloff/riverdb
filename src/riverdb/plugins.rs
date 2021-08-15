@@ -57,6 +57,13 @@ macro_rules! define_event {
                 PLUGINS_CTORS.push(ctor);
             }
 
+            /// clears all globally registered plugins. This is exposed for use in tests.
+            /// It's an error to call this once plugins are configured.
+            pub unsafe fn clear() {
+                PLUGINS.clear();
+                PLUGINS_CTORS.clear();
+            }
+
             const _: () = {
                 /// configure is called after registering all plugins, but before they are used
                 /// It's invoked after loading the configuration, but before starting the server.

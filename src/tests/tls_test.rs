@@ -37,7 +37,7 @@ async fn test_tls_client_handshake() -> Result<(), Box<dyn Error>> {
 #[tokio::test]
 async fn test_tls_server_handshake() -> Result<(), Box<dyn Error>> {
     let listener = common::listener();
-    let mut psql = common::psql(format!("host=localhost port={}", listener.local_addr().unwrap().port()).as_str());
+    let mut psql = common::psql(format!("host=localhost port={}", listener.local_addr().unwrap().port()).as_str(), "");
 
     let (s, _) = listener.accept().await?;
     let t = Transport::new(s);

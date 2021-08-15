@@ -46,3 +46,4 @@ hex = "0.4.3"
 [dev-dependencies]
 env_logger = "0.8.4" # required by test-env-log
 test-env-log = { version = "0.2.7", features = ["trace"] } # configure tracing in tests from env variables
+serial_test = "0.5.1"

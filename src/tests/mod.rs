@@ -8,6 +8,8 @@ The integration tests are organized into the same binary in this directory.
 See: https://matklad.github.io/2021/02/27/delete-cargo-integration-tests.html
  */
 
+#[macro_use]
 mod common;
 mod tls_test;
 mod backend_auth_test;
+mod client_auth_test;

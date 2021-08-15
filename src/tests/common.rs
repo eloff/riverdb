@@ -68,10 +68,47 @@ pub fn cluster() -> &'static PostgresCluster {
     Box::leak(Box::new(PostgresCluster::new(&*conf)))
 }
 
-pub fn psql(connection_str: &str) -> Child {
+pub fn psql(connection_str: &str, mut password: &str) -> Child {
+    let s = if connection_str.contains("user") {
+        connection_str.to_string()
+    } else {
+        format!("user={} dbname={} {}", TEST_USER, TEST_DATABASE, connection_str)
+    };
+    if password.is_empty() {
+        password = TEST_PASSWORD;
+    }
+
     Command::new("psql")
-        .arg(format!("user={} dbname={} {}", TEST_USER, TEST_DATABASE, connection_str))
-        .env("PGPASSWORD", TEST_PASSWORD)
+        .arg(s)
+        .env("PGPASSWORD", password)
         .spawn()
         .expect("couldn't run psql")
 }
+
+// #[macro_export]
+// macro_rules! register_scoped {
+//      ($plugin_module: ident, $p: expr, $ctor: expr) => {
+//          gensym::gensym!{
+//              _register_scoped_impl!{$plugin_module, $p, $ctor}
+//          }
+//      }
+// }
+//
+// macro_rules! _register_scoped_impl {
+//     ($unique_name:ident, $plugin_module: ident, $p: expr, $ctor: expr) => {
+//         event_listener!($plugin_module, 'a, ev, )
+//         unsafe {
+//             $plugin_module::register($p, $ctor);
+//         }
+//
+//         struct $unique_name {}
+//
+//         impl Drop for $unique_name {
+//             fn drop(&mut self) {
+//                 unsafe { $plugin_module::clear(); }
+//             }
+//         }
+//
+//         let _cleanup = $unique_name{};
+//     }
+// }
