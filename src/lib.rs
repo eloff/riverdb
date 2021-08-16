@@ -1,6 +1,6 @@
 #![cfg(not(feature = "main"))]
 
-mod riverdb;
+pub mod riverdb;
 #[cfg(test)]
 mod tests;
 

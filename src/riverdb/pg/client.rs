@@ -141,6 +141,9 @@ impl ClientConn {
     /// Panics unless in Ready, Transaction, or FailedTransaction states.
     pub async fn forward(&self, backend: Option<&BackendConn>, msgs: Messages) -> Result<()> {
         for msg in msgs.iter(0) {
+            // TODO only run this for QUERY message types
+            // TODO we could implement Query<'a> with Message instead?
+            // TODO can we still issue a bulk send here if Query is unaltered? This is the performance sensitive part
             let query = Query::new(msgs.split_message(&msg));
             client_query::run(self, backend, query).await?;
         }

@@ -8,3 +8,4 @@ pub mod http;
 pub mod plugins;
 
 pub use common::{Error, Result};
+pub use plugins::{Plugin, configure};

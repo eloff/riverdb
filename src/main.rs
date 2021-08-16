@@ -2,7 +2,7 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
-mod riverdb;
+pub mod riverdb;
 
 use std::thread;
 

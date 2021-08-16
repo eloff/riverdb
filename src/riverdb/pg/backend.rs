@@ -469,12 +469,19 @@ impl BackendConn {
         let msg = msgs.first().unwrap(); // see assert above
         match msg.tag() {
             Tag::AUTHENTICATION_OK => {
-                let r = msg.reader();
-                let auth_type = r.read_i32();
-                if auth_type == 0 {
-                    r.error()?;
-                }
-                let auth_type = AuthType::from(auth_type);
+                let (auth_type, salt) = {
+                    let r = msg.reader();
+                    let auth_type = r.read_i32();
+                    if auth_type == 0 {
+                        r.error()?;
+                    }
+                    let auth_type = AuthType::from(auth_type);
+                    let salt = r.read_i32();
+                    if salt == 0 && auth_type == AuthType::MD5 {
+                        r.error()?;
+                    }
+                    (auth_type, salt)
+                };
                 let (user, password) = {
                     let server_params = self.server_params.lock().unwrap();
                     (server_params.get("user").expect("missing user").to_string(),
@@ -496,10 +503,7 @@ impl BackendConn {
                         Ok(())
                     },
                     AuthType::MD5 => {
-                        let salt = r.read_i32();
-                        if salt == 0 {
-                            r.error()?;
-                        }
+
                         let md5_password = hash_md5_password(&user, &password, salt);
                         let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
                         mb.write_str(&md5_password);

@@ -1,10 +1,11 @@
 use std::sync::atomic::AtomicU16;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::{Relaxed, Release};
 use std::net::{SocketAddrV4, Ipv4Addr, SocketAddr, IpAddr};
 
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::process::{Command, Child};
 
+use crate::event_listener;
 use crate::riverdb::config;
 use crate::riverdb::pg::PostgresCluster;
 
@@ -85,30 +86,22 @@ pub fn psql(connection_str: &str, mut password: &str) -> Child {
         .expect("couldn't run psql")
 }
 
-// #[macro_export]
-// macro_rules! register_scoped {
-//      ($plugin_module: ident, $p: expr, $ctor: expr) => {
-//          gensym::gensym!{
-//              _register_scoped_impl!{$plugin_module, $p, $ctor}
-//          }
-//      }
-// }
-//
-// macro_rules! _register_scoped_impl {
-//     ($unique_name:ident, $plugin_module: ident, $p: expr, $ctor: expr) => {
-//         event_listener!($plugin_module, 'a, ev, )
-//         unsafe {
-//             $plugin_module::register($p, $ctor);
-//         }
-//
-//         struct $unique_name {}
-//
-//         impl Drop for $unique_name {
-//             fn drop(&mut self) {
-//                 unsafe { $plugin_module::clear(); }
-//             }
-//         }
-//
-//         let _cleanup = $unique_name{};
-//     }
-// }
+#[macro_export]
+macro_rules! register_scoped {
+    ($plugin_ty:ty : $plugin_module:ident, $l:lifetime ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
+        $crate::event_listener!($plugin_ty:$plugin_module, $l ($($arg: $arg_ty),*) -> $result);
+        unsafe {
+            $plugin_module::configure();
+        }
+
+        struct PluginUninstall {}
+
+        impl Drop for PluginUninstall {
+           fn drop(&mut self) {
+                unsafe { $plugin_module::clear() }
+           }
+        }
+
+        let _cleanup = PluginUninstall{};
+    }
+}

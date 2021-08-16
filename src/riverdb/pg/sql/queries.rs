@@ -11,6 +11,8 @@ pub struct Query {
 
 impl Query {
     pub fn new(msgs: Messages) -> Self {
+        debug_assert_eq!(msgs.count(), 1);
+
         let mut normalized_query = String::new();
         let msg = msgs.first().unwrap();
         if msg.tag() == Tag::QUERY {

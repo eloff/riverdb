@@ -8,9 +8,10 @@ pub trait Plugin: Sized {
     const NAME: &'static str = "";
 
     fn create(settings: Option<&'static ConfigMap>) -> Result<Self>;
-    fn order(&self) -> i32;
+    fn order(&self) -> i32 { 0 }
 }
 
+pub static mut CONFIGURED_PLUGINS: bool = false;
 static mut CONFIGURE_PLUGINS: Vec<unsafe fn() -> Result<()>> = Vec::new();
 
 pub unsafe fn register_plugin_definition(configure: unsafe fn() -> Result<()>) {
@@ -21,6 +22,7 @@ pub unsafe fn configure() -> Result<()> {
     for f in &CONFIGURE_PLUGINS {
         (*f)()?
     }
+    CONFIGURED_PLUGINS = true;
     Ok(())
 }
 
@@ -53,36 +55,38 @@ macro_rules! define_event {
             /// register globally registers a plugin function, it's called by async_plugin! before main() starts.
             /// It's an error to call this once plugins are configured.
             pub unsafe fn register(f: Plugin<'static>, ctor: fn() -> $crate::riverdb::Result<i32>) {
+                assert!(!$crate::riverdb::plugins::CONFIGURED_PLUGINS);
                 PLUGINS.push(f);
                 PLUGINS_CTORS.push(ctor);
             }
 
-            /// clears all globally registered plugins. This is exposed for use in tests.
+            /// clear all globally registered plugins. This is exposed for use in tests.
             /// It's an error to call this once plugins are configured.
             pub unsafe fn clear() {
+                assert!(!$crate::riverdb::plugins::CONFIGURED_PLUGINS);
                 PLUGINS.clear();
                 PLUGINS_CTORS.clear();
             }
 
-            const _: () = {
-                /// configure is called after registering all plugins, but before they are used
-                /// It's invoked after loading the configuration, but before starting the server.
-                unsafe fn configure() -> $crate::riverdb::Result<()> {
-                    let orders = PLUGINS_CTORS.iter().map(|f| f()).collect::<Result<Vec<i32>>>()?;
-                    let mut with_order: Vec<_> = orders.iter().zip(PLUGINS.drain(..)).collect();
-                    with_order.sort_unstable_by_key(|(order,_)| *order);
-                    // Re-order the PLUGINS Vec by the order values returned from the constructors
-                    for (_, f) in &with_order {
-                        PLUGINS.push(*f);
-                    }
-                    Ok(())
+            /// configure is called after registering all plugins, but before they are used
+            /// It's invoked after loading the configuration, but before starting the server.
+            /// This is exposed for use in tests. It's an error to call this once plugins are configured.
+            pub unsafe fn configure() -> $crate::riverdb::Result<()> {
+                assert!(!$crate::riverdb::plugins::CONFIGURED_PLUGINS);
+                let orders = PLUGINS_CTORS.iter().map(|f| f()).collect::<Result<Vec<i32>>>()?;
+                let mut with_order: Vec<_> = orders.iter().zip(PLUGINS.drain(..)).collect();
+                with_order.sort_unstable_by_key(|(order,_)| *order);
+                // Re-order the PLUGINS Vec by the order values returned from the constructors
+                for (_, f) in &with_order {
+                    PLUGINS.push(*f);
                 }
+                Ok(())
+            }
 
-                #[ctor::ctor]
-                unsafe fn register_plugin_configure() {
-                    $crate::riverdb::plugins::register_plugin_definition(configure);
-                }
-            };
+            #[ctor::ctor]
+            unsafe fn register_plugin_configure() {
+                $crate::riverdb::plugins::register_plugin_definition(configure);
+            }
 
             pub struct Event{
                 //data: EventData = Vec<(&'static str, ?> // optional key-value pairs
@@ -198,19 +202,20 @@ macro_rules! define_event {
 /// to the plugins repository to update the list of community plugins.
 #[macro_export]
 macro_rules! event_listener {
-    ($plugin_type:ty:$event_name:ident, $l:lifetime ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
+    ($plugin_type:ty : $event_name:ident, $l:lifetime ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
         gensym::gensym!{
-            _event_listener_impl!{$event_name, $l, $plugin_type, $result, ($($arg: $arg_ty),*), }
+            $crate::_event_listener_impl!{$event_name, $l, $plugin_type, $result, ($($arg: $arg_ty),*), }
         }
     };
 
-    ($plugin_type:ty:$event_name:ident, $l:lifetime mut ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
+    ($plugin_type:ty : $event_name:ident, $l:lifetime mut ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
         gensym::gensym!{
-            _event_listener_impl!{$event_name, $l, $plugin_type, $result, ($($arg: $arg_ty),*), mut}
+            $crate::_event_listener_impl!{$event_name, $l, $plugin_type, $result, ($($arg: $arg_ty),*), mut}
         }
     };
 }
 
+#[macro_export]
 macro_rules! _event_listener_impl {
     ($singleton:ident, $event_name:ident, $l:lifetime, $plugin_type:ty, $result:ty, ($($arg:ident: $arg_ty:ty),*), $($mod:tt)?) => {
         const _: () = {
