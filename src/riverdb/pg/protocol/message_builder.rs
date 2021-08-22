@@ -70,6 +70,7 @@ impl MessageBuilder {
         }
         unsafe {
             let mut pos = self.start;
+            len -= pos;
             if *self.data.get_unchecked(self.start) != Tag::UNTAGGED.as_u8() {
                 pos += 1;
                 len -= 1;
@@ -105,5 +106,85 @@ impl MessageBuilder {
             self.write_str(k);
             self.write_str(v);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_one() {
+        let mut mb = MessageBuilder::new(Tag::AUTHENTICATION_OK);
+        mb.write_i32(34343434);
+        mb.write_i16(1212);
+        mb.write_byte(250);
+        mb.write_str("foo");
+        mb.write_bytes("bar".as_bytes());
+        let msgs = mb.finish();
+
+        const MSG_LEN: u32 = 1+4+4+2+1+4+3;
+        assert_eq!(msgs.len(), MSG_LEN);
+        let msg = msgs.first().unwrap();
+        assert_eq!(msg.len(), MSG_LEN);
+        assert_eq!(msg.tag(), Tag::AUTHENTICATION_OK);
+        let r = msg.reader();
+        assert_eq!(r.read_i32(), 34343434);
+        assert_eq!(r.read_i16(), 1212);
+        assert_eq!(r.read_byte(), 250);
+        assert_eq!(r.read_str().unwrap(), "foo");
+        assert_eq!(r.read_bytes(3).unwrap(), "bar".as_bytes());
+    }
+
+    #[test]
+    fn test_build_many() {
+        let mut mb = MessageBuilder::new(Tag::AUTHENTICATION_OK);
+        mb.write_i32(42);
+
+        mb.add_new(Tag::PARAMETER_STATUS);
+        mb.write_str("foo");
+        mb.write_str("bar");
+
+        mb.add_new(Tag::PARAMETER_STATUS);
+        mb.write_str("some_key");
+        mb.write_str("a value");
+
+        mb.add_new(Tag::BACKEND_KEY_DATA);
+        mb.write_i32(123456789);
+        mb.write_i32(987654321);
+
+        mb.add_new(Tag::READY_FOR_QUERY);
+        mb.write_byte('I' as u8);
+        let msgs = mb.finish();
+        let mut it = msgs.iter(0);
+
+        let mut msg = it.next().unwrap();
+        assert_eq!(msg.tag(), Tag::AUTHENTICATION_OK);
+        assert_eq!(msg.len(), 9);
+        assert_eq!(msg.reader().read_i32(), 42);
+
+        msg = it.next().unwrap();
+        assert_eq!(msg.tag(), Tag::PARAMETER_STATUS);
+        assert_eq!(msg.len(), 13);
+        let r = msg.reader();
+        assert_eq!(r.read_str().unwrap(), "foo");
+        assert_eq!(r.read_str().unwrap(), "bar");
+
+        msg = it.next().unwrap();
+        assert_eq!(msg.tag(), Tag::PARAMETER_STATUS);
+        assert_eq!(msg.len(), 22);
+        let r = msg.reader();
+        assert_eq!(r.read_str().unwrap(), "some_key");
+        assert_eq!(r.read_str().unwrap(), "a value");
+
+        msg = it.next().unwrap();
+        assert_eq!(msg.tag(), Tag::BACKEND_KEY_DATA);
+        let r = msg.reader();
+        assert_eq!(r.read_i32(), 123456789);
+        assert_eq!(r.read_i32(), 987654321);
+
+        msg = it.next().unwrap();
+        assert_eq!(msg.tag(), Tag::READY_FOR_QUERY);
+        assert_eq!(msg.reader().read_byte(), 'I' as u8);
     }
 }

@@ -76,6 +76,9 @@ impl Transport
     }
 
     pub async fn ready(&self, interest: Interest) -> Result<Ready> {
+        if self.is_closed() {
+            return Err(Error::closed());
+        }
         self.stream.ready(interest).await
     }
 

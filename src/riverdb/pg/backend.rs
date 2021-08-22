@@ -96,8 +96,9 @@ impl BackendConn {
     }
 
     /// Dispatches msgs received from the database server to the client and/or backend requests (iterators).
-    /// Safety: only the thread that calls run() can call this.
-    pub async unsafe fn forward(&self, client: Option<&ClientConn>, mut msgs: Messages) -> Result<usize> {
+    /// Safety: Only the thread that calls run() can call this.
+    #[instrument]
+    pub async fn forward(&self, client: Option<&ClientConn>, mut msgs: Messages) -> Result<usize> {
         let mut sent = 0;
 
         let mut pending_original = self.pending_requests.load(Acquire);
@@ -183,10 +184,7 @@ impl BackendConn {
             if pending_count == requests_completed {
                 // pending_requests has reached zero, we can maybe release the backend to the pool
                 if let Some(client) = client {
-                    if let Some(backend) = client.release_backend() {
-                        self.client.store(None);
-                        self.pool.load().unwrap().put(backend);
-                    }
+                    self.return_to_pool(client);
                 }
             }
 
@@ -268,6 +266,13 @@ impl BackendConn {
             }
         } else {
             unreachable!(); // readable, but not a single byte could be read? Not possible.
+        }
+    }
+
+    pub fn return_to_pool(&self, client: &ClientConn) {
+        if let Some(backend) = client.release_backend() {
+            self.client.store(None);
+            self.pool.load().unwrap().put(backend);
         }
     }
 
@@ -357,6 +362,10 @@ impl BackendConn {
     }
 
     pub fn set_in_pool(&self) -> bool {
+        // TODO if backend is in a transaction, we need to issue a ROLLBACK first
+
+        // TODO issue RESET on connection
+
         if let Err(e) = self.state.transition(self,BackendState::InPool) {
             warn!(?e, "cannot transition to InPool state");
             false
@@ -453,7 +462,7 @@ impl BackendConn {
                 _ => {
                     // Forward the message to the client, if there is one
                     // Safety: this is safe to call from the run() thread, and backend_messages is called by run().
-                    unsafe { self.forward(client, msgs).await?; }
+                    self.forward(client, msgs).await?;
                     // TODO else this is part of a query workflow, do what with it???
                     break;
                 }

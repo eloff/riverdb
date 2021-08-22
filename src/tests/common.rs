@@ -1,6 +1,7 @@
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering::{Relaxed, Release};
 use std::net::{SocketAddrV4, Ipv4Addr, SocketAddr, IpAddr};
+use std::process::Stdio;
 
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::process::{Command, Child};
@@ -8,6 +9,7 @@ use tokio::process::{Command, Child};
 use crate::event_listener;
 use crate::riverdb::config;
 use crate::riverdb::pg::PostgresCluster;
+
 
 pub const TEST_DATABASE: &str = "riverdb_test";
 pub const TEST_USER: &str = TEST_DATABASE;
@@ -80,6 +82,7 @@ pub fn psql(connection_str: &str, mut password: &str) -> Child {
     }
 
     Command::new("psql")
+        .stdin(Stdio::piped())
         .arg(s)
         .env("PGPASSWORD", password)
         .spawn()
@@ -88,8 +91,9 @@ pub fn psql(connection_str: &str, mut password: &str) -> Child {
 
 #[macro_export]
 macro_rules! register_scoped {
-    ($plugin_ty:ty : $plugin_module:ident, $l:lifetime ($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
-        $crate::event_listener!($plugin_ty:$plugin_module, $l ($($arg: $arg_ty),*) -> $result);
+    ($plugin:expr, $plugin_ty:ident : $plugin_module:ident<$l:lifetime>($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
+        crate::event_listener!($plugin, $plugin_ty:$plugin_module<$l>($($arg: $arg_ty),*) -> $result);
+
         unsafe {
             $plugin_module::configure();
         }
@@ -103,5 +107,5 @@ macro_rules! register_scoped {
         }
 
         let _cleanup = PluginUninstall{};
-    }
+    };
 }

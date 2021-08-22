@@ -85,6 +85,10 @@ impl ClientConn {
         client_send_messages::run(self, msgs).await
     }
 
+    pub fn state(&self) -> ClientState {
+        self.state.get()
+    }
+
     /// Returns the associated BackendConn, if any.
     pub fn backend(&self) -> Option<Arc<BackendConn>> { self.backend.load() }
 
@@ -139,20 +143,36 @@ impl ClientConn {
     /// Which forwards the Query or Message to the backend via backend.send.
     /// If backend is None, runs client_connect_backend to acquire a backend connection.
     /// Panics unless in Ready, Transaction, or FailedTransaction states.
+    #[instrument]
     pub async fn forward(&self, backend: Option<&BackendConn>, msgs: Messages) -> Result<()> {
         for msg in msgs.iter(0) {
-            // TODO only run this for QUERY message types
-            // TODO we could implement Query<'a> with Message instead?
-            // TODO can we still issue a bulk send here if Query is unaltered? This is the performance sensitive part
-            let query = Query::new(msgs.split_message(&msg));
-            client_query::run(self, backend, query).await?;
+            match msg.tag() {
+                Tag::QUERY => {
+                    // TODO we could implement Query<'a> with Message instead?
+                    // TODO can we still issue a bulk send here if Query is unaltered? This is the performance sensitive part
+                    let query = Query::new(msgs.split_message(&msg));
+                    client_query::run(self, backend, query).await?;
+                },
+                Tag::TERMINATE => {
+                    self.state.transition(self, ClientState::Closed)?;
+                    if let Some(backend) = backend {
+                        backend.return_to_pool(self);
+                    }
+                    self.transport.close();
+                    break;
+                },
+                _ => {
+                    todo!();
+                }
+            }
         }
         Ok(())
     }
 
+    #[instrument]
     pub fn release_backend(&self) -> Option<Arc<BackendConn>> {
         match self.state.get() {
-            ClientState::Ready => {
+            ClientState::Ready | ClientState::Closed => {
                 self.backend.swap(None)
             },
             ClientState::Transaction => {
@@ -447,7 +467,9 @@ impl ClientConn {
 
         mb.add_new(Tag::READY_FOR_QUERY);
         mb.write_byte('I' as u8);
-        self.send(mb.finish()).await?;
+        let msgs = mb.finish();
+        println!("{:?} messages", &msgs);
+        self.send(msgs).await?;
         Ok(())
     }
 
@@ -482,6 +504,7 @@ impl ClientConn {
                 Ok(())
             },
             ClientState::Closed => {
+                panic!("closed");
                 Err(Error::closed())
             },
             _ => {
@@ -533,6 +556,9 @@ impl server::Connection for ClientConn {
 
     fn close(&self) {
         self.state.transition(self, ClientState::Closed);
+        if let Some(backend) = self.backend.load() {
+            backend.return_to_pool(self);
+        }
         self.transport.close();
     }
 }

@@ -103,6 +103,10 @@ impl ClientConnState {
     }
 
     pub fn transition(&self, client: &ClientConn, new_state: ClientState) -> Result<()> {
+        if new_state == ClientState::Closed {
+            self.0.store(new_state);
+            return Ok(());
+        }
         // Indexed by log2(new_state), this is a list of allowed states that can transition to new_state
         // Indexing by new_state instead of state has fewer data dependencies
         // (can execute immediately, because it doesn't have to wait to load current state.)

@@ -19,13 +19,18 @@ impl ServerParams {
 
     pub fn from_startup_message(msg: &Message<'_>) -> Result<Self> {
         assert_eq!(msg.tag(), Tag::UNTAGGED);
-        let mut start = msg.body_start() + 4; // skip the version number
+        let r = msg.reader();
+        r.seek(r.tell() + 4); // skip the version number
+        let mut start = msg.body_start() + 4;
         let r = MessageReader::new_at(&msg, start as u32);
 
         let mut result = Self::new();
         let mut user: Option<&str> = None;
         let mut have_database = false;
         while let Ok(name) = r.read_str() {
+            if name.is_empty() {
+                break; // the null-terminator at the end of the message
+            }
             let value = r.read_str()?;
             match name {
                 "user" => user = Some(value),
