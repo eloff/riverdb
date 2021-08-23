@@ -1,5 +1,5 @@
 #[cfg(unix)]
-use std::os::unix::io::AsRawFd;
+
 
 use tokio::net::TcpStream;
 use tracing::{info, warn};
@@ -27,7 +27,7 @@ impl PostgresService {
         // Use an explicit handle here rather than looking it up in thread local storage each time
         let tokio = tokio::runtime::Handle::current();
         while let Some(sock) = self.listener.accept().await {
-            if let Some(mut conn) = self.connections.add(sock) {
+            if let Some(conn) = self.connections.add(sock) {
                 tokio.spawn(async move {
                     if let Err(e) = conn.run().await {
                         warn!(%e, "error in Postgres ClientConn");
@@ -36,8 +36,4 @@ impl PostgresService {
             }
         }
     }
-}
-
-pub async fn postgres_service(sock: TcpStream) -> Result<()> {
-    todo!()
 }

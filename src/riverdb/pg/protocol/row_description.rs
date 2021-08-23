@@ -1,9 +1,9 @@
-use std::slice::Iter;
+
 use std::convert::TryInto;
 
 use crate::riverdb::common::{Error, Result};
-use crate::riverdb::pg::protocol::{Messages, MessageReader, Tag};
-use std::iter::{Cloned, Map};
+use crate::riverdb::pg::protocol::{Messages, Tag};
+
 
 
 const FIELD_DESCRIPTION_SIZE: u32 = 3*4 + 3*2;
@@ -21,7 +21,7 @@ impl RowDescription {
         let r = m.reader();
         let num_fields = r.read_i16();
         let mut fields = Vec::with_capacity(num_fields as usize);
-        for i in 0..num_fields as usize {
+        for _i in 0..num_fields as usize {
             let mut offset = r.tell();
             let field_name = r.read_str()?;
             let name_len = field_name.len() as u32 + 1;

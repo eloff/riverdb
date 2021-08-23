@@ -1,12 +1,12 @@
 use std::convert::TryInto;
 use std::cell::Cell;
-use std::mem::{swap, ManuallyDrop, transmute_copy};
 
-use bytes::Bytes;
 
-use crate::riverdb::pg::protocol::{Message, Tag};
+
+
+use crate::riverdb::pg::protocol::{Message};
 use crate::riverdb::{Error, Result};
-use std::ops::Deref;
+
 
 
 pub struct MessageReader<'a> {

@@ -1,10 +1,10 @@
-use std::fmt::{Debug, Display, Formatter};
-use std::sync::atomic::Ordering::{Release, Relaxed, Acquire};
+use std::fmt::{Debug, Formatter};
+
 
 use strum::Display;
 
 use crate::riverdb::pg::protocol::Tag;
-use crate::riverdb::{Error, Result};
+use crate::riverdb::{Result};
 use crate::riverdb::common::{AtomicCell};
 use std::mem::transmute;
 use crate::riverdb::pg::ClientConn;

@@ -1,9 +1,9 @@
-use bytes::{BytesMut, Buf, BufMut};
+use bytes::{BytesMut, Buf};
 use std::num::NonZeroU32;
 use std::convert::TryInto;
 use std::fmt::{Display, Formatter};
 
-use rustls::Connection;
+
 
 use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::protocol::Messages;

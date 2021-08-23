@@ -1,11 +1,11 @@
 use std::sync::atomic::AtomicU16;
-use std::sync::atomic::Ordering::{Relaxed, Release};
-use std::net::{SocketAddrV4, Ipv4Addr, SocketAddr, IpAddr};
+use std::sync::atomic::Ordering::{Relaxed};
+use std::net::{Ipv4Addr, SocketAddr, IpAddr};
 use std::process::{Command, Child, Stdio};
 
 use tokio::net::{TcpListener, TcpSocket};
 
-use crate::event_listener;
+
 use crate::riverdb::config;
 use crate::riverdb::pg::PostgresCluster;
 
@@ -19,7 +19,7 @@ pub static LISTEN_PORT: AtomicU16 = AtomicU16::new(10101);
 
 pub fn listener() -> TcpListener {
     let mut port: u16 = 0;
-    for i in 0..10 {
+    for _i in 0..10 {
         port = LISTEN_PORT.fetch_add(1, Relaxed);
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
         let sock = TcpSocket::new_v4().unwrap();

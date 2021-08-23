@@ -101,7 +101,7 @@ fn main() {
 
         // Wait for all listener tasks to shutdown
         for handle in handles.drain(..) {
-            handle.await;
+            handle.await.expect("join failed");
         }
     });
 

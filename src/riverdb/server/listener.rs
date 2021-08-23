@@ -1,10 +1,10 @@
 use std::io;
 #[cfg(unix)]
 use std::os::unix::io::AsRawFd;
-use std::future::Future;
+
 
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tracing::{debug, error, info_span};
+use tracing::{debug, error};
 
 use crate::riverdb::{Error, Result};
 use crate::riverdb::config::LISTEN_BACKLOG;

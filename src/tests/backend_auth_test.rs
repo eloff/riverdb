@@ -4,7 +4,7 @@ use test_env_log::test;
 use tokio;
 
 use crate::tests::common;
-use crate::riverdb::config;
+
 use crate::riverdb::pg::{PostgresCluster, BackendConn, BackendState};
 
 #[test(tokio::test)]

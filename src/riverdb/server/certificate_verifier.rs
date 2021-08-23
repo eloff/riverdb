@@ -12,17 +12,17 @@ impl DangerousCertificateNonverifier {
 }
 
 impl ServerCertVerifier for DangerousCertificateNonverifier {
-    fn verify_server_cert(&self, end_entity: &Certificate, intermediates: &[Certificate], server_name: &ServerName, scts: &mut dyn Iterator<Item=&[u8]>, ocsp_response: &[u8], now: SystemTime) -> Result<ServerCertVerified, Error> {
+    fn verify_server_cert(&self, _end_entity: &Certificate, _intermediates: &[Certificate], _server_name: &ServerName, _scts: &mut dyn Iterator<Item=&[u8]>, _ocsp_response: &[u8], _now: SystemTime) -> Result<ServerCertVerified, Error> {
         Ok(ServerCertVerified::assertion())
     }
 }
 
 impl ClientCertVerifier for DangerousCertificateNonverifier {
-    fn client_auth_root_subjects(&self, sni: Option<&DnsName>) -> Option<DistinguishedNames> {
+    fn client_auth_root_subjects(&self, _sni: Option<&DnsName>) -> Option<DistinguishedNames> {
         None
     }
 
-    fn verify_client_cert(&self, end_entity: &Certificate, intermediates: &[Certificate], sni: Option<&DnsName>, now: SystemTime) -> Result<ClientCertVerified, Error> {
+    fn verify_client_cert(&self, _end_entity: &Certificate, _intermediates: &[Certificate], _sni: Option<&DnsName>, _now: SystemTime) -> Result<ClientCertVerified, Error> {
         Ok(ClientCertVerified::assertion())
     }
 }

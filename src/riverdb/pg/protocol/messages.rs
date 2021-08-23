@@ -1,11 +1,11 @@
 use std::fmt;
 use std::fmt::{Display, Formatter, Debug, Write};
-use std::mem::ManuallyDrop;
+
 
 use bytes::{Bytes, Buf};
 use tracing::{error};
 
-use crate::riverdb::Result;
+
 use crate::riverdb::pg::protocol::{Tag, Message, MessageReader, MessageErrorBuilder, ErrorSeverity};
 use crate::riverdb::pg::protocol::message_parser::{Header, MIN_MESSAGE_LEN};
 use crate::riverdb::common::unsplit_bytes;
@@ -23,7 +23,7 @@ impl Messages {
 
     /// Return a new Message of type Tag::ERROR_RESPONSE with the given error code and error message
     pub fn new_error(error_code: &str, error_msg: &str) -> Self {
-        let mut mb = MessageErrorBuilder::new(
+        let mb = MessageErrorBuilder::new(
             ErrorSeverity::Fatal,
             error_code,
             &error_msg
@@ -33,7 +33,7 @@ impl Messages {
 
     /// Return a new Message of type Tag::NOTICE_RESPONSE with the given error code and error message
     pub fn new_warning(error_code: &str, error_msg: &str) -> Self {
-        let mut mb = MessageErrorBuilder::new(
+        let mb = MessageErrorBuilder::new(
             ErrorSeverity::Warning,
             error_code,
             &error_msg

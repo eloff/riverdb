@@ -1,6 +1,6 @@
 use std::fmt;
 use std::fmt::{Display, Formatter};
-use std::mem::transmute;
+
 
 use strum::{EnumString};
 
@@ -72,7 +72,7 @@ impl ErrorFieldTag {
     pub const ROUTINE: ErrorFieldTag = ErrorFieldTag::new_unchecked('R' as u8);
 
     pub fn new(b: u8) -> Result<Self> {
-        let tag = unsafe { Self::new_unchecked(b) };
+        let tag = Self::new_unchecked(b);
         tag.check().and(Ok(tag))
     }
 

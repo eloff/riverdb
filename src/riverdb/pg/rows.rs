@@ -1,12 +1,12 @@
-use std::sync::Arc;
+
 use std::convert::TryInto;
 
 use tracing::{warn};
 use tokio::sync::Notify;
 
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::{BackendConn, MessageQueue};
-use crate::riverdb::pg::protocol::{Message, Messages, MessageReader, Tag, RowDescription, PostgresError};
+use crate::riverdb::pg::{MessageQueue};
+use crate::riverdb::pg::protocol::{Message, Messages, Tag, RowDescription, PostgresError};
 use crate::riverdb::common::change_lifetime;
 
 

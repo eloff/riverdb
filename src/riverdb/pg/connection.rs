@@ -1,12 +1,12 @@
-use std::sync::atomic::{AtomicU32, AtomicPtr, AtomicBool};
-use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::cell::UnsafeCell;
-use std::mem::MaybeUninit;
-use std::collections::VecDeque;
-use std::io::IoSlice;
 
-use tokio::net::TcpStream;
+
+use std::sync::{Mutex, MutexGuard};
+
+
+use std::collections::VecDeque;
+
+
+
 use tokio::io::{Interest, Ready};
 use bytes::{Bytes, BytesMut, BufMut, Buf};
 
@@ -14,7 +14,7 @@ use crate::riverdb::server;
 use crate::riverdb::server::Transport;
 use crate::riverdb::{Error, Result};
 use crate::riverdb::common::{bytes_to_slice_mut, unsplit_bytes, bytes_are_contiguous};
-use crate::riverdb::pg::{BackendConn, ClientConn, ConnectionPool};
+
 use crate::riverdb::pg::protocol::Tag;
 
 
@@ -37,7 +37,6 @@ pub trait Connection: server::Connection {
     /// (without copying) to send later. Takes ownership of buf in all cases.
     /// Returns the number of bytes actually written (not buffered.)
     fn write_or_buffer(&self, mut buf: Bytes) -> Result<usize> {
-        const MAX_BACKLOG_ENTRIES_BEFORE_WRITE: usize = 7;
         // We always have to acquire the mutex, even if the backlog appears empty, otherwise
         // we can't be certain another thread won't try to write the backlog and overlap write()
         // calls with us here. Essentially the backlog mutex must always be held when writing
@@ -83,7 +82,7 @@ pub trait Connection: server::Connection {
             return Ok(0);
         }
 
-        let mut backlog = self.backlog().lock().map_err(Error::from)?;
+        let backlog = self.backlog().lock().map_err(Error::from)?;
         self.write_backlog(backlog)
     }
 
@@ -119,7 +118,7 @@ pub trait Connection: server::Connection {
         let mut read_bytes = 0;
         let start = buf.len();
         // Safety: safe because we don't attempt to read from any possibly uninitialized bytes
-        let capacity = buf.capacity();
+        let _capacity = buf.capacity();
         let bytes = unsafe { bytes_to_slice_mut(buf) };
         let mut n = self.transport().try_read(&mut bytes[start..])?;
         read_bytes += n;
@@ -152,7 +151,7 @@ pub(crate) async fn read_and_flush_backlog<R: Connection, W: Connection>(
     }
 
     // Check if we need to write data to maybe_send_transport
-    let mut interest = Interest::READABLE;
+    let interest = Interest::READABLE;
     let flush = sender.is_some() && sender.unwrap().has_backlog();
     if flush {
         interest.add(Interest::WRITABLE);

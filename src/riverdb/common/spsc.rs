@@ -1,7 +1,7 @@
 use std::cell::UnsafeCell;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
-use std::pin::Pin;
+
 use std::mem::MaybeUninit;
 
 use tokio::sync::Notify;
@@ -33,8 +33,8 @@ impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
 
     /// Check if queue is empty. May have changed by the time you access the result.
     pub fn is_empty(&self) -> bool {
-        let mut cpos = self.consumer.load(Relaxed);
-        let mut ppos = self.producer.load(Acquire);
+        let cpos = self.consumer.load(Relaxed);
+        let ppos = self.producer.load(Acquire);
         cpos >= ppos
     }
 
@@ -45,8 +45,8 @@ impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
     /// unless you know for certain that the consumer will not pop it from the queue.
     pub async fn put(&self, value: T) -> &T {
         loop {
-            let mut ppos = self.producer.load(Acquire);
-            let mut cpos = self.consumer.load(Relaxed);
+            let ppos = self.producer.load(Acquire);
+            let cpos = self.consumer.load(Relaxed);
             if ppos >= cpos + SIZE {
                 // Queue is full
                 self.notify_producer.notified().await;
@@ -67,8 +67,8 @@ impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
     /// Remove and return a value from the queue, waiting if queue is empty.
     pub async fn pop(&self) -> T {
         loop {
-            let mut cpos = self.consumer.load(Relaxed);
-            let mut ppos = self.producer.load(Acquire);
+            let cpos = self.consumer.load(Relaxed);
+            let ppos = self.producer.load(Acquire);
             if cpos >= ppos {
                 // Queue is empty
                 self.notify_consumer.notified().await;
@@ -89,8 +89,8 @@ impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
 
     /// Get a reference to the item at the front of the queue without removing it, or None.
     pub fn peek(&self) -> Option<&T> {
-        let mut cpos = self.consumer.load(Relaxed);
-        let mut ppos = self.producer.load(Acquire);
+        let cpos = self.consumer.load(Relaxed);
+        let ppos = self.producer.load(Acquire);
         if cpos >= ppos {
             return None;
         }

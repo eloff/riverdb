@@ -1,7 +1,7 @@
 use std::fmt::{Write, Debug, Formatter};
-use std::mem::{ManuallyDrop, transmute_copy};
 
-use bytes::{BytesMut, BufMut, Bytes, Buf};
+
+use bytes::{Buf};
 
 use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::protocol::{MessageReader, Message, Tag};
@@ -20,8 +20,8 @@ impl ServerParams {
     pub fn from_startup_message(msg: &Message<'_>) -> Result<Self> {
         assert_eq!(msg.tag(), Tag::UNTAGGED);
         let r = msg.reader();
-        r.seek(r.tell() + 4); // skip the version number
-        let mut start = msg.body_start() + 4;
+        r.seek(r.tell() + 4)?; // skip the version number
+        let start = msg.body_start() + 4;
         let r = MessageReader::new_at(&msg, start as u32);
 
         let mut result = Self::new();
@@ -103,7 +103,7 @@ impl Debug for ServerParams {
         let mut first = true;
         for (key, val) in self.iter() {
             if !first {
-                f.write_str(", ");
+                f.write_str(", ")?;
             } else {
                 first = false;
             }

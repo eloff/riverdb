@@ -1,6 +1,6 @@
 use std::cell::UnsafeCell;
 use std::sync::Arc;
-use std::sync::atomic::{Ordering, AtomicUsize};
+use std::sync::atomic::{AtomicUsize};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
 use std::mem::{transmute};
 
@@ -42,15 +42,14 @@ impl<T> AtomicArc<T> {
     #[inline]
     pub fn store(&self, value: Option<Arc<T>>) {
         atomic! { Option<Arc<T>>, a: &AtomicUsize = &self.0, unsafe {
-            let existing: Option<Arc<T>> = transmute(a.load(Acquire)); // drop the existing value
+            let _existing: Option<Arc<T>> = transmute(a.load(Acquire)); // drop the existing value
             a.store(transmute(value), Release);
         }};
     }
 
     #[inline]
     pub fn swap(&self, value: Option<Arc<T>>) -> Option<Arc<T>> {
-        atomic! { Option<Arc<T>>, a: &AtomicUsize = &self.0, unsafe { return transmute(a.swap(transmute(value), AcqRel)) } };
-        unreachable!();
+        atomic! { Option<Arc<T>>, a: &AtomicUsize = &self.0, unsafe { transmute(a.swap(transmute(value), AcqRel)) } }
     }
 
     #[inline]

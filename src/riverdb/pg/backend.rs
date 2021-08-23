@@ -1,15 +1,15 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{fence, AtomicU32, AtomicBool, AtomicPtr, AtomicI32, AtomicU8, AtomicU64};
-use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
+use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::net::SocketAddr;
-use std::pin::Pin;
+
 
 use chrono::{Local, DateTime};
 use tokio::net::TcpStream;
 use tokio::io::Interest;
-use tokio::sync::mpsc::{channel, Sender};
+
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn, instrument};
 use bytes::Bytes;
@@ -18,14 +18,14 @@ use futures::try_join;
 use crate::{define_event, query};
 use crate::riverdb::{config, Error, Result};
 use crate::riverdb::config::TlsMode;
-use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool, IsolationLevel, Rows};
+use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool, Rows};
 use crate::riverdb::server::{Transport, Connection as ServerConnection};
 use crate::riverdb::server;
-use crate::riverdb::pg::connection::{Backlog, read_and_flush_backlog};
+use crate::riverdb::pg::connection::{Backlog};
 use crate::riverdb::pg::backend_state::BackendState;
-use crate::riverdb::common::{SpscQueue, AtomicCell, AtomicArc, AtomicRef, coarse_monotonic_now, change_lifetime};
+use crate::riverdb::common::{SpscQueue, AtomicArc, AtomicRef, coarse_monotonic_now, change_lifetime};
 use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, Messages, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError, hash_md5_password};
-use crate::riverdb::config::conf;
+
 use crate::riverdb::pg::message_stream::MessageStream;
 
 const MAX_PENDING_REQUESTS: u32 = 32;
@@ -53,6 +53,7 @@ pub struct BackendConn {
     server_params: Mutex<ServerParams>,
     pid: AtomicI32,
     secret: AtomicI32,
+    #[allow(unused)]
     created_at: DateTime<Local>,
 }
 
@@ -390,7 +391,7 @@ impl BackendConn {
         mb.write_params(params);
         mb.write_byte(0); // null-terminator at end of startup packet
 
-        self.state.transition(self, BackendState::Authentication);
+        self.state.transition(self, BackendState::Authentication)?;
 
         self.send(mb.finish()).await?;
         Ok(())
@@ -472,7 +473,7 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, client: Option<&ClientConn>, mut msgs: Messages) -> Result<()> {
+    pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, client: Option<&ClientConn>, msgs: Messages) -> Result<()> {
         assert_eq!(msgs.count(), 1);
 
         let msg = msgs.first().unwrap(); // see assert above

@@ -1,7 +1,7 @@
 use std::io;
 use std::io::{Read, Write};
 #[cfg(unix)]
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::marker::PhantomData;
 
 use tokio::net::TcpStream;
@@ -47,7 +47,7 @@ impl TransportStream {
         convert_io_result(match self {
             TransportStream::TcpStream(s) => s.try_read(buf),
             #[cfg(unix)]
-            TransportStream::UnixSocket(s) => unimplemented!(),
+            TransportStream::UnixSocket(_s) => unimplemented!(),
         })
     }
 
@@ -55,7 +55,7 @@ impl TransportStream {
         convert_io_result(match self {
             TransportStream::TcpStream(s) => s.try_write(buf),
             #[cfg(unix)]
-            TransportStream::UnixSocket(s) => unimplemented!(),
+            TransportStream::UnixSocket(_s) => unimplemented!(),
         })
     }
 
@@ -125,7 +125,7 @@ impl<'a> StreamReaderWriter<'a> {
 impl<'a> Drop for StreamReaderWriter<'a> {
     /// drop here just moves the underlying socket out so dropping it does not close it
     fn drop(&mut self) {
-        std::mem::ManuallyDrop::new(std::mem::take(&mut self.stream));
+        std::mem::forget(std::mem::take(&mut self.stream));
     }
 }
 

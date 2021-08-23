@@ -1,6 +1,6 @@
-use std::sync::atomic::{AtomicI32, AtomicPtr};
-use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
-use std::ops::Deref;
+use std::sync::atomic::{AtomicI32};
+use std::sync::atomic::Ordering::{Relaxed};
+
 use std::sync::{Mutex, Arc};
 use std::fmt::{Debug, Formatter};
 
@@ -10,10 +10,10 @@ use tracing::{warn};
 use crate::riverdb::{Result};
 use crate::riverdb::server::{Connections, ConnectionRef, Connection};
 use crate::riverdb::pg::{BackendConn, IsolationLevel, TransactionType};
-use crate::riverdb::config;
-use crate::riverdb::config::{Postgres, conf};
-use crate::riverdb::common::{coarse_monotonic_now, Version, AtomicCell, change_lifetime};
-use crate::riverdb::pg::protocol::ServerParams;
+
+use crate::riverdb::config::{Postgres};
+use crate::riverdb::common::{Version, AtomicCell, change_lifetime};
+
 
 
 
@@ -36,6 +36,7 @@ pub struct ConnectionPool {
     active_transactions: AtomicI32,
     max_transactions: i32,
     default_isolation_level: AtomicCell<IsolationLevel>,
+    #[allow(unused)]
     server_version: AtomicCell<Version>,
     pooled_connections: Mutex<Vec<Arc<BackendConn>>>,
 }
@@ -109,11 +110,14 @@ impl ConnectionPool {
             // See: https://github.com/rust-lang/rust/issues/87632
             let static_self: &'static Self = unsafe { change_lifetime(self) };
             tokio::spawn(async move {
-                conn_ref.run(static_self).await;
+                if let Err(e) = conn_ref.run(static_self).await {
+                    static_self.connections.increment_errors();
+                    warn!(?e, "connection run failed");
+                }
                 static_self.remove(ConnectionRef::arc_ref(&conn_ref));
             });
 
-            let mut isolation = self.default_isolation_level.load();
+            let isolation = self.default_isolation_level.load();
             if let IsolationLevel::None = isolation {
                 // TODO Check the isolation level and record it
             }

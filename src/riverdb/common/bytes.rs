@@ -1,4 +1,4 @@
-use bytes::{BytesMut, BufMut, Bytes};
+use bytes::{BytesMut, Bytes};
 
 /// Returns buf as a &mut [u8] up to the capacity.
 /// Safety: this is unsafe because the bytes from [len, capacity) may be uninitialized.
@@ -30,7 +30,7 @@ pub unsafe fn unsplit_bytes(mut b1: Bytes, b2: Bytes) -> (Option<Bytes>, Option<
         // and if they're not, we simply treat them as if they cannot be merged.
         let p = b1.as_ptr();
         let len = b1.len();
-        let bytes_ref = unsafe { &mut *(&mut b1 as *mut Bytes as *mut BytesAlike) };
+        let bytes_ref = &mut *(&mut b1 as *mut Bytes as *mut BytesAlike);
         if bytes_ref.data == p && bytes_ref.len == len {
             bytes_ref.len += b2.len();
             return (Some(b1), None);

@@ -1,16 +1,16 @@
 use std::io;
 use std::io::{Read, Write};
-use std::pin::Pin;
+
 use std::sync::{Mutex, Arc};
 use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::sync::atomic::Ordering::{Relaxed, Release};
+use std::sync::atomic::Ordering::{Relaxed};
 use std::convert::TryFrom;
 
 use tokio::net::{TcpStream};
 #[cfg(unix)]
 use tokio::net::{UnixStream};
 use tokio::io::{Interest, Ready};
-use tracing::{warn, info, debug};
+use tracing::{warn, debug};
 use rustls::{ClientConfig, ServerConfig, ClientConnection, ServerConnection, Connection, ServerName};
 
 use crate::riverdb::{Error, Result};
@@ -35,7 +35,7 @@ impl Transport
     pub fn new(stream: TcpStream) -> Self {
         Transport{
             stream: TransportStream::new_tcp(stream),
-            tls: Mutex::new(Default::default()),
+            tls: Mutex::new(TransportTls::new()),
             want_read: Default::default(),
             want_write: Default::default(),
             is_closing: Default::default(),
@@ -163,7 +163,7 @@ impl Transport
     fn tls_write(&self, buf: &[u8]) -> Result<usize> {
         let mut session = self.tls.lock().map_err(Error::from)?;
         if session.wants_write() {
-            let n = match session.write_tls(&mut StreamReaderWriter::new(&self.stream)) {
+            let _n = match session.write_tls(&mut StreamReaderWriter::new(&self.stream)) {
                 Err(e) => {
                     if e.kind() == io::ErrorKind::WouldBlock {
                         return Ok(0);
@@ -207,7 +207,7 @@ impl Transport
         }
     }
 
-    pub async fn upgrade_client(&self, config: Arc<ClientConfig>, mode: TlsMode, hostname: &str) -> Result<()> {
+    pub async fn upgrade_client(&self, config: Arc<ClientConfig>, _mode: TlsMode, _hostname: &str) -> Result<()> {
         #[cfg(unix)]
         if self.stream.is_unix() {
             panic!("cannot use tls over a unix socket");
@@ -221,7 +221,7 @@ impl Transport
         Ok(())
     }
 
-    pub async fn upgrade_server(&self, config: Arc<ServerConfig>, mode: TlsMode) -> Result<()> {
+    pub async fn upgrade_server(&self, config: Arc<ServerConfig>, _mode: TlsMode) -> Result<()> {
         #[cfg(unix)]
         if self.stream.is_unix() {
             panic!("cannot use tls over a unix socket");

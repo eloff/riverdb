@@ -1,9 +1,9 @@
-use bytes::{BytesMut, Buf, BufMut};
+use bytes::{BytesMut, BufMut};
 
 use crate::riverdb::pg::protocol::{Tag, Messages, ServerParams};
 use crate::riverdb::pg::protocol::message_parser::MIN_MESSAGE_LEN;
 use crate::riverdb::common::bytes_to_slice_mut;
-use std::convert::TryInto;
+
 
 pub struct MessageBuilder {
     data: BytesMut,

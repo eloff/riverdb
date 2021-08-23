@@ -17,7 +17,7 @@ pub fn load_config() -> Result<&'static config::Settings> {
 
     let config = unsafe { &mut *config::SETTINGS.as_mut_ptr() };
     *config = serde_yaml::from_str(&yaml_text)?;
-    config.load(config_path);
+    config.load(config_path)?;
     Ok(&*config)
 }
 

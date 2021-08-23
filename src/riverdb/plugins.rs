@@ -1,8 +1,8 @@
-use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering::{Acquire, SeqCst};
 
-use crate::riverdb::Result;
-use crate::riverdb::config::{ConfigMap, conf};
+
+
+
+
 
 pub trait Plugin: Sized {
     fn new() -> &'static Self;
@@ -27,10 +27,6 @@ pub unsafe fn configure() {
 #[macro_export]
 macro_rules! define_event {
     ($(#[$meta:meta])* $name:ident, ($event_src:ident: &$l:lifetime $src_ty:ty $(,$arg:ident: $arg_ty:ty)*) -> $result:ty) => {
-        define_event!($(#[$meta])* $name, $event_src, $l, $src_ty, $result, $($arg: $arg_ty),*);
-    };
-
-    ($(#[$meta:meta])* $name:ident, $event_src:ident, $l:lifetime, $src_ty:ty, $result:ty, $($arg:ident: $arg_ty:ty),*) => {
         $(#[$meta])*
         pub mod $name {
             pub use super::*;
@@ -218,7 +214,7 @@ mod tests {
     use std::sync::Mutex;
 
     use super::{Plugin, configure};
-    use crate::riverdb::config::ConfigMap;
+    
     use crate::riverdb::Result;
 
     pub struct RecordMonitor(Mutex<RecordMonitorState>);
@@ -229,7 +225,7 @@ mod tests {
     }
 
     impl RecordMonitor {
-        async fn record_changed(&self, ev: &mut record_changed::Event, payload: &str) -> Result<String> {
+        async fn record_changed(&self, _ev: &mut record_changed::Event, payload: &str) -> Result<String> {
             Ok(payload.to_lowercase() + &self.0.lock().unwrap().greeting)
         }
     }

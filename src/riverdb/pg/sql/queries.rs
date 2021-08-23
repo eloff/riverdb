@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Formatter};
 
-use crate::riverdb::pg::protocol::{Tag, Messages, MessageReader};
+use crate::riverdb::pg::protocol::{Tag, Messages};
 use crate::riverdb::pg::sql::QueryType;
 
 pub struct Query {

@@ -85,7 +85,7 @@ impl From<net::AddrParseError> for Error {
 }
 
 impl From<strum::ParseError> for Error {
-    fn from(e: strum::ParseError) -> Self {
+    fn from(_e: strum::ParseError) -> Self {
         Error(Box::new(ErrorKind::StrumParseError))
     }
 }

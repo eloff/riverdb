@@ -1,12 +1,12 @@
-use std::pin::Pin;
-use std::ops::{Deref, DerefMut};
+
+use std::ops::{Deref};
 use std::sync::atomic::Ordering::{Relaxed, AcqRel, Acquire, Release};
-use std::sync::atomic::{AtomicPtr, AtomicI64, AtomicI32, AtomicUsize};
-use std::sync::{Mutex, Weak, Arc};
+use std::sync::atomic::{AtomicPtr, AtomicI64};
+use std::sync::{Mutex, Arc};
 
 use tokio::net::TcpStream;
 use tokio::time::{interval, Duration};
-use tracing::{warn, info, info_span};
+use tracing::{warn, info_span};
 
 use crate::riverdb::worker::Worker;
 use crate::riverdb::common::coarse_monotonic_now;
@@ -86,7 +86,7 @@ impl<C: 'static + Connection> Connections<C> {
             return None;
         }
 
-        let mut conn = Arc::new(C::new(stream));
+        let conn = Arc::new(C::new(stream));
         // Storing a raw pointer is fine, the object is removed from this collection before the Arc is dropped
         // See ConnectionRef::drop for where we do that.
         let conn_ptr = conn.as_ref() as *const C as *mut C;
@@ -180,6 +180,10 @@ impl<C: 'static + Connection> Connections<C> {
             interval.tick().await;
             self.do_timeouts();
         }
+    }
+
+    pub fn increment_errors(&self) {
+        self.errors.fetch_add(1, Relaxed);
     }
 }
 

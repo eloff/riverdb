@@ -10,7 +10,7 @@ pub enum TransportTls {
 }
 
 impl TransportTls {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self::NoTls
     }
 

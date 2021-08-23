@@ -1,19 +1,19 @@
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicPtr, fence};
-use std::sync::atomic::Ordering::{Relaxed, Acquire, Release, AcqRel};
+use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
 use std::fmt::{Debug, Formatter};
 use std::sync::{Arc, Mutex};
 use std::collections::VecDeque;
 
 use bytes::Bytes;
-use fnv::FnvHashMap;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, Interest};
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, instrument};
-use rustls::{ClientConnection};
+
 
 use crate::define_event;
-use crate::riverdb::{Error, Result, common};
+use crate::riverdb::{Error, Result};
 use crate::riverdb::worker::{Worker};
 use crate::riverdb::pg::protocol::{
     Messages, MessageReader, MessageParser, ServerParams, Tag, PostgresError,
@@ -24,8 +24,8 @@ use crate::riverdb::pg::{ClientConnState, BackendConn, Connection, TransactionTy
 use crate::riverdb::server::Transport;
 use crate::riverdb::server;
 use crate::riverdb::pg::{PostgresCluster, ConnectionPool};
-use crate::riverdb::pg::connection::{read_and_flush_backlog, Backlog};
-use crate::riverdb::pg::backend_state::BackendState;
+use crate::riverdb::pg::connection::{Backlog};
+
 use crate::riverdb::pg::message_stream::MessageStream;
 use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::pg::sql::{Query, QueryType};
@@ -241,7 +241,7 @@ impl ClientConn {
         let protocol_version = r.read_i32();
         match protocol_version {
             PROTOCOL_VERSION => {
-                let mut params= ServerParams::from_startup_message(&msg)?;
+                let params= ServerParams::from_startup_message(&msg)?;
                 let cluster = client_connected::run(self, params).await?;
                 self.set_cluster(Some(cluster));
                 Ok(())
@@ -271,7 +271,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_query(&self, _: &mut client_query::Event, mut backend: Option<&BackendConn>, mut query: Query) -> Result<()> {
+    pub async fn client_query(&self, _: &mut client_query::Event, backend: Option<&BackendConn>, mut query: Query) -> Result<()> {
         let begins_tx = self.begins_transaction(&query)?;
 
         let state = self.state.get();
@@ -500,11 +500,9 @@ impl ClientConn {
                 client_authenticate::run(self, auth_type, msgs).await
             },
             ClientState::Ready | ClientState::Transaction | ClientState::FailedTransaction => {
-                self.forward(backend, msgs).await;
-                Ok(())
+                self.forward(backend, msgs).await
             },
             ClientState::Closed => {
-                panic!("closed");
                 Err(Error::closed())
             },
             _ => {
@@ -555,7 +553,7 @@ impl server::Connection for ClientConn {
     }
 
     fn close(&self) {
-        self.state.transition(self, ClientState::Closed);
+        self.state.transition(self, ClientState::Closed).unwrap(); // does not fail
         if let Some(backend) = self.backend.load() {
             backend.return_to_pool(self);
         }

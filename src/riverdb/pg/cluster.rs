@@ -3,7 +3,7 @@ use std::cell::UnsafeCell;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{AcqRel, Acquire};
-use std::net::SocketAddr;
+
 
 use fnv::FnvHashSet;
 use crypto::sha2::Sha256;
@@ -14,7 +14,7 @@ use crate::riverdb::config;
 use crate::riverdb::pg::{PostgresReplicationGroup, ConnectionPool, BackendConn};
 use crate::riverdb::pg::group::merge_server_params;
 use crate::riverdb::pg::protocol::ServerParams;
-use crate::riverdb::common::AtomicRef;
+
 
 /// A Cluster represents a collection of nodes which store all database partitions.
 /// Each node itself may be a replication group with a single master and multiple read-only replicas.

@@ -1,7 +1,7 @@
 use std::fmt::{Display, Write};
 use std::any::Any;
 
-use bytes::{BytesMut, Buf, BufMut};
+use bytes::{BytesMut, BufMut};
 
 
 pub fn check_formatting_placeholders_consumed(s: &str) {
@@ -96,7 +96,7 @@ macro_rules! query {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn test_escape() {

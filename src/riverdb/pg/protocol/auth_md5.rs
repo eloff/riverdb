@@ -1,4 +1,4 @@
-use std::fmt::Write;
+
 
 use crypto::md5::Md5;
 use crypto::digest::Digest;

@@ -2,7 +2,7 @@ use std::mem::{transmute_copy};
 use std::cell::UnsafeCell;
 
 use std::sync::atomic::Ordering::{Acquire, Release, AcqRel};
-use std::sync::Arc;
+
 
 macro_rules! atomic {
     // If values of type `$t` can be transmuted into values of the primitive atomic type `$atomic`,
