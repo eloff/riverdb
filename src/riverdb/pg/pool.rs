@@ -66,31 +66,12 @@ impl ConnectionPool {
             let conn = if let Some(conn) = pooled_conn {
                 conn
             } else {
-                if let Some(conn_ref) = self.connect().await? {
-                    // Clone the Arc<BackendConn> so we can return that.
-                    let conn = ConnectionRef::clone_arc(&conn_ref);
-                    // Spawn off conn_ref.run() to handle incoming messages from the database server
-                    // Which can happen asynchronously, and need to be handled (if only by dropping them)
-                    // even if the connection is idle in the pool.
-
-                    // Safety: self is 'static, but if we mark it as such the compiler barfs.
-                    // See: https://github.com/rust-lang/rust/issues/87632
-                    let static_self: &'static Self = unsafe { change_lifetime(self) };
-                    tokio::spawn(async move {
-                        conn_ref.run(static_self).await;
-                        static_self.remove(ConnectionRef::arc_ref(&conn_ref));
-                    });
-
-                    let mut isolation = self.default_isolation_level.load();
-                    if let IsolationLevel::None = isolation {
-                        // TODO Check the isolation level and record it
-                    }
-
-                    created = true;
-                    conn
-                } else {
+                let conn = self.new_connection().await?;
+                if conn.is_none() {
                     return Ok(None);
                 }
+                created = true;
+                conn.unwrap()
             };
 
             // Remember if it was created for a transaction so we can decrement active_transactions later
@@ -101,13 +82,7 @@ impl ConnectionPool {
             return if let Err(e) = conn.check_health_and_set_role(application_name, role).await {
                 // If this connection came from the pool, and failed the health check
                 // Record how long it was idle in the pool.
-                let mut idle_seconds = 0;
-                let now = coarse_monotonic_now();
-                let added_to_pool = conn.last_active();
-                if added_to_pool != 0 {
-                    idle_seconds = now - added_to_pool;
-                }
-                warn!(?e, idle_seconds, role, "connection failed health check / set role");
+                warn!(?e, idle_seconds=conn.idle_seconds(), role, "connection failed health check / set role");
 
                 if !created {
                     continue;
@@ -119,6 +94,33 @@ impl ConnectionPool {
             } else {
                 Ok(Some(conn))
             }
+        }
+    }
+
+    async fn new_connection(&self) -> Result<Option<Arc<BackendConn>>> {
+        if let Some(conn_ref) = self.connect().await? {
+            // Clone the Arc<BackendConn> so we can return that.
+            let conn = ConnectionRef::clone_arc(&conn_ref);
+            // Spawn off conn_ref.run() to handle incoming messages from the database server
+            // Which can happen asynchronously, and need to be handled (if only by dropping them)
+            // even if the connection is idle in the pool.
+
+            // Safety: self is 'static, but if we mark it as such the compiler barfs.
+            // See: https://github.com/rust-lang/rust/issues/87632
+            let static_self: &'static Self = unsafe { change_lifetime(self) };
+            tokio::spawn(async move {
+                conn_ref.run(static_self).await;
+                static_self.remove(ConnectionRef::arc_ref(&conn_ref));
+            });
+
+            let mut isolation = self.default_isolation_level.load();
+            if let IsolationLevel::None = isolation {
+                // TODO Check the isolation level and record it
+            }
+
+            Ok(Some(conn))
+        } else {
+            Ok(None)
         }
     }
 

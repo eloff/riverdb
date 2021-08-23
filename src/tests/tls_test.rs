@@ -70,6 +70,6 @@ async fn test_tls_server_handshake() -> Result<(), Box<dyn Error>> {
 
     t.upgrade_server(Arc::new(conf), TlsMode::DangerouslyUnverifiedCertificates).await?;
     assert!(!t.is_handshaking());
-    psql.kill().await?;
+    psql.kill()?;
     Ok(())
 }

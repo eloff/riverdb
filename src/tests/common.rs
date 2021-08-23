@@ -1,10 +1,9 @@
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering::{Relaxed, Release};
 use std::net::{SocketAddrV4, Ipv4Addr, SocketAddr, IpAddr};
-use std::process::Stdio;
+use std::process::{Command, Child, Stdio};
 
 use tokio::net::{TcpListener, TcpSocket};
-use tokio::process::{Command, Child};
 
 use crate::event_listener;
 use crate::riverdb::config;

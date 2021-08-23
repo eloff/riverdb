@@ -243,7 +243,7 @@ impl ClientConn {
             PROTOCOL_VERSION => {
                 let mut params= ServerParams::from_startup_message(&msg)?;
                 let cluster = client_connected::run(self, params).await?;
-                self.cluster.store(Some(cluster));
+                self.set_cluster(Some(cluster));
                 Ok(())
             },
             SSL_REQUEST => self.ssl_handshake().await,
@@ -485,7 +485,7 @@ impl ClientConn {
         let auth_type = client_auth_challenge::run(self, params).await?;
         self.auth_type.store(auth_type);
 
-        Ok(PostgresCluster::singleton())
+        Ok(self.cluster().unwrap_or_else(PostgresCluster::singleton))
     }
 
     #[instrument]

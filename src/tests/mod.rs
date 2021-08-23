@@ -13,3 +13,4 @@ mod common;
 mod tls_test;
 mod backend_auth_test;
 mod client_auth_test;
+mod proxy_queries_test;

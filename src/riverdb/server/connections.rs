@@ -17,6 +17,15 @@ pub trait Connection: std::fmt::Debug {
     fn id(&self) -> u32;
     fn set_id(&self, id: u32);
     fn last_active(&self) -> u32;
+    fn idle_seconds(&self) -> u32 {
+        let mut idle = 0;
+        let now = coarse_monotonic_now();
+        let added_to_pool = self.last_active();
+        if added_to_pool != 0 {
+            idle = now - added_to_pool;
+        }
+        idle
+    }
     /// close closes the underlying socket, unblocking any suspended async tasks awaiting socket readiness
     /// do not call this in ConnectionRef::drop, there's nothing blocked in that case, and dropping the socket closes it.
     fn close(&self);
