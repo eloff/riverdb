@@ -26,7 +26,10 @@ pub unsafe fn configure() {
 
 #[macro_export]
 macro_rules! define_event {
-    ($(#[$meta:meta])* $name:ident, ($event_src:ident: &$l:lifetime $src_ty:ty $(,$arg:ident: $arg_ty:ty)*) -> $result:ty) => {
+    (
+        $(#[$meta:meta])*
+        $name:ident, ($event_src:ident: &$l:lifetime $src_ty:ty $(,$arg:ident: $arg_ty:ty)*) -> $result:ty
+    ) => {
         $(#[$meta])*
         pub mod $name {
             pub use super::*;

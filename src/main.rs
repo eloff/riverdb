@@ -1,6 +1,5 @@
 #![cfg(feature = "main")]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
+#![allow(unused_doc_comments)]
 
 pub mod riverdb;
 
