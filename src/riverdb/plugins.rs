@@ -1,9 +1,3 @@
-
-
-
-
-
-
 pub trait Plugin: Sized {
     fn new() -> &'static Self;
 

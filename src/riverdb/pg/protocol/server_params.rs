@@ -1,11 +1,8 @@
 use std::fmt::{Write, Debug, Formatter};
-
-
-use bytes::{Buf};
+use std::slice::Iter;
 
 use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::protocol::{MessageReader, Message, Tag};
-use std::slice::Iter;
 
 
 pub struct ServerParams {

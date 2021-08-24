@@ -7,18 +7,17 @@ use std::collections::VecDeque;
 
 use bytes::Bytes;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{debug, error, info, instrument};
+use tracing::{error, instrument};
 
 
 use crate::define_event;
 use crate::riverdb::{Error, Result};
 use crate::riverdb::worker::{Worker};
 use crate::riverdb::pg::protocol::{
-    Messages, MessageReader, MessageParser, ServerParams, Tag, PostgresError,
-    PROTOCOL_VERSION, SSL_REQUEST, AuthType, MessageBuilder, MessageErrorBuilder,
-    error_codes, ErrorSeverity, SSL_ALLOWED, SSL_NOT_ALLOWED
+    Messages, ServerParams, Tag,
+    PROTOCOL_VERSION, SSL_REQUEST, AuthType, MessageBuilder,
+    error_codes, SSL_ALLOWED, SSL_NOT_ALLOWED
 };
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection, TransactionType};
 use crate::riverdb::server::Transport;

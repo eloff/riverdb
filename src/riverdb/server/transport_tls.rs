@@ -1,7 +1,8 @@
 use std::io;
 use std::result::Result;
 
-use rustls::{IoState, ClientConfig, ServerConfig, ClientConnection, ServerConnection, Connection, ServerName, Reader, Writer};
+use rustls::{IoState, ClientConnection, ServerConnection, Connection, Reader, Writer};
+
 
 pub enum TransportTls {
     NoTls,

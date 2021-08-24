@@ -2,11 +2,9 @@ use std::io::{BufReader, BufRead, Write};
 
 use test_env_log::test;
 
-
-
 use crate::tests::common;
-use crate::riverdb::{Error, Result, Plugin, config};
-use crate::riverdb::pg::{PostgresCluster, ClientConn, ClientState, client_authenticate};
+use crate::riverdb::{Error};
+use crate::riverdb::pg::{ClientConn, ClientState};
 
 use crate::riverdb::server::Connection;
 use crate::riverdb::worker::init_workers;

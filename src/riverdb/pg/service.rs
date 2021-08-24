@@ -1,10 +1,10 @@
 #[cfg(unix)]
 
 
-use tokio::net::TcpStream;
+
 use tracing::{info, warn};
 
-use crate::riverdb::Result;
+
 use crate::riverdb::worker::Worker;
 use crate::riverdb::server::{Connections, Listener};
 use crate::riverdb::pg::ClientConn;

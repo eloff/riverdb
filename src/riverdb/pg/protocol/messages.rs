@@ -6,7 +6,7 @@ use bytes::{Bytes, Buf};
 use tracing::{error};
 
 
-use crate::riverdb::pg::protocol::{Tag, Message, MessageReader, MessageErrorBuilder, ErrorSeverity};
+use crate::riverdb::pg::protocol::{Message, MessageErrorBuilder, ErrorSeverity};
 use crate::riverdb::pg::protocol::message_parser::{Header, MIN_MESSAGE_LEN};
 use crate::riverdb::common::unsplit_bytes;
 

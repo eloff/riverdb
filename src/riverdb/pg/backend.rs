@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::sync::atomic::{fence, AtomicU32, AtomicBool, AtomicPtr, AtomicI32, AtomicU8, AtomicU64};
+use std::sync::atomic::{AtomicU32, AtomicBool, AtomicI32, AtomicU64};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
@@ -11,7 +11,7 @@ use tokio::net::TcpStream;
 use tokio::io::Interest;
 
 use tokio::sync::Notify;
-use tracing::{debug, error, info, warn, instrument};
+use tracing::{error, warn, instrument};
 use bytes::Bytes;
 use futures::try_join;
 
@@ -24,7 +24,10 @@ use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog};
 use crate::riverdb::pg::backend_state::BackendState;
 use crate::riverdb::common::{SpscQueue, AtomicArc, AtomicRef, coarse_monotonic_now, change_lifetime};
-use crate::riverdb::pg::protocol::{ServerParams, MessageParser, Message, Messages, MessageBuilder, Tag, SSL_REQUEST, SSL_ALLOWED, PROTOCOL_VERSION, MessageReader, AuthType, PostgresError, hash_md5_password};
+use crate::riverdb::pg::protocol::{
+    ServerParams, Messages, MessageBuilder, Tag, SSL_ALLOWED, PROTOCOL_VERSION,
+    AuthType, PostgresError, hash_md5_password
+};
 
 use crate::riverdb::pg::message_stream::MessageStream;
 

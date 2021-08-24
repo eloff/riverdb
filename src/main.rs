@@ -3,15 +3,12 @@
 
 pub mod riverdb;
 
-use std::thread;
-
-use tokio::net::TcpListener;
 use tokio::runtime::Builder;
 use tracing_subscriber::FmtSubscriber;
-use tracing::{info, info_span, Level};
+use tracing::{info_span, Level};
 
 use crate::riverdb::worker::Worker;
-use crate::riverdb::config::{conf, load_config};
+use crate::riverdb::config::{load_config};
 use crate::riverdb::pg::PostgresService;
 use crate::riverdb::worker::init_workers;
 use crate::riverdb::common::coarse_monotonic_clock_updater;
@@ -68,7 +65,7 @@ fn main() {
         // in accept. The downside is it won't error if you assign a port that is in use.
         // (hopefully these end up distributed nicely across tokio worker threads,
         // but I don't see a way to control that.)
-        let num_listeners = if conf.reuseport { conf.num_workers } else { 1 };
+        let _num_listeners = if conf.reuseport { conf.num_workers } else { 1 };
 
         // Postgres service
         if conf.postgres.port != 0 {

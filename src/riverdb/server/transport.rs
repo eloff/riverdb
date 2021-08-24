@@ -11,7 +11,7 @@ use tokio::net::{TcpStream};
 use tokio::net::{UnixStream};
 use tokio::io::{Interest, Ready};
 use tracing::{warn, debug};
-use rustls::{ClientConfig, ServerConfig, ClientConnection, ServerConnection, Connection, ServerName};
+use rustls::{ClientConfig, ServerConfig, ClientConnection, ServerConnection, ServerName};
 
 use crate::riverdb::{Error, Result};
 use crate::riverdb::config::{TlsMode};
