@@ -91,21 +91,21 @@ pub fn psql(connection_str: &str, mut password: &str) -> Child {
 
 #[macro_export]
 macro_rules! register_scoped {
-    ($plugin:expr, $plugin_ty:ident : $plugin_module:ident<$l:lifetime>($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
+    ($plugin:expr, $scope_name:ident, $plugin_ty:ident : $plugin_module:ident<$l:lifetime>($($arg:ident: $arg_ty:ty),*) -> $result:ty) => {
         crate::event_listener!($plugin, $plugin_ty:$plugin_module<$l>($($arg: $arg_ty),*) -> $result);
 
         unsafe {
             $plugin_module::configure();
         }
 
-        struct PluginUninstall {}
+        struct $scope_name {}
 
-        impl Drop for PluginUninstall {
+        impl Drop for $scope_name {
            fn drop(&mut self) {
                 unsafe { $plugin_module::clear() }
            }
         }
 
-        let _cleanup = PluginUninstall{};
+        let _cleanup = $scope_name{};
     };
 }

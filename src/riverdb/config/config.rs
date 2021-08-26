@@ -83,21 +83,20 @@ thread_local! {
 }
 
 pub fn conf() -> &'static Settings {
+    #[cfg(test)]
     unsafe {
-        #[cfg(test)]
-        {
-            return &*test_config_mut();
-        }
+        &*test_config_mut()
+    }
+    #[cfg(not(test))]
+    unsafe {
         &*SETTINGS.as_ptr()
     }
 }
 
 #[cfg(test)]
-pub fn test_config_mut() -> &'static mut Settings {
+pub unsafe fn test_config_mut() -> &'static mut Settings {
     TEST_SETTINGS.with(|settings| {
-        let result = unsafe {
-            &mut *settings.get()
-        };
+        let result = &mut *settings.get();
         if result.recv_buffer_size == 0 {
             result.load(PathBuf::new()).expect("error initializing test settings");
         }

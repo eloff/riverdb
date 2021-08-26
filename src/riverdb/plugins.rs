@@ -1,6 +1,4 @@
 pub trait Plugin: Sized {
-    fn new() -> &'static Self;
-
     fn order(&self) -> i32 { 0 }
 }
 
@@ -236,6 +234,10 @@ mod tests {
     }
 
     impl Listener2 {
+        pub fn new() -> &'static Self {
+            Box::leak(Box::new(Self{foo: 0, bar: 5}))
+        }
+
         pub async fn record_changed(&self, ev: &mut record_changed::Event, monitor: &RecordMonitor, payload: &str) -> Result<String> {
             monitor.0.lock().unwrap().state += self.bar;
             let s = "-2b-".to_string() + &ev.next(monitor, payload).await? + "-2a-";
@@ -245,10 +247,6 @@ mod tests {
     }
 
     impl Plugin for Listener2 {
-        fn new() -> &'static Self {
-            Box::leak(Box::new(Self{foo: 0, bar: 5}))
-        }
-
         fn order(&self) -> i32 {
             2
         }
@@ -260,6 +258,10 @@ mod tests {
     }
 
     impl Listener {
+        pub fn new() -> &'static Self {
+            Box::leak(Box::new(Self{foo: 3, bar: -1}))
+        }
+
         pub async fn record_changed(&self, ev: &mut record_changed::Event, monitor: &RecordMonitor, payload: &str) -> Result<String> {
             monitor.0.lock().unwrap().state += self.foo;
             let s = "-1b-".to_string() + &ev.next(monitor, payload).await? + "-1a-";
@@ -269,10 +271,6 @@ mod tests {
     }
 
     impl Plugin for Listener {
-        fn new() -> &'static Self {
-            Box::leak(Box::new(Self{foo: 3, bar: -1}))
-        }
-
         fn order(&self) -> i32 {
             1
         }

@@ -19,6 +19,13 @@ struct AuthPlugin {
 }
 
 impl AuthPlugin {
+    pub  fn new() -> &'static Self {
+        Box::leak(Box::new(Self{
+            cluster: common::cluster(),
+            passed: AtomicBool::new(false),
+        }))
+    }
+
     pub async fn client_authenticate(&self, ev: &mut client_authenticate::Event, client: &ClientConn, auth_type: AuthType, msgs: Messages) -> Result<()> {
         assert_eq!(client.state(), ClientState::Authentication);
 
@@ -35,14 +42,7 @@ impl AuthPlugin {
     }
 }
 
-impl Plugin for AuthPlugin {
-    fn new() -> &'static Self {
-        Box::leak(Box::new(Self{
-            cluster: common::cluster(),
-            passed: AtomicBool::new(false),
-        }))
-    }
-}
+impl Plugin for AuthPlugin {}
 
 
 #[test(tokio::test)]
@@ -59,7 +59,7 @@ async fn test_client_auth() -> std::result::Result<(), Box<dyn std::error::Error
     let client = ClientConn::new(s);
 
     let plugin = AuthPlugin::new();
-    register_scoped!(plugin, AuthPlugin:client_authenticate<'a>(auth_type: AuthType, msgs: Messages) -> Result<()>);
+    register_scoped!(plugin, Cleanup, AuthPlugin:client_authenticate<'a>(auth_type: AuthType, msgs: Messages) -> Result<()>);
 
     //psql.stdin.unwrap().write("\\q\n".as_bytes());
     assert_eq!(client.run().await, Err(Error::closed()));

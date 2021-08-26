@@ -110,12 +110,10 @@ impl<C: 'static + Connection> Connections<C> {
                 i = 0;
             }
             // Safety: get_unchecked is safe because we iterate between [0, items.len())
-            println!("{} {} I think segfault here", i, end);
             let slot = unsafe { self.items.get_unchecked(i) };
             if slot.load(Relaxed).is_null() {
                 if slot.compare_exchange(std::ptr::null_mut(), conn_ptr, Release, Relaxed).is_ok() {
                     conn.set_id((i + 1) as u32);
-                    println!("nope");
                     break;
                 }
             }
