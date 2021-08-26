@@ -55,6 +55,10 @@ impl ConnectionPool {
     }
     
     pub async fn get(&self, application_name: &str, role: &str, tx_type: TransactionType) -> Result<Option<Arc<BackendConn>>> {
+        // Safety: self is 'static, but if we mark it as such the compiler barfs.
+        // See: https://github.com/rust-lang/rust/issues/87632 **sigh**
+        let static_self: &'static Self = unsafe { change_lifetime(self) };
+
         if tx_type != TransactionType::None && self.active_transactions.fetch_add(1, Relaxed) > self.max_transactions {
             let prev = self.active_transactions.fetch_add(-1, Relaxed);
             debug_assert!(prev > 0);
@@ -67,7 +71,7 @@ impl ConnectionPool {
             let conn = if let Some(conn) = pooled_conn {
                 conn
             } else {
-                let conn = self.new_connection().await?;
+                let conn = static_self.new_connection().await?;
                 if conn.is_none() {
                     return Ok(None);
                 }
@@ -98,27 +102,26 @@ impl ConnectionPool {
         }
     }
 
-    async fn new_connection(&self) -> Result<Option<Arc<BackendConn>>> {
+    async fn new_connection(&'static self) -> Result<Option<Arc<BackendConn>>> {
         if let Some(conn_ref) = self.connect().await? {
             // Clone the Arc<BackendConn> so we can return that.
             let conn = ConnectionRef::clone_arc(&conn_ref);
+            // Authenticate the new connection (afterwards state is Ready)
+            conn.authenticate(self).await?;
+
             // Spawn off conn_ref.run() to handle incoming messages from the database server
             // Which can happen asynchronously, and need to be handled (if only by dropping them)
             // even if the connection is idle in the pool.
-
-            // Safety: self is 'static, but if we mark it as such the compiler barfs.
-            // See: https://github.com/rust-lang/rust/issues/87632
-            let static_self: &'static Self = unsafe { change_lifetime(self) };
             tokio::spawn(async move {
-                if let Err(e) = conn_ref.run(static_self).await {
-                    static_self.connections.increment_errors();
+                if let Err(e) = conn_ref.run().await {
+                    self.connections.increment_errors();
                     if let ErrorKind::ClosedError = e.kind() {
                         // This is expected, don't pollute the logs by logging this
                     } else {
                         warn!(?e, "connection run failed");
                     }
                 }
-                static_self.remove(ConnectionRef::arc_ref(&conn_ref));
+                self.remove(ConnectionRef::arc_ref(&conn_ref));
             });
 
             let isolation = self.default_isolation_level.load();
@@ -132,7 +135,7 @@ impl ConnectionPool {
         }
     }
 
-    async fn connect(&self) -> Result<Option<ConnectionRef<BackendConn>>> {
+    async fn connect(&'static self) -> Result<Option<ConnectionRef<BackendConn>>> {
         if self.connections.is_full() {
             return Ok(None);
         }
@@ -142,7 +145,7 @@ impl ConnectionPool {
         Ok(self.connections.add(stream))
     }
 
-    pub fn put(&self, conn: Arc<BackendConn>) {
+    pub fn put(&'static self, conn: Arc<BackendConn>) {
         if conn.created_for_transaction() {
             let prev = self.active_transactions.fetch_add(-1, Relaxed);
             debug_assert!(prev > 0);
@@ -156,7 +159,7 @@ impl ConnectionPool {
         self.pooled_connections.lock().unwrap().push(conn);
     }
 
-    fn remove(&self, conn: &Arc<BackendConn>) {
+    fn remove(&'static self, conn: &Arc<BackendConn>) {
         if !conn.in_pool() {
             return
         }

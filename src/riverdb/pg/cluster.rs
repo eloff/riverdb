@@ -93,7 +93,7 @@ impl PostgresCluster {
         unsafe { &*self.startup_params.get() }
     }
 
-    pub async fn authenticate(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<bool> {
+    pub async fn authenticate<'a, 'b: 'a, 'c: 'a>(&'a self, user: &'b str, password: &'c str, pool: &'static ConnectionPool) -> Result<bool> {
         let key = hash_sha256(user, password, &pool.config.database);
         if !self.auth_cache.read().unwrap().contains(&key[..]) {
             let backend = BackendConn::connect(pool.config.address.as_ref().unwrap()).await?;

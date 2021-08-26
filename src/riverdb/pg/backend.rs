@@ -67,16 +67,9 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn run(&self, pool: &ConnectionPool) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         // XXX: This code is very similar to ClientConn::run.
         // If you change this, you probably need to change that too.
-
-        // Safety: pool is 'static, but if we mark it as such the compiler barfs.
-        // See: https://github.com/rust-lang/rust/issues/87632
-        unsafe {
-            self.pool.store(Some(change_lifetime(pool)));
-        }
-        self.start(&pool.config.user, &pool.config.password, pool).await?;
 
         let mut stream = MessageStream::new(self);
         let mut sender: Option<Arc<ClientConn>> = None;
@@ -204,24 +197,33 @@ impl BackendConn {
         Ok(sent)
     }
 
-    pub async fn test_auth(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<()> {
+    pub async fn test_auth<'a, 'b: 'a, 'c: 'a>(&'a self, user: &'b str, password: &'c str, pool: &'static ConnectionPool) -> Result<()> {
         self.start(user, password, pool).await?;
 
         debug_assert_eq!(self.state(), BackendState::Authentication);
 
+        self.run_until_state(BackendState::Startup).await
+    }
+
+    pub async fn authenticate<'a>(&'a self, pool: &'static ConnectionPool) -> Result<()> {
+        self.start(&pool.config.user, &pool.config.password, pool).await?;
+
+        self.run_until_state(BackendState::Ready).await
+    }
+
+    async fn run_until_state(&self, state: BackendState) -> Result<()> {
         let mut stream = MessageStream::<Self, ClientConn>::new(self);
-        loop {
+        while self.state() != state {
             let msgs = stream.next(None).await?;
 
             backend_messages::run(self, None, msgs).await?;
-            match self.state() {
-                BackendState::Startup | BackendState::Ready => return Ok(()),
-                _ => (),
-            }
         }
+        Ok(())
     }
 
-    async fn start(&self, user: &str, password: &str, pool: &ConnectionPool) -> Result<()> {
+    async fn start<'a, 'b: 'a, 'c: 'a>(&'a self, user: &'b str, password: &'c str, pool: &'static ConnectionPool) -> Result<()> {
+        self.pool.store(Some(pool));
+
         let mut params = ServerParams::default();
         params.add("database".to_string(), pool.config.database.clone());
         params.add("user".to_string(), user.to_string());
