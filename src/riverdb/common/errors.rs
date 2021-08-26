@@ -52,6 +52,10 @@ impl Error {
     pub fn closed() -> Self {
         Error(Box::new(ErrorKind::ClosedError))
     }
+
+    pub fn kind(&self) -> &ErrorKind {
+        self.0.as_ref()
+    }
 }
 
 impl From<&'static str> for Error {

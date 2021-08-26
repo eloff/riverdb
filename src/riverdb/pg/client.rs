@@ -88,6 +88,10 @@ impl ClientConn {
         self.state.get()
     }
 
+    pub fn transition(&self, new_state: ClientState) -> Result<()> {
+        self.state.transition(self, new_state)
+    }
+
     /// Returns the associated BackendConn, if any.
     pub fn backend(&self) -> Option<Arc<BackendConn>> { self.backend.load() }
 
@@ -153,7 +157,7 @@ impl ClientConn {
                     client_query::run(self, backend, query).await?;
                 },
                 Tag::TERMINATE => {
-                    self.state.transition(self, ClientState::Closed)?;
+                    self.transition(ClientState::Closed)?;
                     if let Some(backend) = backend {
                         backend.return_to_pool(self);
                     }
@@ -166,6 +170,10 @@ impl ClientConn {
             }
         }
         Ok(())
+    }
+
+    pub async fn session_idle(&self) -> Result<Option<Arc<BackendConn>>> {
+        client_idle::run(self).await
     }
 
     #[instrument]
@@ -195,7 +203,7 @@ impl ClientConn {
                     // TODO use the highest default isolation level for the master nodes of the cluster
                 }
                 self.tx_type.store(tx_type);
-                self.state.transition(self, ClientState::Transaction)?;
+                self.transition(ClientState::Transaction)?;
                 Ok(true)
             },
             QueryType::Commit => {
@@ -204,7 +212,7 @@ impl ClientConn {
                     Ok(true)
                 } else {
                     self.tx_type.store(TransactionType::None);
-                    self.state.transition(self, ClientState::Ready)?;
+                    self.transition(ClientState::Ready)?;
                     Ok(false)
                 }
             }
@@ -262,7 +270,7 @@ impl ClientConn {
             _ => {
                 let n = self.write_or_buffer(Bytes::from_static(&[SSL_ALLOWED]))?;
                 debug_assert_eq!(n, 1);
-                self.state.transition(self, ClientState::SSLHandshake)?;
+                self.transition(ClientState::SSLHandshake)?;
                 let tls_config = conf().postgres.tls_config.clone().unwrap();
                 self.transport.upgrade_server(tls_config, tls_mode).await
             }
@@ -297,7 +305,7 @@ impl ClientConn {
                 // Only ROLLBACK is permitted
                 if query.query_type() == QueryType::Rollback {
                     // We already rolled back the backend and returned it to the pool
-                    self.state.transition(self, ClientState::Ready)?;
+                    self.transition(ClientState::Ready)?;
 
                     // Tell the client the command succeeded
                     self.send_command_successful("ROLLBACK", 'I').await?;
@@ -383,7 +391,7 @@ impl ClientConn {
         unsafe {
             *self.connect_params.get() = params
         };
-        self.state.transition(self, ClientState::Authentication)?;
+        self.transition(ClientState::Authentication)?;
 
         let mut mb = MessageBuilder::new(Tag::AUTHENTICATION_OK);
         mb.write_i32(auth_type.as_i32());
@@ -427,8 +435,7 @@ impl ClientConn {
                         };
 
                         return if cluster.authenticate(user, password, pool).await? {
-                            client_complete_startup::run(self, cluster).await?;
-                            self.state.transition(self, ClientState::Ready)
+                            client_complete_startup::run(self, cluster).await
                         } else {
                             let error_msg = format!("password authentication failed for user \"{}\"", user);
                             self.send(Messages::new_error(error_codes::INVALID_PASSWORD, &error_msg)).await?;
@@ -467,9 +474,8 @@ impl ClientConn {
         mb.add_new(Tag::READY_FOR_QUERY);
         mb.write_byte('I' as u8);
         let msgs = mb.finish();
-        println!("{:?} messages", &msgs);
         self.send(msgs).await?;
-        Ok(())
+        self.transition(ClientState::Ready)
     }
 
     #[instrument]
@@ -514,7 +520,17 @@ impl ClientConn {
 
     #[instrument]
     pub async fn client_send_messages(&self, _: &mut client_send_messages::Event, msgs: Messages) -> Result<usize> {
+        for msg in msgs.iter(0) {
+            if msg.tag() == Tag::READY_FOR_QUERY {
+
+            }
+        }
         self.write_or_buffer(msgs.into_bytes())
+    }
+
+    #[instrument]
+    pub async fn client_idle(&self, _: &mut client_idle::Event) -> Result<Option<Arc<BackendConn>>> {
+        Ok(self.release_backend())
     }
 }
 
@@ -552,7 +568,7 @@ impl server::Connection for ClientConn {
     }
 
     fn close(&self) {
-        self.state.transition(self, ClientState::Closed).unwrap(); // does not fail
+        self.transition(ClientState::Closed).unwrap(); // does not fail
         if let Some(backend) = self.backend.load() {
             backend.return_to_pool(self);
         }
@@ -607,64 +623,118 @@ impl Debug for ClientConn {
 unsafe impl Sync for ClientConn {}
 
 
-/// client_connected is called when a new client session is being established.
-///     client: &ClientConn : the event source handling the client connection
-///     params: &ServerParams : key-value pairs passed by the connected client in the startup message (including database and user)
-/// Returns the database cluster where the BackendConn will later be established (usually pool.get_cluster()).
-/// ClientConn::client_connected is called by default and sends the authentication challenge in response.
-/// If it returns an error, the associated session is terminated.
-define_event!(client_connected, (client: &'a ClientConn, params: ServerParams) -> Result<&'static PostgresCluster>);
+define_event! {
+    /// client_connected is called when a new client session is being established.
+    ///     client: &ClientConn : the event source handling the client connection
+    ///     params: &ServerParams : key-value pairs passed by the connected client in the startup message (including database and user)
+    /// Returns the database cluster where the BackendConn will later be established (usually pool.get_cluster()).
+    /// ClientConn::client_connected is called by default and sends the authentication challenge in response.
+    /// If it returns an error, the associated session is terminated.
+    client_connected,
+    (client: &'a ClientConn, params: ServerParams) -> Result<&'static PostgresCluster>
+}
 
-/// client_message is called when a Postgres protocol.Message is received in a client session.
-///     client: &ClientConn : the event source handling the client connection
-///     backend: Option<&'a Arc<BackendConn>> : the associated backend connection (if any)
-///     msg: protocol.Message is the received protocol.Message
-/// You can replace msg by creating and passing a new Message object to ev.next(...)
-/// A Message may contain multiple wire protocol messages, see Message::next().
-/// ClientConn::client_message is called by default and does further processing on the Message,
-/// including potentially calling the higher-level client_query. Symmetric with backend_message.
-/// If it returns an error, the associated session is terminated.
-define_event!(client_messages, (client: &'a ClientConn, backend: Option<&'a BackendConn>, msgs: Messages) -> Result<()>);
 
-define_event!(client_query, (client: &'a ClientConn, backend: Option<&'a BackendConn>, query: Query) -> Result<()>);
+define_event! {
+    /// client_message is called when a Postgres protocol.Message is received in a client session.
+    ///     client: &ClientConn : the event source handling the client connection
+    ///     backend: Option<&'a Arc<BackendConn>> : the associated backend connection (if any)
+    ///     msg: protocol.Message is the received protocol.Message
+    /// ClientConn::client_message is called by default and does further processing on the Message,
+    /// including potentially calling the higher-level client_query. Symmetric with backend_message.
+    /// If it returns an error, the associated session is terminated.
+    client_messages,
+    (client: &'a ClientConn, backend: Option<&'a BackendConn>, msgs: Messages) -> Result<()>
+}
 
-/// client_send_message is called to send a Message to a backend db connection.
-///     client: &ClientConn : the event source handling the client connection
-///     msg : protocol.Message is the protocol.Message to send
-///     prefer_buffer: bool : passed to write_or_buffer, see docs for that method
-/// You can replace msg by creating and passing a new Message object to ev.next(...)
-/// A Message may contain multiple wire protocol messages, see Message::next().
-/// ClientConn::client_send_message is called by default and sends the Message to the connected client.
-/// If it returns an error, the associated session is terminated.
-/// Returns the number of bytes actually written (not buffered.)
-define_event!(client_send_messages, (client: &'a ClientConn, msgs: Messages) -> Result<usize>);
+define_event! {
+    /// TODO
+    client_query,
+    (client: &'a ClientConn, backend: Option<&'a BackendConn>, query: Query) -> Result<()>
+}
 
-define_event!(client_auth_challenge, (client: &'a ClientConn, params: ServerParams) -> Result<AuthType>);
+define_event! {
+    /// client_send_message is called to send a Message to the connected client.
+    ///     client: &ClientConn : the event source handling the client connection
+    ///     msgs : protocol.Messages is the messages to send
+    /// Returns the number of bytes actually written (not buffered.)
+    /// If it returns an error, the associated session is terminated.
+    client_send_messages,
+    (client: &'a ClientConn, msgs: Messages) -> Result<usize>
+}
 
-define_event!(client_authenticate, (client: &'a ClientConn, auth_type: AuthType, msgs: Messages) -> Result<()>);
+define_event! {
+    /// TODO
+    client_auth_challenge,
+    (client: &'a ClientConn, params: ServerParams) -> Result<AuthType>
+}
 
-define_event!(client_complete_startup, (client: &'a ClientConn, cluster: &'static PostgresCluster) -> Result<()>);
+define_event! {
+    /// TODO
+    client_authenticate,
+    (client: &'a ClientConn, auth_type: AuthType, msgs: Messages) -> Result<()>
+}
 
-define_event!(client_connect_backend, (
-    client: &'a ClientConn,
-    cluster: &'static PostgresCluster,
-    application_name: &'a str,
-    user: &'a str,
-    database: &'a str,
-    tx_type: TransactionType,
-    query: &'a mut Query) -> Result<Arc<BackendConn>>);
+define_event! {
+    /// client_complete_startup is called to after authentication to send the
+    /// authentication ok messages, parameter status messages, backend key data, and ready for query
+    /// messages that a Postgres server sends when the startup phase is completed.
+    ///     client: &ClientConn : the event source handling the client connection
+    ///     cluster: &'static PostgresCluster : the Postgres cluster this connection belongs to.
+    /// If it returns an error, the associated session is terminated.
+    /// After calling ev.next() or equivalently sending this series of startup messages,
+    /// the newly established connection is ready to receive queries.
+    client_complete_startup,
+    (client: &'a ClientConn, cluster: &'static PostgresCluster) -> Result<()>
+}
 
-define_event!(client_partition, (
-    client: &'a ClientConn,
-    cluster: &'static PostgresCluster,
-    application_name: &'a str,
-    user: &'a str,
-    database: &'a str,
-    tx_type: TransactionType,
-    query: &'a mut Query) -> Result<Option<&'static PostgresReplicationGroup>>);
+define_event! {
+    /// TODO
+    client_connect_backend,
+    (
+        client: &'a ClientConn,
+        cluster: &'static PostgresCluster,
+        application_name: &'a str,
+        user: &'a str,
+        database: &'a str,
+        tx_type: TransactionType,
+        query: &'a mut Query
+    ) -> Result<Arc<BackendConn>>
+}
 
-define_event!(client_route_query, (
-    client: &'a ClientConn,
-    group: &'static PostgresReplicationGroup,
-    tx_type: TransactionType,
-    query: &'a mut Query) -> Result<Option<&'static ConnectionPool>>);
+define_event! {
+    /// TODO
+    client_partition,
+    (
+        client: &'a ClientConn,
+        cluster: &'static PostgresCluster,
+        application_name: &'a str,
+        user: &'a str,
+        database: &'a str,
+        tx_type: TransactionType,
+        query: &'a mut Query
+    ) -> Result<Option<&'static PostgresReplicationGroup>>
+}
+
+define_event! {
+    /// TODO
+    client_route_query,
+    (
+        client: &'a ClientConn,
+        group: &'static PostgresReplicationGroup,
+        tx_type: TransactionType,
+        query: &'a mut Query
+    ) -> Result<Option<&'static ConnectionPool>>
+}
+
+define_event! {
+    /// client_idle is called when the connection is ready for a query, and not waiting for a response,
+    /// and is not inside a transaction.
+    ///     client: &ClientConn : the event source handling the client connection
+    /// Optionally dissociates and returns the BackendConn. By default, if there is a BackendConn,
+    /// ClientConn::client_idle will remove it from this session and return it. The caller
+    /// then typically returns that BackendConn to the connection pool.
+    /// If it returns an error, the associated session is terminated.
+    client_idle,
+    (client: &'a ClientConn) -> Result<Option<Arc<BackendConn>>>
+}

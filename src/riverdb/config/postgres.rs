@@ -235,10 +235,10 @@ impl Postgres {
         if self.port == 0 {
             self.port = defaults.port;
         }
-        if self.max_connections == 0 {
+        if self.max_connections < 16 {
             self.max_connections = defaults.max_connections;
-            if self.max_connections == 0 {
-                return Err(Error::new("max_connections cannot be 0"));
+            if self.max_connections < 16 {
+                return Err(Error::new("max_connections cannot be < 16"));
             }
         }
         if self.max_concurrent_transactions == 0 {

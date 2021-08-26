@@ -18,21 +18,28 @@ async fn test_proxy_simple_query() -> std::result::Result<(), Box<dyn std::error
     }
 
     let listener = common::listener();
-    let psql = common::psql(format!("host=localhost port={}", listener.local_addr().unwrap().port()).as_str(), "");
+    let mut psql = common::psql(format!("host=localhost port={}", listener.local_addr().unwrap().port()).as_str(), "");
 
     let (s, _) = listener.accept().await?;
     let client = ClientConn::new(s);
     client.set_cluster(Some(common::cluster()));
 
     tokio::task::spawn_blocking(move || {
-        psql.stdin.as_ref().unwrap().write_all("select * from staff;\n".as_bytes());
+        let reader = BufReader::new(psql.stdout.take().unwrap());
+        let mut stdin = psql.stdin.take().unwrap();
+        println!("sending query");
+        stdin.write_all("select * from staff;\n".as_bytes()).unwrap();
+        stdin.flush().unwrap();
+        println!("sent query");
 
-        let reader = BufReader::new(psql.stdout.unwrap());
         for line in reader.lines() {
-            println!("{}", line.unwrap());
+            println!("************************* {}", line.unwrap());
         }
 
-        psql.stdin.as_ref().unwrap().write_all("\\q\n".as_bytes());
+        println!("sending terminate");
+        stdin.write_all("\\q\n".as_bytes()).unwrap();
+        stdin.flush().unwrap();
+        println!("sent terminate");
     });
 
     assert_eq!(client.run().await, Err(Error::closed()));

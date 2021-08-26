@@ -48,6 +48,7 @@ macro_rules! define_event {
 
             /// clear all globally registered plugins. This is exposed for use in tests.
             /// It's an error to call this once plugins are configured.
+            #[allow(dead_code)]
             pub unsafe fn clear() {
                 assert!(!$crate::riverdb::plugins::CONFIGURED_PLUGINS);
                 PLUGINS.clear();

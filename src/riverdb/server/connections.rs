@@ -43,8 +43,14 @@ pub struct Connections<C: 'static + Connection> {
 
 impl<C: 'static + Connection> Connections<C> {
     pub fn new(max_connections: u32, timeout_seconds: u32) -> &'static Self {
+        assert!(max_connections >= 16);
+        let mut items = Vec::with_capacity((max_connections as f64 * 1.1) as usize);
+        for _ in 0..items.capacity() {
+            items.push(AtomicPtr::default());
+        }
+
         let connections = &*Box::leak(Box::new(Self{
-            items: Vec::with_capacity((max_connections as f64 * 1.1) as usize).leak(),
+            items: items.leak(),
             timeout_seconds,
             max_connections,
             added: Default::default(),
@@ -94,19 +100,22 @@ impl<C: 'static + Connection> Connections<C> {
         // Pick a random place in the array and search from there for a free connection slot.
         // This shouldn't take long because we allocated items to be at least 10% larger than maxConcurrent.
         let end = self.items.len();
+        assert_ne!(end, 0);
         let mid = Worker::get().uniform_rand32(end as u32) as usize;
         let mut i = mid + 1;
 
         // Scan from (mid, end), and then [start, mid]
         while i != mid {
-            if i == end {
+            if i >= end {
                 i = 0;
             }
             // Safety: get_unchecked is safe because we iterate between [0, items.len())
+            println!("{} {} I think segfault here", i, end);
             let slot = unsafe { self.items.get_unchecked(i) };
             if slot.load(Relaxed).is_null() {
                 if slot.compare_exchange(std::ptr::null_mut(), conn_ptr, Release, Relaxed).is_ok() {
                     conn.set_id((i + 1) as u32);
+                    println!("nope");
                     break;
                 }
             }

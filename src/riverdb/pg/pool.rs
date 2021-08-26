@@ -12,7 +12,7 @@ use crate::riverdb::server::{Connections, ConnectionRef, Connection};
 use crate::riverdb::pg::{BackendConn, IsolationLevel, TransactionType};
 
 use crate::riverdb::config::{Postgres};
-use crate::riverdb::common::{Version, AtomicCell, change_lifetime};
+use crate::riverdb::common::{Version, AtomicCell, change_lifetime, ErrorKind};
 
 
 
@@ -112,7 +112,11 @@ impl ConnectionPool {
             tokio::spawn(async move {
                 if let Err(e) = conn_ref.run(static_self).await {
                     static_self.connections.increment_errors();
-                    warn!(?e, "connection run failed");
+                    if let ErrorKind::ClosedError = e.kind() {
+                        // This is expected, don't pollute the logs by logging this
+                    } else {
+                        warn!(?e, "connection run failed");
+                    }
                 }
                 static_self.remove(ConnectionRef::arc_ref(&conn_ref));
             });

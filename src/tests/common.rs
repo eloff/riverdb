@@ -43,7 +43,7 @@ pub fn cluster() -> &'static PostgresCluster {
                 is_master: true,
                 can_query: true,
                 max_concurrent_transactions: 10,
-                max_connections: 10,
+                max_connections: 16,
                 idle_timeout_seconds: 0,
                 replicas: vec![],
                 address: None,
@@ -54,7 +54,7 @@ pub fn cluster() -> &'static PostgresCluster {
         port: 5433,
         pinned_sessions: false,
         defer_begin: false,
-        max_connections: 10,
+        max_connections: 16,
         idle_timeout_seconds: 0,
         client_tls: Default::default(),
         backend_tls: Default::default(),
@@ -82,6 +82,7 @@ pub fn psql(connection_str: &str, mut password: &str) -> Child {
 
     Command::new("psql")
         .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
         .arg(s)
         .env("PGPASSWORD", password)
         .spawn()

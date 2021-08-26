@@ -188,7 +188,7 @@ impl BackendConn {
             if pending_count == requests_completed {
                 // pending_requests has reached zero, we can maybe release the backend to the pool
                 if let Some(client) = client {
-                    self.return_to_pool(client);
+                    self.session_idle(client).await?;
                 }
             }
 
@@ -253,7 +253,7 @@ impl BackendConn {
         const SSL_REQUEST_MSG: &[u8] = &[0, 0, 0, 8, 4, 210, 22, 47];
         let ssl_request = Messages::new(Bytes::from_static(SSL_REQUEST_MSG));
 
-        self.state.transition(self, BackendState::SSLHandshake)?;
+        self.transition(BackendState::SSLHandshake)?;
         self.send(ssl_request).await?;
 
         self.transport.ready(Interest::READABLE).await?;
@@ -273,6 +273,14 @@ impl BackendConn {
         }
     }
 
+    pub async fn session_idle(&self, client: &ClientConn) -> Result<()> {
+        if let Some(backend) = client.session_idle().await? {
+            self.client.store(None);
+            self.pool.load().unwrap().put(backend);
+        }
+        Ok(())
+    }
+
     pub fn return_to_pool(&self, client: &ClientConn) {
         if let Some(backend) = client.release_backend() {
             self.client.store(None);
@@ -282,7 +290,7 @@ impl BackendConn {
 
     pub async fn check_health_and_set_role(&self, application_name: &str, role: &str) -> Result<()> {
         if self.state() == BackendState::InPool {
-            self.state.transition(self, BackendState::Ready)?;
+            self.transition(BackendState::Ready)?;
             self.added_to_pool.store(0, Relaxed);
         }
 
@@ -331,6 +339,10 @@ impl BackendConn {
 
     pub fn state(&self) -> BackendState {
         self.state.get()
+    }
+
+    pub fn transition(&self, new_state: BackendState) -> Result<()> {
+        self.state.transition(self, new_state)
     }
 
     /// Returns the associated ClientConn, if any.
@@ -394,7 +406,7 @@ impl BackendConn {
         mb.write_params(params);
         mb.write_byte(0); // null-terminator at end of startup packet
 
-        self.state.transition(self, BackendState::Authentication)?;
+        self.transition(BackendState::Authentication)?;
 
         self.send(mb.finish()).await?;
         Ok(())
@@ -429,7 +441,7 @@ impl BackendConn {
                                 self.secret.store(r.read_i32(), Relaxed);
                             },
                             Tag::READY_FOR_QUERY => {
-                                self.state.transition(self, BackendState::Ready)?;
+                                self.transition(BackendState::Ready)?;
                             },
                             Tag::ERROR_RESPONSE => {
                                 return Err(Error::from(PostgresError::new(msgs.split_message(&msg))?));
@@ -504,7 +516,7 @@ impl BackendConn {
                 match auth_type {
                     AuthType::Ok => {
                         // Success!
-                        self.state.transition(self, BackendState::Startup)
+                        self.transition(BackendState::Startup)
                     },
                     AuthType::ClearText => {
                         if !self.is_tls() {
@@ -648,35 +660,51 @@ impl Debug for BackendConn {
     }
 }
 
-/// backend_connected is called when a new backend session is being established.
-///     backend: &BackendConn : the event source handling the backend connection
-///     params: &ServerParams : key-value pairs that will be passed to the connected backend in the startup message (including database and user)
-/// BackendConn::backend_connected is called by default and sends ServerParams in the startup message.
-/// If it returns an error, the associated session is terminated.
-define_event!(backend_connected, (backend: &'a BackendConn, params: &'a mut ServerParams) -> Result<()>);
 
-/// backend_message is called when a Postgres protocol.Message is received in a backend db connection.
-///     backend: &BackendConn : the event source handling the backend connection
-///     client: Option<&'a ClientConn> : the associated client connection (if any)
-///     msg: protocol.Message is the received protocol.Message
-/// You can replace msg by creating and passing a new Message object to ev.next(...)
-/// A Message may contain multiple wire protocol messages, see Message::next().
-/// BackendConn::backend_message is called by default and does further processing on the Message,
-/// including potentially forwarding it to associated client session. Symmetric with client_message.
-/// If it returns an error, the associated session is terminated.
-define_event!(backend_messages, (backend: &'a BackendConn, client: Option<&'a ClientConn>, msgs: Messages) -> Result<()>);
+define_event! {
+    /// backend_connected is called when a new backend session is being established.
+    ///     backend: &BackendConn : the event source handling the backend connection
+    ///     params: &ServerParams : key-value pairs that will be passed to the connected backend in the startup message (including database and user)
+    /// BackendConn::backend_connected is called by default and sends ServerParams in the startup message.
+    /// If it returns an error, the associated session is terminated.
+    backend_connected,
+    (backend: &'a BackendConn, params: &'a mut ServerParams) -> Result<()>
+}
 
-/// backend_send_message is called to send a Message to a backend db connection.
-///     backend: &BackendConn : the event source handling the backend connection
-///     msg: protocol.Message is the protocol.Message to send
-///     from_client: bool : true if any requests are from the client, false if from the "backend"
-///                         (e.g. from query or execute methods on BackendConn)
-/// You can replace msg by creating and passing a new Message object to ev.next(...)
-/// A Message may contain multiple wire protocol messages, see Message::next().
-/// BackendConn::backend_send_message is called by default and sends the Message to the db server.
-/// If it returns an error, the associated session is terminated.
-/// /// Returns the number of bytes actually written (not buffered.)
-define_event!(backend_send_messages, (backend: &'a BackendConn, msgs: Messages, from_client: bool) -> Result<usize>);
+define_event! {
+    /// backend_message is called when Postgres message(s) are received in a backend db connection.
+    ///     backend: &BackendConn : the event source handling the backend connection
+    ///     client: Option<&'a ClientConn> : the associated client connection (if any)
+    ///     msgs: protocol.Messages : the received message(s)
+    /// BackendConn::backend_message is called by default and does further processing on the Message,
+    /// including potentially forwarding it to associated client session. Symmetric with client_message.
+    /// If it returns an error, the associated session is terminated.
+    backend_messages,
+    (backend: &'a BackendConn, client: Option<&'a ClientConn>, msgs: Messages) -> Result<()>
+}
 
-/// backend_authenticate is called with each Message received while in the Authentication state
-define_event!(backend_authenticate, (backend: &'a BackendConn, client: Option<&ClientConn>, msgs: Messages) -> Result<()>);
+
+define_event! {
+    /// backend_send_message is called to send a Message to a backend db connection.
+    ///     backend: &BackendConn : the event source handling the backend connection
+    ///     msgs: protocol.Messages : the message(s) to send
+    ///     from_client: bool : true if any requests are from the client, false if from the "backend"
+    ///                         (e.g. from query or execute methods on BackendConn)
+    /// BackendConn::backend_send_message is called by default and sends the Messages to the db server.
+    /// If it returns an error, the associated session is terminated.
+    /// Returns the number of bytes actually written (not buffered.)
+    backend_send_messages,
+    (backend: &'a BackendConn, msgs: Messages, from_client: bool) -> Result<usize>
+}
+
+
+define_event! {
+    /// backend_authenticate is called with each message(s) received from Postgres while in the Authentication state
+    ///     backend: &BackendConn : the event source handling the backend connection
+    ///     msgs: protocol.Messages : the message(s) received
+    /// This may be invoked multiple times during the authentication process to support multi-step auth workflows.
+    /// Call self.transition to BackendState::Startup when authentication has completed successfully or
+    /// return an error.
+    backend_authenticate,
+    (backend: &'a BackendConn, client: Option<&ClientConn>, msgs: Messages) -> Result<()>
+}
