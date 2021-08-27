@@ -115,14 +115,14 @@ mod tests {
     async fn test_spsc() {
         let queue = &*Box::leak(Box::new(SpscQueue::<usize, 128>::new()));
         let handle = tokio::spawn(async move {
-            const expected: usize = 500000 * 999999;
+            const expected: usize = 50000 * 99999;
             let mut calculated = 0;
-            for i in 0..1000000 {
+            for i in 0..100000 {
                 calculated += queue.pop().await;
             }
             assert_eq!(calculated, expected);
         });
-        for i in 0..1000000 {
+        for i in 0..100000 {
             queue.put(i).await;
         }
         let _ = handle.await;
