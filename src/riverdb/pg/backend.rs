@@ -202,7 +202,7 @@ impl BackendConn {
 
         debug_assert_eq!(self.state(), BackendState::Authentication);
 
-        self.run_until_state(BackendState::Startup).await
+        self.run_until_state(BackendState::Ready).await
     }
 
     pub async fn authenticate<'a>(&'a self, pool: &'static ConnectionPool) -> Result<()> {

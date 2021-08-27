@@ -103,11 +103,14 @@ impl ConnectionPool {
     }
 
     async fn new_connection(&'static self) -> Result<Option<Arc<BackendConn>>> {
+        println!("************WA???***************");
         if let Some(conn_ref) = self.connect().await? {
             // Clone the Arc<BackendConn> so we can return that.
             let conn = ConnectionRef::clone_arc(&conn_ref);
             // Authenticate the new connection (afterwards state is Ready)
+            println!("************BEFORE AUTH***************");
             conn.authenticate(self).await?;
+            println!("************AFTER AUTH***************");
 
             // Spawn off conn_ref.run() to handle incoming messages from the database server
             // Which can happen asynchronously, and need to be handled (if only by dropping them)

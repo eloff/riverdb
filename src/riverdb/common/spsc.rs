@@ -79,7 +79,7 @@ impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
                 slot.get().read()
             };
             self.consumer.store(cpos + 1, Release); // remove the item
-            if cpos == ppos - SIZE {
+            if cpos + SIZE == ppos {
                 // Queue was full, we just freed a slot, wake the producer
                 self.notify_producer.notify_one();
             }
@@ -104,3 +104,58 @@ impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
 
 // Safety: we use UnsafeCell in a thread-safe manner
 unsafe impl<T, const SIZE: usize> Sync for SpscQueue<T, SIZE> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_env_log::test;
+    use tokio;
+
+    #[test(tokio::test)]
+    async fn test_spsc() {
+        let queue = &*Box::leak(Box::new(SpscQueue::<usize, 128>::new()));
+        let handle = tokio::spawn(async move {
+            const expected: usize = 500000 * 999999;
+            let mut calculated = 0;
+            for i in 0..1000000 {
+                calculated += queue.pop().await;
+            }
+            assert_eq!(calculated, expected);
+        });
+        for i in 0..1000000 {
+            queue.put(i).await;
+        }
+        let _ = handle.await;
+        unsafe {
+            Box::from_raw(queue as *const _ as *mut SpscQueue::<usize, 16>);
+        }
+    }
+
+    #[test(tokio::test)]
+    async fn test_spsc_empty() {
+        let queue = &*Box::leak(Box::new(SpscQueue::<usize, 16>::new()));
+        tokio::spawn(async move {
+            queue.put(42).await;
+        });
+        let answer = queue.pop().await;
+        assert_eq!(answer, 42);
+        unsafe {
+            Box::from_raw(queue as *const _ as *mut SpscQueue::<usize, 16>);
+        }
+    }
+
+    #[test(tokio::test)]
+    async fn test_spsc_full() {
+        let queue = &*Box::leak(Box::new(SpscQueue::<usize, 16>::new()));
+        for i in 0..16 {
+            queue.put(i).await; // does not block
+        }
+        tokio::spawn(async move {
+            assert_eq!(queue.pop().await, 0);
+        });
+        queue.put(17).await; // blocks until pop has run
+        unsafe {
+            Box::from_raw(queue as *const _ as *mut SpscQueue::<usize, 16>);
+        }
+    }
+}

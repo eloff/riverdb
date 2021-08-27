@@ -71,7 +71,9 @@ impl ClientConn {
             }
             let sender_ref = sender.as_ref().map(|arc| arc.as_ref());
 
+            println!("************PRE NEXT***************");
             let msgs = stream.next(sender_ref).await?;
+            println!("************POST NEXT***************");
             client_messages::run(self, sender_ref, msgs).await?;
         }
     }
@@ -434,7 +436,9 @@ impl ClientConn {
                             return Err(Error::new(error_msg))
                         };
 
+                        println!("************PRE AUTH***************");
                         return if cluster.authenticate(user, password, pool).await? {
+                            println!("************POST AUTH***************");
                             client_complete_startup::run(self, cluster).await
                         } else {
                             let error_msg = format!("password authentication failed for user \"{}\"", user);

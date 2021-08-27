@@ -229,6 +229,7 @@ mod tests {
     define_event!(record_changed, (monitor: &'a RecordMonitor, payload: &'a str) -> Result<String>);
 
     struct Listener2 {
+        #[allow(unused)]
         foo: i32,
         bar: i32
     }
@@ -254,6 +255,7 @@ mod tests {
 
     struct Listener {
         foo: i32,
+        #[allow(unused)]
         bar: i32
     }
 

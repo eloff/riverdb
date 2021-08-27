@@ -30,7 +30,9 @@ impl QueryPlugin {
     }
 
     pub async fn client_complete_startup<'a>(&'a self, ev: &'a mut client_complete_startup::Event, client: &'a ClientConn, cluster: &'static PostgresCluster) -> Result<()> {
+        println!("************BEFORE***************");
         ev.next(client, cluster).await?;
+        println!("************AFTER***************");
 
         println!("sending query");
         let mut stdin = self.stdin.lock().unwrap();
@@ -82,6 +84,8 @@ async fn test_proxy_simple_query() -> std::result::Result<(), Box<dyn std::error
     let (s, _) = listener.accept().await?;
     let client = ClientConn::new(s);
     client.set_cluster(Some(common::cluster()));
+
+    println!("************HERE***************");
 
     assert_eq!(client.run().await, Err(Error::closed()));
     assert_eq!(client.state(), ClientState::Closed);
