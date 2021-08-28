@@ -36,18 +36,13 @@ impl Header {
         Ok(Some(Header{
             tag,
             // Safety: we already checked len != 0 above
-            length: unsafe { NonZeroU32::new_unchecked(len) },
+            length: unsafe { NonZeroU32::new_unchecked(len + start as u32) },
         }))
     }
 
     /// Returns the length of the message frame, including the tag byte (if any)
     pub fn len(&self) -> u32 {
-        let len = self.length.get();
-        if self.tag == Tag::UNTAGGED {
-            len
-        } else {
-            len + 1
-        }
+        self.length.get()
     }
 }
 

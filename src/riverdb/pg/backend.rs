@@ -93,107 +93,95 @@ impl BackendConn {
     }
 
     /// Dispatches msgs received from the database server to the client and/or backend requests (iterators).
-    /// Safety: Only the thread that calls run() can call this.
+    /// Safety: This can only be called from inside run(). It is not safe for use by other threads/tasks.
     #[instrument]
     pub async fn forward(&self, client: Option<&ClientConn>, mut msgs: Messages) -> Result<usize> {
         let mut sent = 0;
 
-        let mut pending_original = self.pending_requests.load(Acquire);
-        let mut pending = pending_original;
+        let mut pending = self.pending_requests.load(Acquire);
         let pending_count = pending.count_ones();
         let mut requests_completed = 0;
-        let mut offset = 0;
 
-        while offset < msgs.len() as usize {
+    'Outer:
+        while !msgs.is_empty() {
             if pending == 0 {
                 // We don't have any requests in-flight, just forward the messages
                 return if let Some(client) = client {
                     client.send(msgs).await
                 } else {
-                    // TODO log that we're dropping msgs on the floor
+                    warn!(?msgs, "dropping messages without client");
                     return Ok(0);
                 };
             }
 
+            let mut offset = 0;
             let mut wake = false;
+            let mut pop = false;
             let request_type = pending & REQUEST_TYPE_MASK;
-            for msg in msgs.iter(offset) {
-                let tag = msg.tag();
-
-                if request_type == CLIENT_REQUEST {
-                    if tag == Tag::READY_FOR_QUERY {
+            println!("request type {} pending {}", request_type, pending);
+            for msg in msgs.iter(0) {
+                match msg.tag() {
+                    Tag::ROW_DESCRIPTION => {
+                        // If this is a backend request, this is a new rows result, wake the iterator
+                        wake = request_type == BACKEND_REQUEST;
+                    },
+                    Tag::READY_FOR_QUERY => {
+                        // If we didn't notify the iterator above to consume it's messages, now's the last chance
+                        // This happens if the result wasn't a rows result, but just a command to execute.
                         requests_completed += 1;
+                        let pending_original = pending;
+                        pending >>= 2;
+                        // Before we send the msgs, ensure we mark the request as processed
+                        // So that if that fails we haven't done anything irreversible.
+                        match self.pending_requests.compare_exchange(pending_original, pending, Release, Relaxed) {
+                            Ok(_) => (),
+                            Err(val) => {
+                                pending = val;
+                                continue 'Outer;
+                            },
+                        }
 
                         offset = msg.offset() + msg.len() as usize;
-                        pending >>= 2;
+                        pop = request_type == BACKEND_REQUEST;
                         break;
                     }
-                } else {
-                    debug_assert_eq!(request_type, BACKEND_REQUEST);
-                    assert!(!self.iterators.is_empty());
-
-                    match tag {
-                        Tag::ROW_DESCRIPTION => {
-                            // This is a new rows result, wake the iterator
-                            wake = true;
-                        },
-                        Tag::COMMAND_COMPLETE | Tag::ERROR_RESPONSE => {
-                            // If we didn't notify the iterator above to consume it's messages, now's the last chance
-                            // This happens if the result wasn't a rows result, but just a command to execute.
-                            wake = true;
-                            offset = msg.offset() + msg.len() as usize;
-                            self.iterators.pop().await;
-                            break;
-                        },
-                        Tag::READY_FOR_QUERY => {
-                            requests_completed += 1;
-                            pending >>= 2;
-
-                            // We ignore READY_FOR_QUERY messages in iterator mode
-                            offset = msg.offset() + msg.len() as usize;
-                            debug_assert_eq!(msgs.count(), 1);
-                            break;
-                        }
-                        _ => (),
-                    }
+                    _ => (),
                 }
             }
 
+            println!("split to {}", offset);
             let out = msgs.split_to(offset);
             if request_type == CLIENT_REQUEST {
                 if let Some(client) = client {
                     sent += client.send(out).await?;
                 } else {
-                    // TODO log that we're dropping before on the floor
+                    warn!(msgs=?out, "dropping messages without client");
                 }
             } else {
                 debug_assert_eq!(request_type, BACKEND_REQUEST);
 
-                if wake {
+                if wake || pop {
+                    println!("do wake pop={}", pop);
                     // Notify first, then put messages, otherwise put may block forever
-                    self.iterators.peek().unwrap().notify_one();
+                    if pop {
+                        debug_assert!(!self.iterators.is_empty());
+                        self.iterators.pop().await.notify_one();
+                    } else {
+                        self.iterators.peek().unwrap().notify_one();
+                    }
                 }
+                println!("send msgs to iterators");
                 self.iterator_messages.put(out).await;
             }
-        }
 
-        if requests_completed != 0 {
-            if pending_count == requests_completed {
+            if requests_completed != 0 && pending_count == requests_completed {
                 // pending_requests has reached zero, we can maybe release the backend to the pool
                 if let Some(client) = client {
                     self.session_idle(client).await?;
                 }
             }
-
-            loop {
-                let val = pending_original >> (requests_completed * 2);
-                match self.pending_requests.compare_exchange_weak(pending_original, val, Release, Relaxed) {
-                    Ok(_) => break,
-                    Err(val) => pending_original = val,
-                }
-            }
         }
-
+        println!("returning from forward {} sent", sent);
         Ok(sent)
     }
 
@@ -306,6 +294,7 @@ impl BackendConn {
                 self.execute(query!("SET ROLE {}", role)),
                 self.execute(query!("SET application_name TO {}", application_name))
             )?;
+            println!("after executes");
         }
 
         Ok(())
@@ -334,9 +323,8 @@ impl BackendConn {
         let notifier = self.iterators.put(Notify::new()).await;
         let mut rows = Rows::new(&self.iterator_messages, notifier);
         backend_send_messages::run(self, escaped_query, false).await?;
-        let has_next = rows.next().await?;
-        assert!(!has_next);
-        Ok(rows.affected())
+        println!("before finish");
+        rows.finish().await
     }
 
     pub fn state(&self) -> BackendState {
@@ -560,13 +548,14 @@ impl BackendConn {
                     } else {
                         BACKEND_REQUEST
                     };
+                    println!("queue {} request", request_flag);
                     let mut pending = self.pending_requests.load(Relaxed);
                     loop {
                         let pending_count = pending.count_ones();
                         if pending_count == MAX_PENDING_REQUESTS {
                             return Err(Error::new(format!("reached maximum number of pipelined requests {}", MAX_PENDING_REQUESTS)));
                         }
-                        let val = pending | (request_flag << pending_count);
+                        let val = pending | (request_flag << (pending_count*2));
                         match self.pending_requests.compare_exchange_weak(pending, val, Release, Relaxed) {
                             Ok(_) => break,
                             Err(val) => pending = val,

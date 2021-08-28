@@ -360,6 +360,8 @@ impl ClientConn {
                 self.set_pool(Some(pool));
                 let backend = pool.get(application_name, user, tx_type).await?;
                 if let Some(backend) = backend {
+                    // TODO get Arc from self???
+                    // backend.set_client(self);
                     return Ok(backend);
                 }
                 error_code = error_codes::CONFIGURATION_LIMIT_EXCEEDED;
