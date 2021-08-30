@@ -20,16 +20,16 @@ use crate::riverdb::pg::protocol::{
     error_codes, SSL_ALLOWED, SSL_NOT_ALLOWED
 };
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection, TransactionType};
-use crate::riverdb::server::Transport;
+use crate::riverdb::server::{Transport, Connections};
 use crate::riverdb::server;
 use crate::riverdb::pg::{PostgresCluster, ConnectionPool};
-use crate::riverdb::pg::connection::{Backlog};
+use crate::riverdb::pg::connection::{Backlog, RefcountAndFlags};
 
 use crate::riverdb::pg::message_stream::MessageStream;
 use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::pg::sql::{Query, QueryType};
 use crate::riverdb::pg::PostgresReplicationGroup;
-use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef};
+use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef, Ark, AtomicRefCounted};
 use crate::riverdb::config::{conf, TlsMode};
 
 
@@ -41,10 +41,10 @@ pub struct ClientConn {
     /// last-active is a course-grained monotonic clock that is advanced when data is received from the client
     last_active: AtomicU32,
     auth_type: AtomicCell<AuthType>,
-    has_send_backlog: AtomicBool,
+    refcount_and_flags: RefcountAndFlags,
     state: ClientConnState,
     tx_type: AtomicCell<TransactionType>,
-    backend: AtomicArc<BackendConn>,
+    backend: Ark<BackendConn>,
     send_backlog: Backlog,
     cluster: AtomicRef<'static, PostgresCluster>,
     replication_group: AtomicRef<'static, PostgresReplicationGroup>, // the last PostgresReplicationGroup used
@@ -52,6 +52,7 @@ pub struct ClientConn {
     buffered: Mutex<Option<Messages>>,
     connect_params: UnsafeCell<ServerParams>,
     salt: i32,
+    connections: &'static Connections<ClientConn>,
 }
 
 impl ClientConn {
@@ -61,20 +62,10 @@ impl ClientConn {
         // If you change this, you probably need to change that too.
 
         let mut stream = MessageStream::new(self);
-        let mut sender: Option<Arc<BackendConn>> = None;
         loop {
-            // We don't want to clone the Arc everytime, so we clone() it once and cache it,
-            // checking that it's still the current one with has_backend. That's cheaper
-            // than the atomic-read-modify-write ops used to increment and decrement and Arc.
-            if sender.is_none() || !self.has_backend(sender.as_ref().unwrap()) {
-                sender = self.backend();
-            }
-            let sender_ref = sender.as_ref().map(|arc| arc.as_ref());
-
-            println!("************PRE NEXT***************");
-            let msgs = stream.next(sender_ref).await?;
-            println!("************POST NEXT***************");
-            client_messages::run(self, sender_ref, msgs).await?;
+            let backend = self.backend.load();
+            let msgs = stream.next(backend).await?;
+            client_messages::run(self, backend, msgs).await?;
         }
     }
 
@@ -95,15 +86,10 @@ impl ClientConn {
     }
 
     /// Returns the associated BackendConn, if any.
-    pub fn backend(&self) -> Option<Arc<BackendConn>> { self.backend.load() }
-
-    /// Returns true if client is set as the associated ClientConn.
-    pub fn has_backend(&self, backend: &Arc<BackendConn>) -> bool {
-        self.backend.is(backend)
-    }
+    pub fn backend(&self) -> Option<&BackendConn> { self.backend.load() }
 
     /// Sets the associated BackendConn. Panics if called on a BackendConn.
-    pub fn set_backend(&self, backend: Option<Arc<BackendConn>>) {
+    pub fn set_backend(&self, backend: Ark<BackendConn>) {
         self.backend.store(backend);
     }
 
@@ -174,27 +160,26 @@ impl ClientConn {
         Ok(())
     }
 
-    pub async fn session_idle(&self) -> Result<Option<Arc<BackendConn>>> {
+    pub async fn session_idle(&self) -> Result<Ark<BackendConn>> {
         client_idle::run(self).await
     }
 
     #[instrument]
-    pub fn release_backend(&self) -> Option<Arc<BackendConn>> {
+    pub fn release_backend(&self) -> Ark<BackendConn> {
         match self.state.get() {
             ClientState::Ready | ClientState::Closed => {
-                self.backend.swap(None)
+                return self.backend.swap(Ark::default());
             },
             ClientState::Transaction => {
                 // If we're in a transaction, we can only release the backend
                 // if defer_begin is enabled and we still have the begin statement buffered.
                 if conf().postgres.defer_begin && self.buffered.lock().unwrap().is_some() {
-                    self.backend.swap(None)
-                } else {
-                    None
+                    return self.backend.swap(Ark::default());
                 }
             },
-            _ => None,
+            _ => (),
         }
+        Ark::default()
     }
 
     fn begins_transaction(&self, query: &Query) -> Result<bool> {
@@ -346,7 +331,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_connect_backend<'a>(&'a self, _: &'a mut client_connect_backend::Event, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut Query) -> Result<Arc<BackendConn>> {
+    pub async fn client_connect_backend<'a>(&'a self, _: &'a mut client_connect_backend::Event, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut Query) -> Result<Ark<BackendConn>> {
         let mut error_code = error_codes::CANNOT_CONNECT_NOW;
         let group = client_partition::run(self, cluster, application_name, user, database, tx_type, query).await?;
         if let Some(group) = group {
@@ -360,8 +345,8 @@ impl ClientConn {
                 self.set_pool(Some(pool));
                 let backend = pool.get(application_name, user, tx_type).await?;
                 if let Some(backend) = backend {
-                    // TODO get Arc from self???
-                    // backend.set_client(self);
+                    let client = Ark::from(self);
+                    backend.set_client(client);
                     return Ok(backend);
                 }
                 error_code = error_codes::CONFIGURATION_LIMIT_EXCEEDED;
@@ -535,29 +520,45 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_idle(&self, _: &mut client_idle::Event) -> Result<Option<Arc<BackendConn>>> {
+    pub async fn client_idle(&self, _: &mut client_idle::Event) -> Result<Ark<BackendConn>> {
         Ok(self.release_backend())
     }
 }
 
+impl AtomicRefCounted for ClientConn {
+    fn incref(&self) {
+        self.refcount_and_flags.incref();
+    }
+
+    fn decref(&self) -> bool {
+        if self.refcount_and_flags.decref() {
+            self.connections.remove(self, self.id());
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl server::Connection for ClientConn {
-    fn new(stream: TcpStream) -> Self {
+    fn new(stream: TcpStream, connections: &'static Connections<Self>) -> Self {
         ClientConn {
             transport: Transport::new(stream),
             id: Default::default(),
             last_active: Default::default(),
             auth_type: AtomicCell::default(),
-            has_send_backlog: Default::default(),
+            refcount_and_flags: RefcountAndFlags::new(),
             state: Default::default(),
             tx_type: AtomicCell::default(),
-            backend: AtomicArc::default(),
+            backend: Ark::default(),
             send_backlog: Mutex::new(VecDeque::new()),
             cluster: AtomicRef::default(),
             replication_group: AtomicRef::default(),
             pool: AtomicRef::default(),
             buffered: Mutex::new(None),
             connect_params: UnsafeCell::new(ServerParams::new()),
-            salt: Worker::get().rand32() as i32
+            salt: Worker::get().rand32() as i32,
+            connections,
         }
     }
 
@@ -584,11 +585,11 @@ impl server::Connection for ClientConn {
 
 impl Connection for ClientConn {
     fn has_backlog(&self) -> bool {
-        self.has_send_backlog.load(Acquire)
+        self.refcount_and_flags.has(RefcountAndFlags::HAS_BACKLOG)
     }
 
     fn set_has_backlog(&self, value: bool) {
-        self.has_send_backlog.store(value,Release);
+        self.refcount_and_flags.set(RefcountAndFlags::HAS_BACKLOG, value);
     }
 
     fn backlog(&self) -> &Mutex<VecDeque<Bytes>> {
@@ -644,7 +645,7 @@ define_event! {
 define_event! {
     /// client_message is called when a Postgres protocol.Message is received in a client session.
     ///     client: &ClientConn : the event source handling the client connection
-    ///     backend: Option<&'a Arc<BackendConn>> : the associated backend connection (if any)
+    ///     backend: Option<&'a BackendConn> : the associated backend connection (if any)
     ///     msg: protocol.Message is the received protocol.Message
     /// ClientConn::client_message is called by default and does further processing on the Message,
     /// including potentially calling the higher-level client_query. Symmetric with backend_message.
@@ -705,7 +706,7 @@ define_event! {
         database: &'a str,
         tx_type: TransactionType,
         query: &'a mut Query
-    ) -> Result<Arc<BackendConn>>
+    ) -> Result<Ark<BackendConn>>
 }
 
 define_event! {
@@ -742,5 +743,5 @@ define_event! {
     /// then typically returns that BackendConn to the connection pool.
     /// If it returns an error, the associated session is terminated.
     client_idle,
-    (client: &'a ClientConn) -> Result<Option<Arc<BackendConn>>>
+    (client: &'a ClientConn) -> Result<Ark<BackendConn>>
 }

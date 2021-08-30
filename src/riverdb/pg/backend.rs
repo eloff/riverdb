@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::sync::atomic::{AtomicU32, AtomicBool, AtomicI32, AtomicU64};
+use std::sync::atomic::{AtomicU32, AtomicBool, AtomicI32, AtomicU64, AtomicU8};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
@@ -19,11 +19,11 @@ use crate::{define_event, query};
 use crate::riverdb::{config, Error, Result};
 use crate::riverdb::config::TlsMode;
 use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool, Rows};
-use crate::riverdb::server::{Transport, Connection as ServerConnection};
+use crate::riverdb::server::{Transport, Connection as ServerConnection, Connections};
 use crate::riverdb::server;
-use crate::riverdb::pg::connection::{Backlog};
+use crate::riverdb::pg::connection::{Backlog, RefcountAndFlags};
 use crate::riverdb::pg::backend_state::BackendState;
-use crate::riverdb::common::{SpscQueue, AtomicArc, AtomicRef, coarse_monotonic_now, change_lifetime};
+use crate::riverdb::common::{SpscQueue, AtomicArc, AtomicRef, coarse_monotonic_now, change_lifetime, AtomicRefCounted, Ark};
 use crate::riverdb::pg::protocol::{
     ServerParams, Messages, MessageBuilder, Tag, SSL_ALLOWED, PROTOCOL_VERSION,
     AuthType, PostgresError, hash_md5_password
@@ -44,10 +44,10 @@ pub struct BackendConn {
     id: AtomicU32,
     /// added_to_pool is a course-grained monotonic clock that is 0, or records when this was returned to the pool
     added_to_pool: AtomicU32,
-    has_send_backlog: AtomicBool,
+    refcount_and_flags: RefcountAndFlags,
     for_transaction: AtomicBool,
     state: BackendConnState,
-    client: AtomicArc<ClientConn>,
+    client: Ark<ClientConn>,
     send_backlog: Backlog,
     pool: AtomicRef<'static, ConnectionPool>,
     pending_requests: AtomicU64, // a bitfield identifying client and backend (iterator) requests
@@ -58,6 +58,7 @@ pub struct BackendConn {
     secret: AtomicI32,
     #[allow(unused)]
     created_at: DateTime<Local>,
+    connections: &'static Connections<BackendConn>,
 }
 
 impl BackendConn {
@@ -72,18 +73,10 @@ impl BackendConn {
         // If you change this, you probably need to change that too.
 
         let mut stream = MessageStream::new(self);
-        let mut sender: Option<Arc<ClientConn>> = None;
         loop {
-            // We don't want to clone the Arc everytime, so we clone() it once and cache it,
-            // checking that it's still the current one with has_client. That's cheaper
-            // than the atomic-read-modify-write ops used to increment and decrement and Arc.
-            if sender.is_none() || !self.has_client(sender.as_ref().unwrap()) {
-                sender = self.client();
-            }
-            let sender_ref = sender.as_ref().map(|arc| arc.as_ref());
-
-            let msgs = stream.next(sender_ref).await?;
-            backend_messages::run(self, sender_ref, msgs).await?;
+            let client = self.client.load();
+            let msgs = stream.next(client).await?;
+            backend_messages::run(self, client, msgs).await?;
         }
     }
 
@@ -336,17 +329,12 @@ impl BackendConn {
     }
 
     /// Returns the associated ClientConn, if any.
-    pub fn client(&self) -> Option<Arc<ClientConn>> {
+    pub fn client(&self) -> Option<&ClientConn> {
         self.client.load()
     }
 
-    /// Returns true if client is set as the associated ClientConn.
-    pub fn has_client(&self, client: &Arc<ClientConn>) -> bool {
-        self.client.is(client)
-    }
-
     /// Sets the associated ClientConn.
-    pub fn set_client(&self, client: Option<Arc<ClientConn>>) {
+    pub fn set_client(&self, client: Ark<ClientConn>) {
         self.client.store(client);
     }
 
@@ -569,16 +557,31 @@ impl BackendConn {
     }
 }
 
+impl AtomicRefCounted for BackendConn {
+    fn incref(&self) {
+        self.refcount_and_flags.incref();
+    }
+
+    fn decref(&self) -> bool {
+        if self.refcount_and_flags.decref() {
+            self.connections.remove(self, self.id());
+            true
+        } else {
+            false
+        }
+    }
+}
+
 impl server::Connection for BackendConn {
-    fn new(stream: TcpStream) -> Self {
+    fn new(stream: TcpStream, connections: &'static Connections<Self>) -> Self {
         BackendConn {
             transport: Transport::new(stream),
             id: Default::default(),
             added_to_pool: Default::default(),
-            has_send_backlog: Default::default(),
+            refcount_and_flags: RefcountAndFlags::new(),
             for_transaction: Default::default(),
             state: Default::default(),
-            client: AtomicArc::default(),
+            client: Ark::default(),
             send_backlog: Mutex::new(Default::default()),
             pool: AtomicRef::default(),
             pending_requests: AtomicU64::new(0),
@@ -588,6 +591,7 @@ impl server::Connection for BackendConn {
             pid: AtomicI32::new(0),
             secret: AtomicI32::new(0),
             created_at: Local::now(),
+            connections,
         }
     }
 
@@ -610,11 +614,11 @@ impl server::Connection for BackendConn {
 
 impl Connection for BackendConn {
     fn has_backlog(&self) -> bool {
-        self.has_send_backlog.load(Acquire)
+        self.refcount_and_flags.has(RefcountAndFlags::HAS_BACKLOG)
     }
 
     fn set_has_backlog(&self, value: bool) {
-        self.has_send_backlog.store(value,Release);
+        self.refcount_and_flags.set(RefcountAndFlags::HAS_BACKLOG, value);
     }
 
     fn backlog(&self) -> &Mutex<VecDeque<Bytes>> {

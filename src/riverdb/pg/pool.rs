@@ -12,7 +12,7 @@ use crate::riverdb::server::{Connections, ConnectionRef, Connection};
 use crate::riverdb::pg::{BackendConn, IsolationLevel, TransactionType};
 
 use crate::riverdb::config::{Postgres};
-use crate::riverdb::common::{Version, AtomicCell, change_lifetime, ErrorKind};
+use crate::riverdb::common::{Version, AtomicCell, change_lifetime, ErrorKind, Ark};
 
 
 
@@ -38,7 +38,7 @@ pub struct ConnectionPool {
     default_isolation_level: AtomicCell<IsolationLevel>,
     #[allow(unused)]
     server_version: AtomicCell<Version>,
-    pooled_connections: Mutex<Vec<Arc<BackendConn>>>,
+    pooled_connections: Mutex<Vec<Ark<BackendConn>>>,
 }
 
 impl ConnectionPool {
@@ -54,7 +54,7 @@ impl ConnectionPool {
         }
     }
     
-    pub async fn get(&self, application_name: &str, role: &str, tx_type: TransactionType) -> Result<Option<Arc<BackendConn>>> {
+    pub async fn get(&self, application_name: &str, role: &str, tx_type: TransactionType) -> Result<Ark<BackendConn>> {
         // Safety: self is 'static, but if we mark it as such the compiler barfs.
         // See: https://github.com/rust-lang/rust/issues/87632 **sigh**
         let static_self: &'static Self = unsafe { change_lifetime(self) };
@@ -102,10 +102,10 @@ impl ConnectionPool {
         }
     }
 
-    async fn new_connection(&'static self) -> Result<Option<Arc<BackendConn>>> {
+    async fn new_connection(&'static self) -> Result<Ark<BackendConn>> {
         println!("************WA???***************");
         if let Some(conn_ref) = self.connect().await? {
-            // Clone the Arc<BackendConn> so we can return that.
+            // Clone the Ark<BackendConn> so we can return that.
             let conn = ConnectionRef::clone_arc(&conn_ref);
             // Authenticate the new connection (afterwards state is Ready)
             println!("************BEFORE AUTH***************");
@@ -148,7 +148,7 @@ impl ConnectionPool {
         Ok(self.connections.add(stream))
     }
 
-    pub fn put(&'static self, conn: Arc<BackendConn>) {
+    pub fn put(&'static self, conn: Ark<BackendConn>) {
         if conn.created_for_transaction() {
             let prev = self.active_transactions.fetch_add(-1, Relaxed);
             debug_assert!(prev > 0);
@@ -162,7 +162,7 @@ impl ConnectionPool {
         self.pooled_connections.lock().unwrap().push(conn);
     }
 
-    fn remove(&'static self, conn: &Arc<BackendConn>) {
+    fn remove(&'static self, conn: &Ark<BackendConn>) {
         if !conn.in_pool() {
             return
         }

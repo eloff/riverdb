@@ -9,6 +9,7 @@ mod version;
 mod atomic_ref;
 mod atomic_arc;
 mod spsc;
+mod ark;
 
 pub use self::errors::*;
 pub use self::bytes::*;
@@ -20,3 +21,4 @@ pub use self::atomic_cell::AtomicCell;
 pub use self::atomic_ref::AtomicRef;
 pub use self::atomic_arc::AtomicArc;
 pub use self::spsc::SpscQueue;
+pub use self::ark::{Ark, AtomicRefCounted};

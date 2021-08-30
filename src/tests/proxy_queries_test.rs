@@ -43,7 +43,7 @@ impl QueryPlugin {
         Ok(())
     }
 
-    pub async fn client_idle(&self, ev: &mut client_idle::Event, client: &ClientConn) -> Result<Option<Arc<BackendConn>>> {
+    pub async fn client_idle(&self, ev: &mut client_idle::Event, client: &ClientConn) -> Result<Ark<BackendConn>> {
         {
             println!("reading results");
             let mut reader = self.stdout.lock().unwrap();
@@ -79,7 +79,7 @@ async fn test_proxy_simple_query() -> std::result::Result<(), Box<dyn std::error
 
     let plugin = QueryPlugin::new(psql.stdout.take().unwrap(), psql.stdin.take().unwrap());
     register_scoped!(plugin, CleanupStartup, QueryPlugin:client_complete_startup<'a>(cluster: &'static PostgresCluster) -> Result<()>);
-    register_scoped!(plugin, CleanupIdle, QueryPlugin:client_idle<'a>() -> Result<Option<Arc<BackendConn>>>);
+    register_scoped!(plugin, CleanupIdle, QueryPlugin:client_idle<'a>() -> Result<Ark<BackendConn>>);
 
     let (s, _) = listener.accept().await?;
     let client = ClientConn::new(s);

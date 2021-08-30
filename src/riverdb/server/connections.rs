@@ -9,11 +9,11 @@ use tokio::time::{interval, Duration};
 use tracing::{warn, info_span};
 
 use crate::riverdb::worker::Worker;
-use crate::riverdb::common::coarse_monotonic_now;
+use crate::riverdb::common::{coarse_monotonic_now, AtomicRefCounted, Ark};
 use crate::riverdb::config::CHECK_TIMEOUTS_INTERVAL;
 
-pub trait Connection: std::fmt::Debug {
-    fn new(s: TcpStream) -> Self;
+pub trait Connection: std::fmt::Debug + AtomicRefCounted {
+    fn new(s: TcpStream, connections: &'static Connections<Self>) -> Self where Self: Sized;
     fn id(&self) -> u32;
     fn set_id(&self, id: u32);
     fn last_active(&self) -> u32;
@@ -83,19 +83,19 @@ impl<C: 'static + Connection> Connections<C> {
         self.len() >= self.max_connections as usize
     }
 
-    pub fn add(&'static self, stream: TcpStream) -> Option<ConnectionRef<C>> {
+    pub fn add(&'static self, stream: TcpStream) -> Ark<C> {
         // Because remove is loaded second, this might impose a very slightly lower limit (but never higher)
         let added = self.added.fetch_add(1, AcqRel) + 1;
         if added - self.removed.load(Acquire) > self.max_connections as i64 {
             self.added.fetch_add(-1, Relaxed);
             warn!(limit=self.max_connections, "reached connection limit");
-            return None;
+            return Ark::default();
         }
 
-        let conn = Arc::new(C::new(stream));
+        let conn = Ark::new(C::new(stream, self));
         // Storing a raw pointer is fine, the object is removed from this collection before the Arc is dropped
         // See ConnectionRef::drop for where we do that.
-        let conn_ptr = conn.as_ref() as *const C as *mut C;
+        let conn_ptr = conn.as_ptr() as *mut C;
 
         // Pick a random place in the array and search from there for a free connection slot.
         // This shouldn't take long because we allocated items to be at least 10% larger than maxConcurrent.
@@ -120,13 +120,10 @@ impl<C: 'static + Connection> Connections<C> {
             i += 1;
         }
 
-        Some(ConnectionRef{
-            connections: self,
-            conn,
-        })
+        conn
     }
 
-    fn remove(&self, conn: &C, id: u32) {
+    pub(crate) fn remove(&self, conn: &C, id: u32) {
         let slot = self.items.get((id - 1) as usize).expect("invalid id");
         let current = slot.load(Acquire);
 
@@ -194,36 +191,5 @@ impl<C: 'static + Connection> Connections<C> {
     }
 }
 
-pub struct ConnectionRef<C: 'static + Connection> {
-    connections: &'static Connections<C>,
-    conn: Arc<C>,
-}
-
-impl<C: 'static + Connection> ConnectionRef<C> {
-    pub fn arc_ref(this: &Self) -> &Arc<C> {
-        &this.conn
-    }
-
-    pub fn clone_arc(this: &Self) -> Arc<C> {
-        this.conn.clone()
-    }
-}
-
-impl<C: 'static + Connection> Deref for ConnectionRef<C> {
-    type Target = C;
-
-    fn deref(&self) -> &Self::Target {
-        &self.conn
-    }
-}
-
-impl<C: 'static + Connection> Drop for ConnectionRef<C> {
-    fn drop(&mut self) {
-        self.connections.remove(&self.conn, self.conn.id())
-    }
-}
-
 // Safety: although these contain a reference, it's a shared thread-safe 'static reference.
-// It is safe to send a ConnectionRef between threads.
 unsafe impl<C: 'static + Connection> Sync for Connections<C> {}
-unsafe impl<C: 'static + Connection> Send for ConnectionRef<C> {}

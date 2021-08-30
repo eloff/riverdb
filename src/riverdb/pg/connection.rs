@@ -1,11 +1,7 @@
-
-
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
 use std::sync::{Mutex, MutexGuard};
-
-
 use std::collections::VecDeque;
-
-
 
 use tokio::io::{Interest, Ready};
 use bytes::{Bytes, BytesMut, BufMut, Buf};
@@ -14,11 +10,50 @@ use crate::riverdb::server;
 use crate::riverdb::server::Transport;
 use crate::riverdb::{Error, Result};
 use crate::riverdb::common::{bytes_to_slice_mut, unsplit_bytes, bytes_are_contiguous};
-
 use crate::riverdb::pg::protocol::Tag;
 
 
+
 pub type Backlog = Mutex<VecDeque<Bytes>>;
+
+pub struct RefcountAndFlags(AtomicU8);
+
+impl RefcountAndFlags {
+    pub const HAS_BACKLOG: u8 = 128;
+    const REFCOUNT_MASK: u8 = 0x3f; // max of 64
+
+    pub const fn new() -> Self {
+        Self(AtomicU8::new(1))
+    }
+
+    pub fn refcount(&self) -> u32 {
+        (self.0.load(Relaxed) & REFCOUNT_MASK) as u32
+    }
+
+    pub fn incref(&self) {
+        let before = self.0.fetch_add(1, Relaxed);
+        assert!((before & Self::REFCOUNT_MASK) < Self::REFCOUNT_MASK);
+    }
+
+    pub fn decref(&self) -> bool {
+        let before = self.0.fetch_sub(1, Relaxed);
+        let prev_count = before & Self::REFCOUNT_MASK;
+        assert!(prev_count > 0);
+        prev_count == 1
+    }
+
+    pub fn has(&self, flag: u8) -> bool {
+        (self.0.load(Relaxed) & flag) != 0
+    }
+
+    pub fn set(&self, flag: u8, value: bool) {
+        if value {
+            self.0.fetch_or(flag, Relaxed);
+        } else {
+            self.0.fetch_and(!flag, Relaxed);
+        }
+    }
+}
 
 pub trait Connection: server::Connection {
     fn has_backlog(&self) -> bool;
