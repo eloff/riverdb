@@ -8,4 +8,4 @@ mod connections;
 pub use transport::Transport;
 pub use certificate_verifier::DangerousCertificateNonverifier;
 pub use listener::Listener;
-pub use connections::{Connection, ConnectionRef, Connections};
+pub use connections::{Connection, Connections};

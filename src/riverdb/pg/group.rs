@@ -55,13 +55,17 @@ impl PostgresReplicationGroup {
 
     pub async fn test_connection(&self) -> Result<ServerParams> {
         let master = self.master.load().unwrap();
-        let conn = master.get("riverdb","", TransactionType::None).await?
-            .ok_or_else(|| Error::new(format!("could not connect {:?}", master)))?;
+        let conn = master.get("riverdb","", TransactionType::None).await?;
+        if conn.is_none() {
+            return Err(Error::new(format!("could not connect {:?}", master)));
+        }
         let mut master_params = conn.params().clone();
 
         for replica in &self.replicas {
-            let conn = replica.get("riverdb", "", TransactionType::None).await?
-                .ok_or_else(|| Error::new(format!("could not connect {:?}", replica)))?;
+            let conn = replica.get("riverdb", "", TransactionType::None).await?;
+            if conn.is_none() {
+                return Err(Error::new(format!("could not connect {:?}", replica)));
+            }
             let replica_params = conn.params();
             merge_server_params(&mut master_params, &*replica_params);
         }

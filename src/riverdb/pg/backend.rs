@@ -62,9 +62,9 @@ pub struct BackendConn {
 }
 
 impl BackendConn {
-    pub async fn connect(address: &SocketAddr) -> Result<Self> {
+    pub async fn connect(address: &SocketAddr, connections: &'static Connections<Self>) -> Result<Self> {
         let stream = TcpStream::connect(address).await?;
-        Ok(Self::new(stream))
+        Ok(Self::new(stream, connections))
     }
 
     #[instrument]
@@ -257,17 +257,15 @@ impl BackendConn {
     }
 
     pub async fn session_idle(&self, client: &ClientConn) -> Result<()> {
-        if let Some(backend) = client.session_idle().await? {
-            self.client.store(None);
-            self.pool.load().unwrap().put(backend);
-        }
+        let conn = client.session_idle().await?;
+        Self::return_to_pool(conn);
         Ok(())
     }
 
-    pub fn return_to_pool(&self, client: &ClientConn) {
-        if let Some(backend) = client.release_backend() {
-            self.client.store(None);
-            self.pool.load().unwrap().put(backend);
+    pub fn return_to_pool(this: Ark<Self>) {
+        if let Some(backend) = this.load() {
+            backend.client.store(Ark::default());
+            backend.pool.load().unwrap().put(this);
         }
     }
 
@@ -558,6 +556,10 @@ impl BackendConn {
 }
 
 impl AtomicRefCounted for BackendConn {
+    fn refcount(&self) -> u32 {
+        self.refcount_and_flags.refcount()
+    }
+
     fn incref(&self) {
         self.refcount_and_flags.incref();
     }

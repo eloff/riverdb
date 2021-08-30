@@ -27,7 +27,7 @@ impl RefcountAndFlags {
     }
 
     pub fn refcount(&self) -> u32 {
-        (self.0.load(Relaxed) & REFCOUNT_MASK) as u32
+        (self.0.load(Relaxed) & Self::REFCOUNT_MASK) as u32
     }
 
     pub fn incref(&self) {

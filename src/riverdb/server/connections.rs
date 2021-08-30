@@ -27,7 +27,7 @@ pub trait Connection: std::fmt::Debug + AtomicRefCounted {
         idle
     }
     /// close closes the underlying socket, unblocking any suspended async tasks awaiting socket readiness
-    /// do not call this in ConnectionRef::drop, there's nothing blocked in that case, and dropping the socket closes it.
+    /// do not call this in decref() -> true, there's nothing blocked in that case, and dropping the socket closes it.
     fn close(&self);
 }
 
@@ -94,7 +94,7 @@ impl<C: 'static + Connection> Connections<C> {
 
         let conn = Ark::new(C::new(stream, self));
         // Storing a raw pointer is fine, the object is removed from this collection before the Arc is dropped
-        // See ConnectionRef::drop for where we do that.
+        // See decref() -> true for where we do that.
         let conn_ptr = conn.as_ptr() as *mut C;
 
         // Pick a random place in the array and search from there for a free connection slot.

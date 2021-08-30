@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
 
 pub trait AtomicRefCounted {
+    fn refcount(&self) -> u32;
     fn incref(&self);
     fn decref(&self) -> bool;
 }
@@ -23,6 +24,11 @@ impl<T: AtomicRefCounted> Ark<T> {
                 phantom: PhantomData,
             }
         }
+    }
+
+    #[inline]
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        a.ptr.load(Relaxed) == b.ptr.load(Relaxed)
     }
 
     #[inline]

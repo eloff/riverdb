@@ -8,7 +8,7 @@ use tokio::net::TcpStream;
 use tracing::{warn};
 
 use crate::riverdb::{Result};
-use crate::riverdb::server::{Connections, ConnectionRef, Connection};
+use crate::riverdb::server::{Connections, Connection};
 use crate::riverdb::pg::{BackendConn, IsolationLevel, TransactionType};
 
 use crate::riverdb::config::{Postgres};
@@ -32,7 +32,7 @@ use crate::riverdb::common::{Version, AtomicCell, change_lifetime, ErrorKind, Ar
 
 pub struct ConnectionPool {
     pub config: &'static Postgres,
-    connections: &'static Connections<BackendConn>,
+    pub(crate) connections: &'static Connections<BackendConn>,
     active_transactions: AtomicI32,
     max_transactions: i32,
     default_isolation_level: AtomicCell<IsolationLevel>,
@@ -62,7 +62,7 @@ impl ConnectionPool {
         if tx_type != TransactionType::None && self.active_transactions.fetch_add(1, Relaxed) > self.max_transactions {
             let prev = self.active_transactions.fetch_add(-1, Relaxed);
             debug_assert!(prev > 0);
-            return Ok(None);
+            return Ok(Ark::default());
         }
 
         loop {
@@ -73,10 +73,10 @@ impl ConnectionPool {
             } else {
                 let conn = static_self.new_connection().await?;
                 if conn.is_none() {
-                    return Ok(None);
+                    return Ok(Ark::default());
                 }
                 created = true;
-                conn.unwrap()
+                conn
             };
 
             // Remember if it was created for a transaction so we can decrement active_transactions later
@@ -97,50 +97,44 @@ impl ConnectionPool {
                 // Just return the error.
                 Err(e)
             } else {
-                Ok(Some(conn))
+                Ok(conn)
             }
         }
     }
 
     async fn new_connection(&'static self) -> Result<Ark<BackendConn>> {
-        println!("************WA???***************");
-        if let Some(conn_ref) = self.connect().await? {
-            // Clone the Ark<BackendConn> so we can return that.
-            let conn = ConnectionRef::clone_arc(&conn_ref);
-            // Authenticate the new connection (afterwards state is Ready)
-            println!("************BEFORE AUTH***************");
-            conn.authenticate(self).await?;
-            println!("************AFTER AUTH***************");
+        let conn = self.connect().await?;
+        // Authenticate the new connection (afterwards state is Ready)
+        conn.authenticate(self).await?;
+        // Clone the Ark so we can return it (closure below moves conn)
+        let result = conn.clone();
 
-            // Spawn off conn_ref.run() to handle incoming messages from the database server
-            // Which can happen asynchronously, and need to be handled (if only by dropping them)
-            // even if the connection is idle in the pool.
-            tokio::spawn(async move {
-                if let Err(e) = conn_ref.run().await {
-                    self.connections.increment_errors();
-                    if let ErrorKind::ClosedError = e.kind() {
-                        // This is expected, don't pollute the logs by logging this
-                    } else {
-                        warn!(?e, "connection run failed");
-                    }
+        // Spawn off conn_ref.run() to handle incoming messages from the database server
+        // Which can happen asynchronously, and need to be handled (if only by dropping them)
+        // even if the connection is idle in the pool.
+        tokio::spawn(async move {
+            if let Err(e) = conn.run().await {
+                self.connections.increment_errors();
+                if let ErrorKind::ClosedError = e.kind() {
+                    // This is expected, don't pollute the logs by logging this
+                } else {
+                    warn!(?e, "connection run failed");
                 }
-                self.remove(ConnectionRef::arc_ref(&conn_ref));
-            });
-
-            let isolation = self.default_isolation_level.load();
-            if let IsolationLevel::None = isolation {
-                // TODO Check the isolation level and record it
             }
+            self.remove(&conn);
+        });
 
-            Ok(Some(conn))
-        } else {
-            Ok(None)
+        let isolation = self.default_isolation_level.load();
+        if let IsolationLevel::None = isolation {
+            // TODO Check the isolation level and record it
         }
+
+        Ok(result)
     }
 
-    async fn connect(&'static self) -> Result<Option<ConnectionRef<BackendConn>>> {
+    async fn connect(&'static self) -> Result<Ark<BackendConn>> {
         if self.connections.is_full() {
-            return Ok(None);
+            return Ok(Ark::default());
         }
 
         let stream = TcpStream::connect(self.config.address.unwrap()).await?;
@@ -170,7 +164,7 @@ impl ConnectionPool {
         let mut pool = self.pooled_connections.lock().unwrap();
         // rposition should be slightly better than position here, as we remove needs to slide the
         // tail elements down, which will now be in cache after the search with rposition.
-        if let Some(i) = pool.iter().rposition(|a| Arc::ptr_eq(a,conn)) {
+        if let Some(i) = pool.iter().rposition(|a| Ark::ptr_eq(a,conn)) {
             pool.remove(i);
         }
     }

@@ -96,7 +96,7 @@ impl PostgresCluster {
     pub async fn authenticate<'a, 'b: 'a, 'c: 'a>(&'a self, user: &'b str, password: &'c str, pool: &'static ConnectionPool) -> Result<bool> {
         let key = hash_sha256(user, password, &pool.config.database);
         if !self.auth_cache.read().unwrap().contains(&key[..]) {
-            let backend = BackendConn::connect(pool.config.address.as_ref().unwrap()).await?;
+            let backend = BackendConn::connect(pool.config.address.as_ref().unwrap(), pool.connections).await?;
             println!("************TEST AUTH***************");
             backend.test_auth(user, password, pool).await?;
             println!("************POST TEST AUTH***************");

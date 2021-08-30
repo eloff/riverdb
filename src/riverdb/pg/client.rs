@@ -20,7 +20,7 @@ use crate::riverdb::pg::protocol::{
     error_codes, SSL_ALLOWED, SSL_NOT_ALLOWED
 };
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection, TransactionType};
-use crate::riverdb::server::{Transport, Connections};
+use crate::riverdb::server::{Transport, Connections, Connection as ServerConnection};
 use crate::riverdb::server;
 use crate::riverdb::pg::{PostgresCluster, ConnectionPool};
 use crate::riverdb::pg::connection::{Backlog, RefcountAndFlags};
@@ -146,8 +146,8 @@ impl ClientConn {
                 },
                 Tag::TERMINATE => {
                     self.transition(ClientState::Closed)?;
-                    if let Some(backend) = backend {
-                        backend.return_to_pool(self);
+                    if backend.is_some() {
+                        BackendConn::return_to_pool(self.release_backend());
                     }
                     self.transport.close();
                     break;
@@ -313,17 +313,17 @@ impl ClientConn {
             let database = params.get("database").expect("missing database");
             let application_name = params.get("application_name").unwrap_or("riverdb");
             let tx_type = self.tx_type.load();
-            let backend_arc = client_connect_backend::run(self, cluster, application_name, user, database, tx_type, &mut query).await?;
+            let backend_ark = client_connect_backend::run(self, cluster, application_name, user, database, tx_type, &mut query).await?;
 
             // If we have buffered messages, flush them now
             // TODO not necessarily if defer_begin is enabled
             let msgs = self.buffered.lock().unwrap().take();
             if let Some(msgs) = msgs {
-                backend_arc.send(msgs).await?;
+                backend_ark.send(msgs).await?;
             }
 
-            backend_arc.send(query.into_messages()).await?;
-            self.set_backend(Some(backend_arc));
+            backend_ark.send(query.into_messages()).await?;
+            self.set_backend(backend_ark);
         } else {
             backend.unwrap().send(query.into_messages()).await?;
         }
@@ -344,9 +344,9 @@ impl ClientConn {
             if let Some(pool) = pool {
                 self.set_pool(Some(pool));
                 let backend = pool.get(application_name, user, tx_type).await?;
-                if let Some(backend) = backend {
+                if let Some(backend_ref) = backend.load() {
                     let client = Ark::from(self);
-                    backend.set_client(client);
+                    backend_ref.set_client(client);
                     return Ok(backend);
                 }
                 error_code = error_codes::CONFIGURATION_LIMIT_EXCEEDED;
@@ -526,6 +526,10 @@ impl ClientConn {
 }
 
 impl AtomicRefCounted for ClientConn {
+    fn refcount(&self) -> u32 {
+        self.refcount_and_flags.refcount()
+    }
+
     fn incref(&self) {
         self.refcount_and_flags.incref();
     }
@@ -540,7 +544,7 @@ impl AtomicRefCounted for ClientConn {
     }
 }
 
-impl server::Connection for ClientConn {
+impl ServerConnection for ClientConn {
     fn new(stream: TcpStream, connections: &'static Connections<Self>) -> Self {
         ClientConn {
             transport: Transport::new(stream),
@@ -576,8 +580,8 @@ impl server::Connection for ClientConn {
 
     fn close(&self) {
         self.transition(ClientState::Closed).unwrap(); // does not fail
-        if let Some(backend) = self.backend.load() {
-            backend.return_to_pool(self);
+        if self.backend.is_some() {
+            BackendConn::return_to_pool(self.release_backend());
         }
         self.transport.close();
     }
