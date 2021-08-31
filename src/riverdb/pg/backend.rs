@@ -1,5 +1,5 @@
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::sync::atomic::{AtomicU32, AtomicBool, AtomicI32, AtomicU64, AtomicU8};
+use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicU32, AtomicBool, AtomicI32, AtomicU64};
 use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
@@ -23,7 +23,7 @@ use crate::riverdb::server::{Transport, Connection as ServerConnection, Connecti
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, RefcountAndFlags};
 use crate::riverdb::pg::backend_state::BackendState;
-use crate::riverdb::common::{SpscQueue, AtomicArc, AtomicRef, coarse_monotonic_now, change_lifetime, AtomicRefCounted, Ark};
+use crate::riverdb::common::{SpscQueue, AtomicRef, coarse_monotonic_now, change_lifetime, AtomicRefCounted, Ark};
 use crate::riverdb::pg::protocol::{
     ServerParams, Messages, MessageBuilder, Tag, SSL_ALLOWED, PROTOCOL_VERSION,
     AuthType, PostgresError, hash_md5_password

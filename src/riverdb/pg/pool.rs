@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicI32};
 use std::sync::atomic::Ordering::{Relaxed};
 
-use std::sync::{Mutex, Arc};
+use std::sync::{Mutex};
 use std::fmt::{Debug, Formatter};
 
 use tokio::net::TcpStream;

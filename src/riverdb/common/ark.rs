@@ -18,11 +18,9 @@ impl<T: AtomicRefCounted> Ark<T> {
     pub fn new(obj: T) -> Self {
         // No need to incref obj, it starts at ref == 1
         debug_assert_eq!(obj.refcount(), 1);
-        unsafe {
-            Self {
-                ptr: AtomicPtr::new(Box::leak(Box::new(obj)) as *mut T),
-                phantom: PhantomData,
-            }
+        Self {
+            ptr: AtomicPtr::new(Box::leak(Box::new(obj)) as *mut T),
+            phantom: PhantomData,
         }
     }
 

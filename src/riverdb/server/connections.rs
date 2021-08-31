@@ -1,8 +1,8 @@
 
-use std::ops::{Deref};
+
 use std::sync::atomic::Ordering::{Relaxed, AcqRel, Acquire, Release};
 use std::sync::atomic::{AtomicPtr, AtomicI64};
-use std::sync::{Mutex, Arc};
+use std::sync::{Mutex};
 
 use tokio::net::TcpStream;
 use tokio::time::{interval, Duration};

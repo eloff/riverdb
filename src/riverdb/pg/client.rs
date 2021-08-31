@@ -1,8 +1,8 @@
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
+use std::sync::atomic::{AtomicU32};
+use std::sync::atomic::Ordering::{Relaxed};
 use std::fmt::{Debug, Formatter};
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex};
 use std::collections::VecDeque;
 
 use bytes::Bytes;
@@ -21,7 +21,7 @@ use crate::riverdb::pg::protocol::{
 };
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection, TransactionType};
 use crate::riverdb::server::{Transport, Connections, Connection as ServerConnection};
-use crate::riverdb::server;
+
 use crate::riverdb::pg::{PostgresCluster, ConnectionPool};
 use crate::riverdb::pg::connection::{Backlog, RefcountAndFlags};
 
@@ -29,7 +29,7 @@ use crate::riverdb::pg::message_stream::MessageStream;
 use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::pg::sql::{Query, QueryType};
 use crate::riverdb::pg::PostgresReplicationGroup;
-use crate::riverdb::common::{AtomicCell, AtomicArc, AtomicRef, Ark, AtomicRefCounted};
+use crate::riverdb::common::{AtomicCell, AtomicRef, Ark, AtomicRefCounted};
 use crate::riverdb::config::{conf, TlsMode};
 
 

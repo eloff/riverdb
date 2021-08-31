@@ -1,5 +1,5 @@
 use std::io::{BufReader, BufRead, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::{Mutex};
 use std::process::{ChildStdin, ChildStdout};
 
 use test_env_log::test;
@@ -79,10 +79,10 @@ async fn test_proxy_simple_query() -> std::result::Result<(), Box<dyn std::error
 
     let plugin = QueryPlugin::new(psql.stdout.take().unwrap(), psql.stdin.take().unwrap());
     register_scoped!(plugin, CleanupStartup, QueryPlugin:client_complete_startup<'a>(cluster: &'static PostgresCluster) -> Result<()>);
-    register_scoped!(plugin, CleanupIdle, QueryPlugin:client_idle<'a>() -> Result<Ark<BackendConn>>);
+    register_scoped!(plugin, CleanupIdle, QueryPlugin:client_idle<'a>() -> Result<common::Ark<BackendConn>>);
 
     let (s, _) = listener.accept().await?;
-    let client = ClientConn::new(s);
+    let client = ClientConn::new(s, );
     client.set_cluster(Some(common::cluster()));
 
     println!("************HERE***************");

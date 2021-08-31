@@ -1,5 +1,5 @@
 use std::sync::atomic::AtomicU8;
-use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
+use std::sync::atomic::Ordering::{Relaxed};
 use std::sync::{Mutex, MutexGuard};
 use std::collections::VecDeque;
 
