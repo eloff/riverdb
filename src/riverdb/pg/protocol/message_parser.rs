@@ -1,14 +1,13 @@
 use bytes::{BytesMut, Buf};
+use std::cmp::min;
 use std::num::NonZeroU32;
 use std::convert::TryInto;
 use std::fmt::{Display, Formatter};
 
-
-
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::protocol::Messages;
-use crate::riverdb::config::conf;
-use crate::riverdb::pg::protocol::Tag;
+use crate::riverdb::common::MIN_BUFFER_SPACE;
+use crate::riverdb::pg::protocol::{Tag, Messages};
+use crate::riverdb::config::{conf};
 
 
 pub const MIN_MESSAGE_LEN: u32 = 5;
@@ -112,7 +111,7 @@ impl MessageParser {
         // Doing this after splitting off the parsed data lets reserve
         // allocate a new buffer without copying as much existing data.
         if reserve_extra != 0 {
-            self.data.reserve(reserve_extra);
+            self.data.reserve(min(reserve_extra, conf().recv_buffer_size as usize));
         }
 
         result

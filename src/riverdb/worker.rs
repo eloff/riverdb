@@ -1,21 +1,14 @@
-#[cfg(unix)]
-
-
 use std::cell::{Cell};
-
-
-
-
-
+#[cfg(not(test))]
+use std::sync::atomic::AtomicUsize;
+#[cfg(not(test))]
+use std::sync::atomic::Ordering::Relaxed;
 
 // faster than xorshift128+ and better quality (see https://github.com/lemire/testingRNG)
 use nanorand::{WyRand, Rng};
 
-
-
 use crate::riverdb::common::fast_modulo32;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::Relaxed;
+
 
 
 thread_local! {

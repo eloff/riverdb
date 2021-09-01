@@ -1,20 +1,18 @@
 use std::mem::MaybeUninit;
 use std::path::{PathBuf};
-
-
 use std::collections::hash_map::Entry;
 
 use serde::{Deserialize};
 use serde_yaml::Value;
 use fnv::FnvHashMap;
 
-
 use crate::riverdb::config::postgres::PostgresCluster;
 use crate::riverdb::{Error, Result};
+use crate::riverdb::common::MIN_BUFFER_SPACE;
 
 
 // Things that are not configurable, but might be one day
-pub const SMALL_BUFFER_SIZE: u32 = 1024;
+pub const SMALL_BUFFER_SIZE: u32 = (MIN_BUFFER_SPACE as u32) * 2;
 pub const CONNECT_TIMEOUT_SECONDS: u32 = 30;
 /// CHECK_TIMEOUTS_INTERVAL the number of seconds between checking for timed-out connections
 pub const CHECK_TIMEOUTS_INTERVAL: u64 = 5 * 60;
@@ -112,6 +110,9 @@ impl Settings {
         }
         if self.recv_buffer_size > 1024*1024 {
             return Err(Error::new("recv_buffer_size cannot be > 1MB"));
+        }
+        if self.recv_buffer_size < MIN_BUFFER_SPACE as u32 {
+            return Err(Error::new(format!("recv_buffer_size cannot be < {} bytes", MIN_BUFFER_SPACE)));
         }
         self.recv_buffer_size = self.recv_buffer_size.next_power_of_two();
 

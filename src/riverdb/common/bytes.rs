@@ -1,11 +1,13 @@
 use bytes::{BytesMut, Bytes};
 
+pub const MIN_BUFFER_SPACE: usize = 512;
+
 /// Returns buf as a &mut [u8] up to the capacity.
 /// Safety: this is unsafe because the bytes from [len, capacity) may be uninitialized.
 /// Do not attempt to read from this region before writing to it.
 pub unsafe fn bytes_to_slice_mut(buf: &mut BytesMut) -> &mut [u8] {
-    if buf.capacity() == 0 {
-        buf.reserve(256);
+    if buf.capacity() - buf.len() == 0 {
+        buf.reserve(MIN_BUFFER_SPACE as usize);
     }
     std::slice::from_raw_parts_mut(buf.as_mut_ptr(), buf.capacity())
 }

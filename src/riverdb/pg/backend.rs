@@ -106,7 +106,8 @@ impl BackendConn {
                 };
             }
 
-            let mut offset = 0;
+            // If we don't find READY_FOR_QUERY, take all messages
+            let mut offset = msgs.len() as usize;
             let mut wake = false;
             let mut pop = false;
             let request_type = pending & REQUEST_TYPE_MASK;

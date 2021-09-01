@@ -4,7 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::collections::VecDeque;
 
 use tokio::io::{Interest, Ready};
-use bytes::{Bytes, BytesMut, BufMut, Buf};
+use bytes::{Bytes, BytesMut, Buf};
 
 use crate::riverdb::server;
 use crate::riverdb::server::Transport;
@@ -152,7 +152,6 @@ pub trait Connection: server::Connection {
     fn try_read(&self, buf: &mut BytesMut) -> Result<usize> {
         let start = buf.len();
         // Safety: safe because we don't attempt to read from any possibly uninitialized bytes
-        let _capacity = buf.capacity();
         let bytes = unsafe { bytes_to_slice_mut(buf) };
         let read_bytes = self.transport().try_read(&mut bytes[start..])?;
         // Safety: we only advance len by the amount of bytes that the OS read into buf
@@ -171,7 +170,7 @@ pub(crate) async fn read_and_flush_backlog<R: Connection, W: Connection>(
     buf: &mut BytesMut,
     sender: Option<&W>,
 ) -> Result<(usize, usize)> {
-    if buf.remaining_mut() == 0 {
+    if buf.capacity() == buf.len() {
         return Ok((0, 0));
     }
 
