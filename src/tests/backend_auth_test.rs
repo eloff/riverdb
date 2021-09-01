@@ -6,6 +6,8 @@ use tokio;
 use crate::tests::common;
 
 use crate::riverdb::pg::{PostgresCluster, BackendConn, BackendState};
+use crate::riverdb::server::Connections;
+
 
 #[test(tokio::test)]
 async fn test_backend_auth() -> Result<(), Box<dyn Error>> {
@@ -13,7 +15,7 @@ async fn test_backend_auth() -> Result<(), Box<dyn Error>> {
     let group = cluster.get_by_database(common::TEST_DATABASE).expect("missing database");
     let pool = group.master().expect("expected db pool");
 
-    let backend = BackendConn::connect(pool.config.address.as_ref().unwrap()).await?;
+    let backend = BackendConn::connect(pool.config.address.as_ref().unwrap(), Connections::new(16, 0)).await?;
     backend.test_auth(common::TEST_USER, common::TEST_PASSWORD, pool).await?;
 
     assert_eq!(backend.state(), BackendState::Ready);

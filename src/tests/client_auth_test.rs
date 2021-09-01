@@ -9,7 +9,7 @@ use crate::tests::common;
 use crate::riverdb::{Error, Result, Plugin};
 use crate::riverdb::pg::{PostgresCluster, ClientConn, ClientState, client_authenticate};
 use crate::riverdb::pg::protocol::{Messages, AuthType};
-use crate::riverdb::server::Connection;
+use crate::riverdb::server::{Connection, Connections};
 use crate::riverdb::worker::init_workers;
 
 
@@ -56,7 +56,7 @@ async fn test_client_auth() -> std::result::Result<(), Box<dyn std::error::Error
     let _psql = common::psql(format!("host=localhost port={}", listener.local_addr().unwrap().port()).as_str(), "");
 
     let (s, _) = listener.accept().await?;
-    let client = ClientConn::new(s);
+    let client = ClientConn::new(s, Connections::new(16, 0));
 
     let plugin = AuthPlugin::new();
     register_scoped!(plugin, Cleanup, AuthPlugin:client_authenticate<'a>(auth_type: AuthType, msgs: Messages) -> Result<()>);

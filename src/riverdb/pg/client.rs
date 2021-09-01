@@ -63,9 +63,8 @@ impl ClientConn {
 
         let mut stream = MessageStream::new(self);
         loop {
-            let backend = self.backend.load();
-            let msgs = stream.next(backend).await?;
-            client_messages::run(self, backend, msgs).await?;
+            let msgs = stream.next(self.backend()).await?;
+            client_messages::run(self, msgs).await?;
         }
     }
 
@@ -135,17 +134,18 @@ impl ClientConn {
     /// If backend is None, runs client_connect_backend to acquire a backend connection.
     /// Panics unless in Ready, Transaction, or FailedTransaction states.
     #[instrument]
-    pub async fn forward(&self, backend: Option<&BackendConn>, msgs: Messages) -> Result<()> {
+    pub async fn forward(&self, msgs: Messages) -> Result<()> {
         for msg in msgs.iter(0) {
             match msg.tag() {
                 Tag::QUERY => {
                     // TODO we could implement Query<'a> with Message instead?
                     // TODO can we still issue a bulk send here if Query is unaltered? This is the performance sensitive part
                     let query = Query::new(msgs.split_message(&msg));
-                    client_query::run(self, backend, query).await?;
+                    client_query::run(self, query).await?;
                 },
                 Tag::TERMINATE => {
                     self.transition(ClientState::Closed)?;
+                    let backend = self.backend();
                     if backend.is_some() {
                         BackendConn::return_to_pool(self.release_backend());
                     }
@@ -265,8 +265,9 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_query(&self, _: &mut client_query::Event, backend: Option<&BackendConn>, mut query: Query) -> Result<()> {
+    pub async fn client_query(&self, _: &mut client_query::Event, mut query: Query) -> Result<()> {
         let begins_tx = self.begins_transaction(&query)?;
+        let backend = self.backend();
 
         let state = self.state.get();
         match state {
@@ -314,7 +315,6 @@ impl ClientConn {
             let application_name = params.get("application_name").unwrap_or("riverdb");
             let tx_type = self.tx_type.load();
             let backend_ark = client_connect_backend::run(self, cluster, application_name, user, database, tx_type, &mut query).await?;
-
             // If we have buffered messages, flush them now
             // TODO not necessarily if defer_begin is enabled
             let msgs = self.buffered.lock().unwrap().take();
@@ -423,9 +423,7 @@ impl ClientConn {
                             return Err(Error::new(error_msg))
                         };
 
-                        println!("************PRE AUTH***************");
                         return if cluster.authenticate(user, password, pool).await? {
-                            println!("************POST AUTH***************");
                             client_complete_startup::run(self, cluster).await
                         } else {
                             let error_msg = format!("password authentication failed for user \"{}\"", user);
@@ -485,7 +483,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_messages(&self, _: &mut client_messages::Event, backend: Option<&BackendConn>, msgs: Messages) -> Result<()> {
+    pub async fn client_messages(&self, _: &mut client_messages::Event, msgs: Messages) -> Result<()> {
         let state = self.state.get();
         match state {
             ClientState::StateInitial => {
@@ -496,7 +494,7 @@ impl ClientConn {
                 client_authenticate::run(self, auth_type, msgs).await
             },
             ClientState::Ready | ClientState::Transaction | ClientState::FailedTransaction => {
-                self.forward(backend, msgs).await
+                self.forward(msgs).await
             },
             ClientState::Closed => {
                 Err(Error::closed())
@@ -655,13 +653,13 @@ define_event! {
     /// including potentially calling the higher-level client_query. Symmetric with backend_message.
     /// If it returns an error, the associated session is terminated.
     client_messages,
-    (client: &'a ClientConn, backend: Option<&'a BackendConn>, msgs: Messages) -> Result<()>
+    (client: &'a ClientConn, msgs: Messages) -> Result<()>
 }
 
 define_event! {
     /// TODO
     client_query,
-    (client: &'a ClientConn, backend: Option<&'a BackendConn>, query: Query) -> Result<()>
+    (client: &'a ClientConn, query: Query) -> Result<()>
 }
 
 define_event! {

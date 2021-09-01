@@ -124,7 +124,6 @@ impl<'a> Rows<'a> {
             notify.notified().await;
             self.notifier = None;
         }
-        println!("wake rows");
 
         assert!(self.affected < 0); // already iterated to completion
         self.raw = Vec::new();
@@ -132,7 +131,6 @@ impl<'a> Rows<'a> {
             for msg in self.msgs.iter(self.cur_pos as usize) {
                 match msg.tag() {
                     Tag::COMMAND_COMPLETE => {
-                        println!("command complete");
                         self.affected = parse_affected_rows(&msg)?;
                         self.message_queue = None;
                         return Ok(self.affected);
@@ -167,7 +165,6 @@ impl<'a> Rows<'a> {
         assert!(self.affected < 0); // already iterated to completion
         loop {
             for msg in self.msgs.iter(self.cur_pos as usize) {
-                println!("next() msg {}", msg.tag());
                 match msg.tag() {
                     Tag::DATA_ROW => {
                         self.raw.clear();

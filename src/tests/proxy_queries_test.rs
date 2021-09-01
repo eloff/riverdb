@@ -6,12 +6,13 @@ use test_env_log::test;
 
 use crate::register_scoped;
 use crate::tests::common;
+use crate::riverdb::common::Ark;
 use crate::riverdb::{Error, Result, Plugin};
 use crate::riverdb::pg::{
     PostgresCluster, ClientConn, BackendConn, ClientState, client_idle, client_complete_startup
 };
 
-use crate::riverdb::server::Connection;
+use crate::riverdb::server::{Connection, Connections};
 use crate::riverdb::worker::init_workers;
 
 
@@ -30,37 +31,33 @@ impl QueryPlugin {
     }
 
     pub async fn client_complete_startup<'a>(&'a self, ev: &'a mut client_complete_startup::Event, client: &'a ClientConn, cluster: &'static PostgresCluster) -> Result<()> {
-        println!("************BEFORE***************");
         ev.next(client, cluster).await?;
-        println!("************AFTER***************");
 
-        println!("sending query");
         let mut stdin = self.stdin.lock().unwrap();
         stdin.write_all("select * from staff;\n".as_bytes())?;
         stdin.flush()?;
-        println!("sent query");
 
         Ok(())
     }
 
     pub async fn client_idle(&self, ev: &mut client_idle::Event, client: &ClientConn) -> Result<Ark<BackendConn>> {
         {
-            println!("reading results");
             let mut reader = self.stdout.lock().unwrap();
-            let mut line = String::new();
-            while reader.read_line(&mut line)? != 0 {
-                println!("************************* {}", line.as_str());
+            let mut out = String::new();
+            while reader.read_line(&mut out)? != 0 {
+                if out.ends_with("rows)\n") {
+                    break
+                }
             }
-            println!("done with results");
+            assert!(out.contains("Mike.Hillyer@sakilastaff.com"));
+            assert!(out.contains("Jon.Stephens@sakilastaff.com"));
         }
 
         let backend = ev.next(client).await?;
 
-        println!("sending terminate");
         let mut stdin = self.stdin.lock().unwrap();
         stdin.write_all("\\q\n".as_bytes())?;
         stdin.flush()?;
-        println!("sent terminate");
         Ok(backend)
     }
 }
@@ -79,13 +76,11 @@ async fn test_proxy_simple_query() -> std::result::Result<(), Box<dyn std::error
 
     let plugin = QueryPlugin::new(psql.stdout.take().unwrap(), psql.stdin.take().unwrap());
     register_scoped!(plugin, CleanupStartup, QueryPlugin:client_complete_startup<'a>(cluster: &'static PostgresCluster) -> Result<()>);
-    register_scoped!(plugin, CleanupIdle, QueryPlugin:client_idle<'a>() -> Result<common::Ark<BackendConn>>);
+    register_scoped!(plugin, CleanupIdle, QueryPlugin:client_idle<'a>() -> Result<Ark<BackendConn>>);
 
     let (s, _) = listener.accept().await?;
-    let client = ClientConn::new(s, );
+    let client = ClientConn::new(s, Connections::new(16, 0));
     client.set_cluster(Some(common::cluster()));
-
-    println!("************HERE***************");
 
     assert_eq!(client.run().await, Err(Error::closed()));
     assert_eq!(client.state(), ClientState::Closed);

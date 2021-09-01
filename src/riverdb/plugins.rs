@@ -40,7 +40,10 @@ macro_rules! define_event {
             /// register globally registers a plugin function, it's called by async_plugin! before main() starts.
             /// It's an error to call this once plugins are configured.
             pub unsafe fn register(order: i32, f: Plugin<'static>) {
-                assert!(!$crate::riverdb::plugins::CONFIGURED_PLUGINS);
+                #[cfg(not(test))]
+                {
+                    assert!(!$crate::riverdb::plugins::CONFIGURED_PLUGINS);
+                }
                 PLUGINS_UNORDERED.push((order, f));
             }
 
@@ -48,7 +51,10 @@ macro_rules! define_event {
             /// It's an error to call this once plugins are configured.
             #[allow(dead_code)]
             pub unsafe fn clear() {
-                assert!(!$crate::riverdb::plugins::CONFIGURED_PLUGINS);
+                #[cfg(not(test))]
+                {
+                    assert!(!$crate::riverdb::plugins::CONFIGURED_PLUGINS);
+                }
                 PLUGINS.clear();
                 PLUGINS_UNORDERED.clear();
             }
@@ -57,7 +63,10 @@ macro_rules! define_event {
             /// It's invoked after loading the configuration, but before starting the server.
             /// This is exposed for use in tests. It's an error to call this once plugins are configured.
             pub unsafe fn configure() {
-                assert!(!$crate::riverdb::plugins::CONFIGURED_PLUGINS);
+                #[cfg(not(test))]
+                {
+                    assert!(!$crate::riverdb::plugins::CONFIGURED_PLUGINS);
+                }
                 // Sort the plugins by the order field in tuple index 0.
                 PLUGINS_UNORDERED.sort_unstable_by_key(|(order,_)| *order);
                 // Populate the PLUGINS Vec by the ordered plugins in tuple index 1.

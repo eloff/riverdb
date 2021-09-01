@@ -74,9 +74,8 @@ impl BackendConn {
 
         let mut stream = MessageStream::new(self);
         loop {
-            let client = self.client.load();
-            let msgs = stream.next(client).await?;
-            backend_messages::run(self, client, msgs).await?;
+            let msgs = stream.next(self.client()).await?;
+            backend_messages::run(self, msgs).await?;
         }
     }
 
@@ -88,9 +87,9 @@ impl BackendConn {
     /// Dispatches msgs received from the database server to the client and/or backend requests (iterators).
     /// Safety: This can only be called from inside run(). It is not safe for use by other threads/tasks.
     #[instrument]
-    pub async fn forward(&self, client: Option<&ClientConn>, mut msgs: Messages) -> Result<usize> {
+    pub async fn forward(&self, mut msgs: Messages) -> Result<usize> {
         let mut sent = 0;
-
+        let client = self.client();
         let mut pending = self.pending_requests.load(Acquire);
         let pending_count = pending.count_ones();
         let mut requests_completed = 0;
@@ -111,7 +110,6 @@ impl BackendConn {
             let mut wake = false;
             let mut pop = false;
             let request_type = pending & REQUEST_TYPE_MASK;
-            println!("request type {} pending {}", request_type, pending);
             for msg in msgs.iter(0) {
                 match msg.tag() {
                     Tag::ROW_DESCRIPTION => {
@@ -142,7 +140,6 @@ impl BackendConn {
                 }
             }
 
-            println!("split to {}", offset);
             let out = msgs.split_to(offset);
             if request_type == CLIENT_REQUEST {
                 if let Some(client) = client {
@@ -154,7 +151,6 @@ impl BackendConn {
                 debug_assert_eq!(request_type, BACKEND_REQUEST);
 
                 if wake || pop {
-                    println!("do wake pop={}", pop);
                     // Notify first, then put messages, otherwise put may block forever
                     if pop {
                         debug_assert!(!self.iterators.is_empty());
@@ -163,7 +159,6 @@ impl BackendConn {
                         self.iterators.peek().unwrap().notify_one();
                     }
                 }
-                println!("send msgs to iterators");
                 self.iterator_messages.put(out).await;
             }
 
@@ -174,7 +169,6 @@ impl BackendConn {
                 }
             }
         }
-        println!("returning from forward {} sent", sent);
         Ok(sent)
     }
 
@@ -197,7 +191,7 @@ impl BackendConn {
         while self.state() != state {
             let msgs = stream.next(None).await?;
 
-            backend_messages::run(self, None, msgs).await?;
+            backend_messages::run(self, msgs).await?;
         }
         Ok(())
     }
@@ -285,7 +279,6 @@ impl BackendConn {
                 self.execute(query!("SET ROLE {}", role)),
                 self.execute(query!("SET application_name TO {}", application_name))
             )?;
-            println!("after executes");
         }
 
         Ok(())
@@ -314,7 +307,6 @@ impl BackendConn {
         let notifier = self.iterators.put(Notify::new()).await;
         let mut rows = Rows::new(&self.iterator_messages, notifier);
         backend_send_messages::run(self, escaped_query, false).await?;
-        println!("before finish");
         rows.finish().await
     }
 
@@ -389,7 +381,7 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn backend_messages(&self, _: &mut backend_messages::Event, client: Option<&ClientConn>, mut msgs: Messages) -> Result<()> {
+    pub async fn backend_messages(&self, _: &mut backend_messages::Event, mut msgs: Messages) -> Result<()> {
         while !msgs.is_empty() {
             match self.state() {
                 BackendState::StateInitial | BackendState::SSLHandshake => {
@@ -398,7 +390,7 @@ impl BackendConn {
                 BackendState::Authentication => {
                     let first = msgs.split_first();
                     assert!(!first.is_empty());
-                    backend_authenticate::run(self, client, first).await?;
+                    backend_authenticate::run(self, first).await?;
                 },
                 BackendState::Startup => {
                     let mut params = self.server_params.lock().unwrap();
@@ -454,7 +446,7 @@ impl BackendConn {
                 _ => {
                     // Forward the message to the client, if there is one
                     // Safety: this is safe to call from the run() thread, and backend_messages is called by run().
-                    self.forward(client, msgs).await?;
+                    self.forward(msgs).await?;
                     // TODO else this is part of a query workflow, do what with it???
                     break;
                 }
@@ -464,7 +456,7 @@ impl BackendConn {
     }
 
     #[instrument]
-    pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, client: Option<&ClientConn>, msgs: Messages) -> Result<()> {
+    pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, msgs: Messages) -> Result<()> {
         assert_eq!(msgs.count(), 1);
 
         let msg = msgs.first().unwrap(); // see assert above
@@ -534,7 +526,6 @@ impl BackendConn {
                     } else {
                         BACKEND_REQUEST
                     };
-                    println!("queue {} request", request_flag);
                     let mut pending = self.pending_requests.load(Relaxed);
                     loop {
                         let pending_count = pending.count_ones();
@@ -671,13 +662,12 @@ define_event! {
 define_event! {
     /// backend_message is called when Postgres message(s) are received in a backend db connection.
     ///     backend: &BackendConn : the event source handling the backend connection
-    ///     client: Option<&'a ClientConn> : the associated client connection (if any)
     ///     msgs: protocol.Messages : the received message(s)
     /// BackendConn::backend_message is called by default and does further processing on the Message,
     /// including potentially forwarding it to associated client session. Symmetric with client_message.
     /// If it returns an error, the associated session is terminated.
     backend_messages,
-    (backend: &'a BackendConn, client: Option<&'a ClientConn>, msgs: Messages) -> Result<()>
+    (backend: &'a BackendConn, msgs: Messages) -> Result<()>
 }
 
 
@@ -703,5 +693,5 @@ define_event! {
     /// Call self.transition to BackendState::Startup when authentication has completed successfully or
     /// return an error.
     backend_authenticate,
-    (backend: &'a BackendConn, client: Option<&ClientConn>, msgs: Messages) -> Result<()>
+    (backend: &'a BackendConn, msgs: Messages) -> Result<()>
 }

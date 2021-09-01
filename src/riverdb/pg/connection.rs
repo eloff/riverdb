@@ -150,21 +150,11 @@ pub trait Connection: server::Connection {
     /// try_read attempts to read some bytes without blocking from transport into buf.
     /// appends to buf, does not overwrite existing data.
     fn try_read(&self, buf: &mut BytesMut) -> Result<usize> {
-        let mut read_bytes = 0;
         let start = buf.len();
         // Safety: safe because we don't attempt to read from any possibly uninitialized bytes
         let _capacity = buf.capacity();
         let bytes = unsafe { bytes_to_slice_mut(buf) };
-        let mut n = self.transport().try_read(&mut bytes[start..])?;
-        read_bytes += n;
-        if n > 0 && n < bytes.len() {
-            // If we read some data, but didn't fill buffer, reading again should return 0 (WouldBlock)
-            // We don't have to try again here, it will happen anyway on the next call.
-            // However, doing it here is more efficient as we skip all the code between invocations.
-            // Reading until WouldBlock rearms the READABLE interest, so ready will block until more data arrives.
-            n = self.transport().try_read(&mut bytes[n..])?;
-            read_bytes += n;
-        }
+        let read_bytes = self.transport().try_read(&mut bytes[start..])?;
         // Safety: we only advance len by the amount of bytes that the OS read into buf
         unsafe { buf.set_len(buf.len() + read_bytes); }
         Ok(read_bytes)

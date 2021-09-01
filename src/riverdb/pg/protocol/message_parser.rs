@@ -83,7 +83,9 @@ impl MessageParser {
         let data = self.data.chunk();
         loop {
             match Header::parse(&data[pos..]) {
-                Err(e) => { return Some(Err(e)) },
+                Err(e) => {
+                    return Some(Err(e))
+                },
                 Ok(None) => { break; },
                 Ok(Some(hdr)) => {
                     let msg_end = pos + hdr.len() as usize;
