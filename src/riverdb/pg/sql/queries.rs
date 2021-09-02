@@ -3,6 +3,8 @@ use std::fmt::{Debug, Formatter};
 use crate::riverdb::pg::protocol::{Tag, Messages};
 use crate::riverdb::pg::sql::QueryType;
 
+pub enum ObjectType {}
+
 pub struct Query {
     msgs: Messages,
     normalized_query: String,
@@ -23,12 +25,18 @@ impl Query {
             }
         }
 
-        // TODO figure out the actual query type here
-        Self{msgs, normalized_query, query_type: QueryType::Other}
+        let query_type = QueryType::from(normalized_query.trim());
+
+        Self{msgs, normalized_query, query_type}
     }
 
     pub fn query_type(&self) -> QueryType {
         self.query_type
+    }
+
+    /// Returns the object type affected for ALTER, CREATE, or DROP queries
+    pub fn object_type(&self) -> ObjectType {
+        todo!()
     }
 
     pub fn into_messages(self) -> Messages {

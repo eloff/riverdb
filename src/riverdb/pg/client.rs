@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use bytes::Bytes;
 
 use tokio::net::TcpStream;
-use tracing::{error, instrument};
+use tracing::{error, warn, instrument};
 
 
 use crate::define_event;
@@ -29,7 +29,7 @@ use crate::riverdb::pg::message_stream::MessageStream;
 use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::pg::sql::{Query, QueryType};
 use crate::riverdb::pg::PostgresReplicationGroup;
-use crate::riverdb::common::{AtomicCell, AtomicRef, Ark, AtomicRefCounted};
+use crate::riverdb::common::{AtomicCell, AtomicRef, Ark, AtomicRefCounted, ErrorKind};
 use crate::riverdb::config::{conf, TlsMode};
 
 
@@ -58,6 +58,20 @@ pub struct ClientConn {
 impl ClientConn {
     #[instrument]
     pub async fn run(&self) -> Result<()> {
+        let e = self.run_inner().await.expect_err("client run exited without error");
+        if let ErrorKind::ClosedError = e.kind() {
+            // This is expected, don't pollute the logs by logging this
+        } else {
+            warn!(?e, "client connection run failed");
+            if !self.is_closed() {
+                let err_msg = Messages::new_error(error_codes::SYSTEM_ERROR, format!("riverdb error: {}", e).as_str());
+                let _ = self.send(err_msg).await;
+            }
+        }
+        Err(e)
+    }
+
+    async fn run_inner(&self) -> Result<()> {
         // XXX: This code is very similar to BackendConn::run.
         // If you change this, you probably need to change that too.
 
@@ -273,18 +287,23 @@ impl ClientConn {
         match state {
             ClientState::Transaction | ClientState::Ready => {
                 if backend.is_none() && begins_tx {
+                    println!("*** BUFFER BEGIN ***");
+                    let mut warn_already_in_tx = false;
                     {
                         let mut buffered = self.buffered.lock().unwrap();
                         if buffered.is_none() {
                             *buffered = Some(query.into_messages());
-                            return Ok(());
+                        } else {
+                            warn_already_in_tx = true;
                         }
                     }
 
                     // There shouldn't have been anything buffered, we received two begin statements back to back
                     // Behave the same as Postgres, give a warning and ignore the second one.
-                    let msg = Messages::new_warning(error_codes::ACTIVE_SQL_TRANSACTION, "there is already a transaction in progress");
-                    self.send(msg).await?;
+                    if warn_already_in_tx {
+                        let msg = Messages::new_warning(error_codes::ACTIVE_SQL_TRANSACTION, "there is already a transaction in progress");
+                        self.send(msg).await?;
+                    }
                     self.send_command_successful("BEGIN", 'T').await?;
                     return Ok(());
                 }
@@ -319,7 +338,8 @@ impl ClientConn {
             // TODO not necessarily if defer_begin is enabled
             let msgs = self.buffered.lock().unwrap().take();
             if let Some(msgs) = msgs {
-                backend_ark.send(msgs).await?;
+                println!("*** FLUSH BUFFERED MSGS {} ***", msgs);
+                backend_ark.execute(msgs).await?;
             }
 
             backend_ark.send(query.into_messages()).await?;

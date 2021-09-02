@@ -1,9 +1,4 @@
-#[cfg(unix)]
-
-
-
-use tracing::{info, warn};
-
+use tracing::{info};
 
 use crate::riverdb::worker::Worker;
 use crate::riverdb::server::{Connections, Listener};
@@ -30,9 +25,8 @@ impl PostgresService {
             let conn = self.connections.add(sock);
             if conn.is_some() {
                 tokio.spawn(async move {
-                    if let Err(e) = conn.run().await {
-                        warn!(%e, "error in Postgres ClientConn");
-                    }
+                    // We already handled this error, including logging it, in run()
+                    let _ = conn.run().await;
                 });
             }
             // Else drop the connection, we're at capacity

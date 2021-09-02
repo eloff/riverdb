@@ -5,7 +5,6 @@ use std::convert::TryInto;
 use std::fmt::{Display, Formatter};
 
 use crate::riverdb::{Error, Result};
-use crate::riverdb::common::MIN_BUFFER_SPACE;
 use crate::riverdb::pg::protocol::{Tag, Messages};
 use crate::riverdb::config::{conf};
 

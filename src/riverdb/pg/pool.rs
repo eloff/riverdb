@@ -118,7 +118,7 @@ impl ConnectionPool {
                 if let ErrorKind::ClosedError = e.kind() {
                     // This is expected, don't pollute the logs by logging this
                 } else {
-                    warn!(?e, "connection run failed");
+                    warn!(?e, "backend connection run failed");
                 }
             }
             self.remove(&conn);
