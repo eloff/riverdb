@@ -5,7 +5,7 @@ use tracing::{warn};
 use tokio::sync::Notify;
 
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::{MessageQueue};
+use crate::riverdb::pg::{MessageQueue, BackendConn};
 use crate::riverdb::pg::protocol::{Message, Messages, Tag, RowDescription, PostgresError};
 use crate::riverdb::common::change_lifetime;
 
@@ -13,7 +13,7 @@ use crate::riverdb::common::change_lifetime;
 const FIELD_INDEX_OUT_OF_RANGE: &str = "field index out of range";
 
 pub struct Rows<'a> {
-    message_queue: Option<&'a MessageQueue>,
+    backend: &'a BackendConn,
     notifier: Option<&'a Notify>,
     fields: RowDescription,
     msgs: Messages, // messages to be processed next
@@ -23,9 +23,9 @@ pub struct Rows<'a> {
 }
 
 impl<'a> Rows<'a> {
-    pub fn new(message_queue: &'a MessageQueue, notifier: &'a Notify) -> Self {
+    pub fn new(backend: &'a BackendConn, notifier: &'a Notify) -> Self {
         Self{
-            message_queue: Some(message_queue),
+            backend,
             notifier: Some(notifier),
             fields: RowDescription::default(),
             msgs: Messages::default(),
@@ -114,16 +114,23 @@ impl<'a> Rows<'a> {
         }
     }
 
+    async fn wait_for_notify(&mut self) {
+        if let Some(notifier) = self.notifier {
+            // Wait for our turn with the message queue
+            println!("NOTIFIER before {:p}", notifier);
+            notifier.notified().await;
+            self.notifier = None;
+            self.backend.iterator_notified().await;
+        }
+    }
+
     pub async fn finish(&mut self) -> Result<i32> {
         if self.affected >= 0 {
             return Ok(self.affected);
         }
 
-        if let Some(notify) = self.notifier {
-            // Wait for our turn with the message queue
-            notify.notified().await;
-            self.notifier = None;
-        }
+        self.wait_for_notify().await;
+        println!("NOTIFIER after");
 
         assert!(self.affected < 0); // already iterated to completion
         self.raw = Vec::new();
@@ -131,36 +138,34 @@ impl<'a> Rows<'a> {
             for msg in self.msgs.iter(self.cur_pos as usize) {
                 match msg.tag() {
                     Tag::COMMAND_COMPLETE => {
+                        println!("COMMAND COMPLETE!");
                         self.affected = parse_affected_rows(&msg)?;
-                        self.message_queue = None;
                         return Ok(self.affected);
                     },
                     Tag::ERROR_RESPONSE => {
+                        println!("ERROR RESPONSE!");
                         let e = PostgresError::new(self.msgs.split_message(&msg))?;
                         return Err(Error::from(e));
                     },
                     Tag::NOTICE_RESPONSE => {
+                        println!("NOTICE RESPONSE!");
                         let e = PostgresError::new(self.msgs.split_message(&msg))?;
                         warn!(%e, "notice received while iterating over result in Rows");
                     },
                     _ => (),
                 }
             }
-            self.msgs = self.message_queue.unwrap().pop().await;
+            self.msgs = self.backend.iterator_messages().await;
         }
     }
 
     pub async fn next(&mut self) -> Result<bool> {
-        if let Some(notify) = self.notifier {
-            // Wait for our turn with the message queue
-            notify.notified().await;
-            self.notifier = None;
-        }
-
-        if self.message_queue.is_none() {
+        if self.affected >= 0 {
             // Already iterated to completion
             return Ok(false);
         }
+
+        self.wait_for_notify().await;
 
         assert!(self.affected < 0); // already iterated to completion
         loop {
@@ -196,7 +201,6 @@ impl<'a> Rows<'a> {
                     Tag::COMMAND_COMPLETE => {
                         self.affected = parse_affected_rows(&msg)?;
                         self.raw = Vec::new();
-                        self.message_queue = None;
                         return Ok(false);
                     },
                     Tag::ERROR_RESPONSE => {
@@ -212,7 +216,7 @@ impl<'a> Rows<'a> {
                     }
                 }
             }
-            self.msgs = self.message_queue.unwrap().pop().await;
+            self.msgs = self.backend.iterator_messages().await;
         }
     }
 }

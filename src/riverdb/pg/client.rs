@@ -340,6 +340,8 @@ impl ClientConn {
             if let Some(msgs) = msgs {
                 println!("*** FLUSH BUFFERED MSGS {} ***", msgs);
                 backend_ark.execute(msgs).await?;
+                println!("flushed begin");
+                // TODO, join futures to pipeline them
             }
 
             backend_ark.send(query.into_messages()).await?;

@@ -88,6 +88,7 @@ impl BackendConn {
     /// Safety: This can only be called from inside run(). It is not safe for use by other threads/tasks.
     #[instrument]
     pub async fn forward(&self, mut msgs: Messages) -> Result<usize> {
+        println!("hmmm, we didn't get here");
         let mut sent = 0;
         let client = self.client();
         let mut pending = self.pending_requests.load(Acquire);
@@ -109,16 +110,16 @@ impl BackendConn {
             // If we don't find READY_FOR_QUERY, take all messages
             let mut offset = msgs.len() as usize;
             let mut wake = false;
-            let mut pop = false;
             let request_type = pending & REQUEST_TYPE_MASK;
             for msg in msgs.iter(0) {
                 match msg.tag() {
                     Tag::ROW_DESCRIPTION => {
+                        println!("forward ROW_DESCRIPTION");
                         // If this is a backend request, this is a new rows result, wake the iterator
                         wake = request_type == BACKEND_REQUEST;
                     },
                     Tag::READY_FOR_QUERY => {
-                        // If we didn't notify the iterator above to consume it's messages, now's the last chance
+                        println!("forward READY_FOR_QUERY");
                         // This happens if the result wasn't a rows result, but just a command to execute.
                         requests_completed += 1;
                         let pending_original = pending;
@@ -134,31 +135,36 @@ impl BackendConn {
                         }
 
                         offset = msg.offset() + msg.len() as usize;
-                        pop = request_type == BACKEND_REQUEST;
+                        // If we didn't notify the iterator above to consume it's messages, now's the last chance
+                        wake = request_type == BACKEND_REQUEST;
                         break;
                     }
                     _ => (),
                 }
             }
 
+            println!("split to {}", offset);
             let out = msgs.split_to(offset);
             if request_type == CLIENT_REQUEST {
+                println!("client request");
                 if let Some(client) = client {
                     sent += client.send(out).await?;
                 } else {
                     warn!(msgs=?out, "dropping messages without client");
                 }
             } else {
+                println!("backend request");
                 debug_assert_eq!(request_type, BACKEND_REQUEST);
 
-                if wake || pop {
-                    // Notify first, then put messages, otherwise put may block forever
-                    if pop {
-                        debug_assert!(!self.iterators.is_empty());
-                        self.iterators.pop().await.notify_one();
-                    } else {
-                        self.iterators.peek().unwrap().notify_one();
-                    }
+                // Notify first, then put messages, otherwise put may block forever
+                if wake {
+                    // Note that we passed out a reference to the actual slot containing the Notify
+                    // struct in self.iterators. Therefore if you pop and then try to use it,
+                    // you're only notifying a local copy that nothing is waiting on.
+                    debug_assert!(!self.iterators.is_empty());
+                    let notifier = self.iterators.peek().unwrap();
+                    println!("notify {:p}", notifier);
+                    notifier.notify_one();
                 }
                 self.iterator_messages.put(out).await;
             }
@@ -294,7 +300,7 @@ impl BackendConn {
             return Err(Error::new("query expects exactly one Message"));
         }
         let notifier = self.iterators.put(Notify::new()).await;
-        let rows = Rows::new(&self.iterator_messages, notifier);
+        let rows = Rows::new(self, notifier);
         backend_send_messages::run(self, escaped_query, false).await?;
         Ok(rows)
     }
@@ -306,9 +312,12 @@ impl BackendConn {
             return Err(Error::new("execute expects exactly one Message"));
         }
         let notifier = self.iterators.put(Notify::new()).await;
-        let mut rows = Rows::new(&self.iterator_messages, notifier);
+        let mut rows = Rows::new(self, notifier);
         backend_send_messages::run(self, escaped_query, false).await?;
-        rows.finish().await
+        println!("before finish");
+        rows.finish().await?;
+        println!("after finish");
+        Ok(0)
     }
 
     pub fn state(&self) -> BackendState {
@@ -366,6 +375,15 @@ impl BackendConn {
 
     pub fn pending_requests(&self) -> u32 {
         self.pending_requests.load(Relaxed).count_ones()
+    }
+
+    pub(crate) async fn iterator_messages(&self) -> Messages {
+        self.iterator_messages.pop().await
+    }
+
+    pub(crate) async fn iterator_notified(&self) {
+        debug_assert!(!self.iterators.is_empty());
+        self.iterators.pop().await;
     }
 
     #[instrument]
