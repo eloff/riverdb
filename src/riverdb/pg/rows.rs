@@ -1,11 +1,11 @@
-
+use std::pin::Pin;
 use std::convert::TryInto;
 
 use tracing::{warn};
 use tokio::sync::Notify;
 
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::{MessageQueue, BackendConn};
+use crate::riverdb::pg::{BackendConn};
 use crate::riverdb::pg::protocol::{Message, Messages, Tag, RowDescription, PostgresError};
 use crate::riverdb::common::change_lifetime;
 
@@ -14,25 +14,30 @@ const FIELD_INDEX_OUT_OF_RANGE: &str = "field index out of range";
 
 pub struct Rows<'a> {
     backend: &'a BackendConn,
-    notifier: Option<&'a Notify>,
+    notifier: Notify,
     fields: RowDescription,
     msgs: Messages, // messages to be processed next
     raw: Vec<&'static [u8]>, // these point into cur, they're not static
-    cur_pos: u32, // the offset of the current message being processed in msgs
+    cur_pos: i32, // the offset of the current message being processed in msgs
     affected: i32,
 }
 
 impl<'a> Rows<'a> {
-    pub fn new(backend: &'a BackendConn, notifier: &'a Notify) -> Self {
+    pub fn new(backend: &'a BackendConn) -> Self {
         Self{
             backend,
-            notifier: Some(notifier),
+            notifier: Notify::new(),
             fields: RowDescription::default(),
             msgs: Messages::default(),
             raw: Vec::new(),
-            cur_pos: 0,
+            cur_pos: -1,
             affected: -1,
         }
+    }
+
+    pub fn notifier(self: Pin<&Self>) -> *const Notify {
+        println!("get notifier {:p}", &self.as_ref().notifier);
+        &self.as_ref().notifier as _
     }
 
     /// Returns the number of affected rows. Can only be called once next() returns false.
@@ -115,12 +120,10 @@ impl<'a> Rows<'a> {
     }
 
     async fn wait_for_notify(&mut self) {
-        if let Some(notifier) = self.notifier {
+        if self.cur_pos < 0 {
             // Wait for our turn with the message queue
-            println!("NOTIFIER before {:p}", notifier);
-            notifier.notified().await;
-            self.notifier = None;
-            self.backend.iterator_notified().await;
+            self.notifier.notified().await;
+            self.cur_pos = 0;
         }
     }
 
@@ -130,7 +133,6 @@ impl<'a> Rows<'a> {
         }
 
         self.wait_for_notify().await;
-        println!("NOTIFIER after");
 
         assert!(self.affected < 0); // already iterated to completion
         self.raw = Vec::new();
@@ -156,7 +158,9 @@ impl<'a> Rows<'a> {
                 }
             }
             self.msgs = self.backend.iterator_messages().await;
+            self.cur_pos = 0; // reset this, since msgs changed
         }
+
     }
 
     pub async fn next(&mut self) -> Result<bool> {
@@ -170,6 +174,8 @@ impl<'a> Rows<'a> {
         assert!(self.affected < 0); // already iterated to completion
         loop {
             for msg in self.msgs.iter(self.cur_pos as usize) {
+                // Don't process this message again on the next call to next().
+                self.cur_pos = (msg.offset() as u32 + msg.len()) as i32;
                 match msg.tag() {
                     Tag::DATA_ROW => {
                         self.raw.clear();
@@ -191,7 +197,6 @@ impl<'a> Rows<'a> {
                                 }
                             }
                         }
-                        self.cur_pos = msg.offset() as u32;
                         return Ok(true);
                     },
                     Tag::ROW_DESCRIPTION => {
@@ -217,13 +222,14 @@ impl<'a> Rows<'a> {
                 }
             }
             self.msgs = self.backend.iterator_messages().await;
+            self.cur_pos = 0; // reset this, since msgs changed
         }
     }
 }
 
 impl<'a> Drop for Rows<'a> {
     fn drop(&mut self) {
-        assert!(self.affected >= 0, "you MUST call Rows::next() until it returns false or an error");
+        assert!(self.affected >= 0, "you MUST call Rows::next() until it returns false, or Rows::finish()");
     }
 }
 

@@ -39,11 +39,7 @@ impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
     }
 
     /// Add a value to the queue, waiting if queue is full.
-    /// Safety: While the returned reference to value is always valid, the data it
-    /// points to may not be. The consumer can pop it from the queue and drop it
-    /// before you access it through the returned reference. Never use the reference
-    /// unless you know for certain that the consumer will not pop it from the queue.
-    pub async fn put(&self, value: T) -> &T {
+    pub async fn put(&self, value: T) {
         loop {
             let ppos = self.producer.load(Acquire);
             let cpos = self.consumer.load(Relaxed);
@@ -59,9 +55,27 @@ impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
                 slot_ptr.write(value);
                 self.producer.store(ppos + 1, Release); // publish the item
                 self.notify_consumer.notify_one();
-                return &*slot_ptr;
+                return;
             }
         }
+    }
+
+    /// Remove and return a value from the queue, panics if queue is empty.
+    pub fn pop_now(&self) -> T {
+        let cpos = self.consumer.load(Relaxed);
+        let ppos = self.producer.load(Acquire);
+        assert!(cpos < ppos); // It's an error to call this if queue can be empty
+        // TODO factor this out into a common method
+        let result = unsafe {
+            let slot = (&*self.ring.as_ptr()).get_unchecked(cpos & Self::MASK);
+            slot.get().read()
+        };
+        self.consumer.store(cpos + 1, Release); // remove the item
+        if cpos + SIZE == ppos {
+            // Queue was full, we just freed a slot, wake the producer
+            self.notify_producer.notify_one();
+        }
+        return result;
     }
 
     /// Remove and return a value from the queue, waiting if queue is empty.
@@ -74,6 +88,7 @@ impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
                 self.notify_consumer.notified().await;
                 continue;
             }
+            // TODO factor this out into a common method
             let result = unsafe {
                 let slot = (&*self.ring.as_ptr()).get_unchecked(cpos & Self::MASK);
                 slot.get().read()
@@ -103,6 +118,7 @@ impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
 }
 
 // Safety: we use UnsafeCell in a thread-safe manner
+unsafe impl<T, const SIZE: usize> Send for SpscQueue<T, SIZE> {}
 unsafe impl<T, const SIZE: usize> Sync for SpscQueue<T, SIZE> {}
 
 #[cfg(test)]

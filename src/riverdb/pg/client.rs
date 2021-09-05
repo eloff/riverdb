@@ -306,13 +306,21 @@ impl ClientConn {
                     }
                     self.send_command_successful("BEGIN", 'T').await?;
                     return Ok(());
+                } else if query.query_type() == QueryType::Commit || query.query_type() == QueryType::Rollback {
+                    println!("commit or rollback");
+                    if !query.normalized().contains("AND CHAIN") {
+                        println!("and chain");
+                        self.transition(ClientState::Ready)?;
+                    }
                 }
             },
             ClientState::FailedTransaction => {
                 // Only ROLLBACK is permitted
                 if query.query_type() == QueryType::Rollback {
-                    // We already rolled back the backend and returned it to the pool
-                    self.transition(ClientState::Ready)?;
+                    if !query.normalized().contains("AND CHAIN") {
+                        // We already rolled back the backend and returned it to the pool
+                        self.transition(ClientState::Ready)?;
+                    }
 
                     // Tell the client the command succeeded
                     self.send_command_successful("ROLLBACK", 'I').await?;

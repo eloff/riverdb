@@ -30,6 +30,7 @@ use crate::riverdb::pg::protocol::{
 };
 
 use crate::riverdb::pg::message_stream::MessageStream;
+use std::pin::Pin;
 
 const MAX_PENDING_REQUESTS: u32 = 32;
 const CLIENT_REQUEST: u64 = 1;
@@ -52,7 +53,7 @@ pub struct BackendConn {
     pool: AtomicRef<'static, ConnectionPool>,
     pending_requests: AtomicU64, // a bitfield identifying client and backend (iterator) requests
     iterator_messages: MessageQueue, // messages queued for Rows iterators
-    iterators: SpscQueue<Notify, 16>,
+    iterators: SpscQueue<usize, 16>, // rust doesn't allow a pointer type here (*const Notify is not Send, despite Send being implemented for SPSC)
     server_params: Mutex<ServerParams>,
     pid: AtomicI32,
     secret: AtomicI32,
@@ -88,7 +89,6 @@ impl BackendConn {
     /// Safety: This can only be called from inside run(). It is not safe for use by other threads/tasks.
     #[instrument]
     pub async fn forward(&self, mut msgs: Messages) -> Result<usize> {
-        println!("hmmm, we didn't get here");
         let mut sent = 0;
         let client = self.client();
         let mut pending = self.pending_requests.load(Acquire);
@@ -110,6 +110,7 @@ impl BackendConn {
             // If we don't find READY_FOR_QUERY, take all messages
             let mut offset = msgs.len() as usize;
             let mut wake = false;
+            let mut pop = false;
             let request_type = pending & REQUEST_TYPE_MASK;
             for msg in msgs.iter(0) {
                 match msg.tag() {
@@ -136,14 +137,15 @@ impl BackendConn {
 
                         offset = msg.offset() + msg.len() as usize;
                         // If we didn't notify the iterator above to consume it's messages, now's the last chance
-                        wake = request_type == BACKEND_REQUEST;
+                        pop = request_type == BACKEND_REQUEST;
+                        wake = pop;
                         break;
                     }
                     _ => (),
                 }
             }
 
-            println!("split to {}", offset);
+            println!("split to {} out of {}", offset, msgs.len());
             let out = msgs.split_to(offset);
             if request_type == CLIENT_REQUEST {
                 println!("client request");
@@ -158,13 +160,16 @@ impl BackendConn {
 
                 // Notify first, then put messages, otherwise put may block forever
                 if wake {
-                    // Note that we passed out a reference to the actual slot containing the Notify
-                    // struct in self.iterators. Therefore if you pop and then try to use it,
-                    // you're only notifying a local copy that nothing is waiting on.
                     debug_assert!(!self.iterators.is_empty());
-                    let notifier = self.iterators.peek().unwrap();
+                    let notifier = if pop {
+                        println!("pop notifier");
+                        self.iterators.pop_now()
+                    } else {
+                        *self.iterators.peek().unwrap()
+                    } as *const Notify;
                     println!("notify {:p}", notifier);
-                    notifier.notify_one();
+                    // Safety: dereferencing a valid pointer, if the Rows object was dropped it would have panicked
+                    unsafe { &*notifier }.notify_one();
                 }
                 self.iterator_messages.put(out).await;
             }
@@ -295,12 +300,13 @@ impl BackendConn {
     /// until it returns false or Rows::finish() to consume the entire result, even if you
     /// don't intend to use it.
     #[must_use = "you must call Rows::next() until it returns false or Rows::finish() to consume the entire result"]
-    pub async fn query<'a>(&'a self, escaped_query: Messages) -> Result<Rows<'a>> {
+    pub async fn query<'a>(&'a self, escaped_query: Messages) -> Result<Pin<Box<Rows<'a>>>> {
         if escaped_query.count() != 1 {
             return Err(Error::new("query expects exactly one Message"));
         }
-        let notifier = self.iterators.put(Notify::new()).await;
-        let rows = Rows::new(self, notifier);
+        let rows = Box::pin(Rows::new(self));
+        let notifier = rows.as_ref().notifier() as usize;
+        self.iterators.put(notifier as usize).await;
         backend_send_messages::run(self, escaped_query, false).await?;
         Ok(rows)
     }
@@ -308,16 +314,11 @@ impl BackendConn {
     /// Issue a command and wait for the result. If this is awaited with other query/execute
     /// futures then it will pipeline the queries. Returns the number of affected rows.
     pub async fn execute(&self, escaped_query: Messages) -> Result<i32> {
-        if escaped_query.count() != 1 {
-            return Err(Error::new("execute expects exactly one Message"));
-        }
-        let notifier = self.iterators.put(Notify::new()).await;
-        let mut rows = Rows::new(self, notifier);
-        backend_send_messages::run(self, escaped_query, false).await?;
+        let mut rows = self.query(escaped_query).await?;
         println!("before finish");
         rows.finish().await?;
         println!("after finish");
-        Ok(0)
+        Ok(0) // return value from finish().await above
     }
 
     pub fn state(&self) -> BackendState {
@@ -379,11 +380,6 @@ impl BackendConn {
 
     pub(crate) async fn iterator_messages(&self) -> Messages {
         self.iterator_messages.pop().await
-    }
-
-    pub(crate) async fn iterator_notified(&self) {
-        debug_assert!(!self.iterators.is_empty());
-        self.iterators.pop().await;
     }
 
     #[instrument]
