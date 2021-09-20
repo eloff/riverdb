@@ -20,10 +20,12 @@ of this license, then please contact us to ask for an exception or clarification
 ## Competition
 
 A good or service provided free of charge may not compete
-if it does not materially impact revenue of the licensor.
+if it does not in theory or practice impact revenue of the licensor.
 Freely redistributing the product with bug or security fixes
-is not competition because it does not in practice or in theory
-harm the revenue of the licensor.
+is not competition because it does not in theory or practice
+harm the revenue of the licensor. If there is disagreement about
+whether this clause is violated, the licensor's interpretation will be the one used.
+If in doubt, seek an exception or clarification first.
 
 ### Marketplace Competition
 

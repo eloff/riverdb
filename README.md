@@ -24,9 +24,11 @@ Our long-term aspiration is to create a global, low-latency, high-throughput dat
 
 No, not a fancy Cockroach DB, Spanner, or Yugabyte type of thing, just a straightforward single master (or partitioned multi-master) with replicas potentially geographically distributed.
 That might sound boring compared to Spanner with their GPS/atomic clocks, but it may actually perform better
-and costs less in many important use cases.
+and cost less in many important use cases.
 
-Something we could use efficiently from Cloudflare Workers or new serverless platforms like it.
+Something we could use efficiently from Cloudflare Workers or new serverless platforms like it. It should be possible
+to build something like an Uber or an Asana with just partitioned PostgreSQL and Cloudflare Workers. With none of the insane feats of
+software engineering and complexity that currently is the norm to scale applications.
 
 ## License
 
