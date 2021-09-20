@@ -13,7 +13,6 @@ use tokio::io::Interest;
 use tokio::sync::Notify;
 use tracing::{error, warn, debug, instrument};
 use bytes::Bytes;
-use futures::try_join;
 
 use crate::{define_event, query};
 use crate::riverdb::{config, Error, Result};
@@ -273,16 +272,15 @@ impl BackendConn {
 
     /// Reset the connection prior to returning it to the pool
     pub async fn reset(&self) -> Result<()> {
-        // TODO track how SET was used and if there's nothing to reset, just reset the user
-        const RESET_QUERY: &str = "RESET ROLE; RESET ALL";
+        // TODO(optimization) track how SET was used and if there's nothing to reset, no need to call RESET ALL
 
         let reset = if self.state().is_transaction() {
-            query!("ROLLBACK; " RESET_QUERY)
+            query!("ROLLBACK; RESET ROLE; RESET ALL",)
         } else {
-            query!(RESET_QUERY)
+            query!("RESET ROLE; RESET ALL",)
         };
 
-        self.execute(reset)?;
+        self.execute(reset).await?;
         Ok(())
     }
 
@@ -301,7 +299,7 @@ impl BackendConn {
             query!("SET ROLE {}; SET application_name TO {}", role, application_name)
         };
 
-        self.execute(check)?;
+        self.execute(check).await?;
         Ok(())
     }
 

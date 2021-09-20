@@ -128,7 +128,7 @@ async fn test_proxy_transactions() -> std::result::Result<(), Box<dyn std::error
 
     assert_eq!(client.run().await, Err(Error::closed()));
     assert_eq!(client.state(), ClientState::Closed);
-    assert_eq!(plugin.transactions.load(Relaxed), 3);
+    assert_eq!(plugin.transactions.load(Relaxed), 2);
 
     Ok(())
 }

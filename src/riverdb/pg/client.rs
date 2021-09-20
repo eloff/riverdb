@@ -313,7 +313,7 @@ impl ClientConn {
                     return Ok(());
                 } else if query.query_type() == QueryType::Commit || query.query_type() == QueryType::Rollback {
                     debug!("end transaction: {:?}", query.query_type());
-                    if query.query_type() == QueryType::ROLLBACK || !query.normalized().contains("AND CHAIN") {
+                    if query.query_type() == QueryType::Rollback || !query.normalized().contains("AND CHAIN") {
                         self.transition(ClientState::Ready)?;
                     }
                 }
@@ -335,7 +335,7 @@ impl ClientConn {
             if let Some(msgs) = msgs {
                 // Pipeline the begin statement with msgs
                 debug!("flush buffered {} to db", msgs);
-                try_join!(
+                futures::try_join!(
                     backend_ark.execute(msgs),
                     backend_ark.send(query.into_messages())
                 )?;

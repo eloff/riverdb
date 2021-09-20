@@ -73,20 +73,22 @@ pub fn escape_str(out: &mut BytesMut, s: &str) {
 
 #[macro_export]
 macro_rules! query {
-    ($f: expr, $($args: expr),+) => {
+    ($f: expr, $($args: expr),*) => {
         {
             let mut mb = crate::riverdb::pg::protocol::MessageBuilder::new(crate::riverdb::pg::protocol::Tag::QUERY);
             let out_ref = mb.bytes_mut();
-            query!(@out_ref, $f, $($args),+);
+            query!(@out_ref, $f, $($args),*);
             mb.write_byte(0);
             mb.finish()
         }
     };
-    (@$out: ident, $f: expr,) => {};
+    (@$out: ident, $f: expr, ) => {
+        crate::riverdb::pg::sql::check_formatting_placeholders_consumed($f);
+        let _ = std::fmt::Write::write_str($out, $f);
+    };
     (@$out: ident, $f: expr, $arg: expr) => {
         let tail = crate::riverdb::pg::sql::write_escaped($out, $f, &$arg);
-        crate::riverdb::pg::sql::check_formatting_placeholders_consumed(tail);
-        let _ = std::fmt::Write::write_str($out, tail);
+        query!(@$out, tail, );
     };
     (@$out: ident, $f: expr, $arg: expr, $($args: expr),*) => {
         let tmp = crate::riverdb::pg::sql::write_escaped($out, $f, &$arg);
