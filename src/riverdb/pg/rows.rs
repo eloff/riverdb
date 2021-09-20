@@ -36,7 +36,6 @@ impl<'a> Rows<'a> {
     }
 
     pub fn notifier(self: Pin<&Self>) -> *const Notify {
-        println!("get notifier {:p}", &self.as_ref().notifier);
         &self.as_ref().notifier as _
     }
 
@@ -140,17 +139,14 @@ impl<'a> Rows<'a> {
             for msg in self.msgs.iter(self.cur_pos as usize) {
                 match msg.tag() {
                     Tag::COMMAND_COMPLETE => {
-                        println!("COMMAND COMPLETE!");
                         self.affected = parse_affected_rows(&msg)?;
                         return Ok(self.affected);
                     },
                     Tag::ERROR_RESPONSE => {
-                        println!("ERROR RESPONSE!");
                         let e = PostgresError::new(self.msgs.split_message(&msg))?;
                         return Err(Error::from(e));
                     },
                     Tag::NOTICE_RESPONSE => {
-                        println!("NOTICE RESPONSE!");
                         let e = PostgresError::new(self.msgs.split_message(&msg))?;
                         warn!(%e, "notice received while iterating over result in Rows");
                     },

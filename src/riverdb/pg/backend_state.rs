@@ -38,6 +38,7 @@ pub trait StateEnum: Sized + Copy where u32: From<Self>
     fn is_final(&self) -> bool {
         false
     }
+    fn is_transaction(&self) -> bool;
 }
 
 impl StateEnum for BackendState {
@@ -46,6 +47,13 @@ impl StateEnum for BackendState {
             true
         } else {
             false
+        }
+    }
+
+    fn is_transaction(&self) -> bool {
+        match self {
+            BackendState::Transaction | BackendState::FailedTransaction => true,
+            _ => false,
         }
     }
 }

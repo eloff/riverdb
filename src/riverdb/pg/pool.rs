@@ -142,15 +142,21 @@ impl ConnectionPool {
         Ok(self.connections.add(stream))
     }
 
-    pub fn put(&'static self, conn: Ark<BackendConn>) {
+    pub async fn put(&'static self, conn: Ark<BackendConn>) {
         if conn.created_for_transaction() {
             let prev = self.active_transactions.fetch_add(-1, Relaxed);
             debug_assert!(prev > 0);
         }
 
+        if let Err(e) = conn.reset().await {
+            conn.close();
+            warn!(?e, "error resetting connection");
+            return
+        }
+
         if !conn.set_in_pool() {
             conn.close();
-            return // free connection
+            return
         }
 
         self.pooled_connections.lock().unwrap().push(conn);

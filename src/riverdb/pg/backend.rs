@@ -11,7 +11,7 @@ use tokio::net::TcpStream;
 use tokio::io::Interest;
 
 use tokio::sync::Notify;
-use tracing::{error, warn, instrument};
+use tracing::{error, warn, debug, instrument};
 use bytes::Bytes;
 use futures::try_join;
 
@@ -22,7 +22,7 @@ use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPoo
 use crate::riverdb::server::{Transport, Connection as ServerConnection, Connections};
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, RefcountAndFlags};
-use crate::riverdb::pg::backend_state::BackendState;
+use crate::riverdb::pg::backend_state::{BackendState, StateEnum};
 use crate::riverdb::common::{SpscQueue, AtomicRef, coarse_monotonic_now, change_lifetime, AtomicRefCounted, Ark};
 use crate::riverdb::pg::protocol::{
     ServerParams, Messages, MessageBuilder, Tag, SSL_ALLOWED, PROTOCOL_VERSION,
@@ -115,12 +115,12 @@ impl BackendConn {
             for msg in msgs.iter(0) {
                 match msg.tag() {
                     Tag::ROW_DESCRIPTION => {
-                        println!("forward ROW_DESCRIPTION");
+                        debug!("forward ROW_DESCRIPTION");
                         // If this is a backend request, this is a new rows result, wake the iterator
                         wake = request_type == BACKEND_REQUEST;
                     },
                     Tag::READY_FOR_QUERY => {
-                        println!("forward READY_FOR_QUERY");
+                        debug!("forward READY_FOR_QUERY");
                         // This happens if the result wasn't a rows result, but just a command to execute.
                         requests_completed += 1;
                         let pending_original = pending;
@@ -145,29 +145,25 @@ impl BackendConn {
                 }
             }
 
-            println!("split to {} out of {}", offset, msgs.len());
+            debug!("split to {} out of {} for {}", offset, msgs.len(), if request_type == CLIENT_REQUEST {"client request"} else {"backend request"});
             let out = msgs.split_to(offset);
             if request_type == CLIENT_REQUEST {
-                println!("client request");
                 if let Some(client) = client {
                     sent += client.send(out).await?;
                 } else {
                     warn!(msgs=?out, "dropping messages without client");
                 }
             } else {
-                println!("backend request");
                 debug_assert_eq!(request_type, BACKEND_REQUEST);
 
                 // Notify first, then put messages, otherwise put may block forever
                 if wake {
                     debug_assert!(!self.iterators.is_empty());
                     let notifier = if pop {
-                        println!("pop notifier");
                         self.iterators.pop_now()
                     } else {
                         *self.iterators.peek().unwrap()
                     } as *const Notify;
-                    println!("notify {:p}", notifier);
                     // Safety: dereferencing a valid pointer, if the Rows object was dropped it would have panicked
                     unsafe { &*notifier }.notify_one();
                 }
@@ -264,15 +260,30 @@ impl BackendConn {
 
     pub async fn session_idle(&self, client: &ClientConn) -> Result<()> {
         let conn = client.session_idle().await?;
-        Self::return_to_pool(conn);
+        Self::return_to_pool(conn).await;
         Ok(())
     }
 
-    pub fn return_to_pool(this: Ark<Self>) {
+    pub async fn return_to_pool(this: Ark<Self>) {
         if let Some(backend) = this.load() {
             backend.client.store(Ark::default());
-            backend.pool.load().unwrap().put(this);
+            backend.pool.load().unwrap().put(this).await;
         }
+    }
+
+    /// Reset the connection prior to returning it to the pool
+    pub async fn reset(&self) -> Result<()> {
+        // TODO track how SET was used and if there's nothing to reset, just reset the user
+        const RESET_QUERY: &str = "RESET ROLE; RESET ALL";
+
+        let reset = if self.state().is_transaction() {
+            query!("ROLLBACK; " RESET_QUERY)
+        } else {
+            query!(RESET_QUERY)
+        };
+
+        self.execute(reset)?;
+        Ok(())
     }
 
     pub async fn check_health_and_set_role(&self, application_name: &str, role: &str) -> Result<()> {
@@ -284,15 +295,13 @@ impl BackendConn {
         // Safety: I don't know why this is required here. Rust bug?
         let role: &'static str = unsafe { change_lifetime(role) };
         let application_name: &'static str = unsafe { change_lifetime(application_name) };
-        if role.is_empty() {
-            self.execute(query!("SET application_name TO {}", application_name)).await?;
+        let check = if role.is_empty() {
+            query!("SET application_name TO {}", application_name)
         } else {
-            try_join!(
-                self.execute(query!("SET ROLE {}", role)),
-                self.execute(query!("SET application_name TO {}", application_name))
-            )?;
-        }
+            query!("SET ROLE {}; SET application_name TO {}", role, application_name)
+        };
 
+        self.execute(check)?;
         Ok(())
     }
 
@@ -315,9 +324,7 @@ impl BackendConn {
     /// futures then it will pipeline the queries. Returns the number of affected rows.
     pub async fn execute(&self, escaped_query: Messages) -> Result<i32> {
         let mut rows = self.query(escaped_query).await?;
-        println!("before finish");
         rows.finish().await?;
-        println!("after finish");
         Ok(0) // return value from finish().await above
     }
 
@@ -357,10 +364,7 @@ impl BackendConn {
     }
 
     pub fn set_in_pool(&self) -> bool {
-        // TODO if backend is in a transaction, we need to issue a ROLLBACK first
-
-        // TODO issue RESET on connection
-
+        // See ConnectionPool::put, which calls reset() before this.
         if let Err(e) = self.state.transition(self,BackendState::InPool) {
             warn!(?e, "cannot transition to InPool state");
             false

@@ -33,6 +33,13 @@ impl StateEnum for ClientState {
             false
         }
     }
+
+    fn is_transaction(&self) -> bool {
+        match self {
+            ClientState::Transaction | ClientState::FailedTransaction => true,
+            _ => false,
+        }
+    }
 }
 
 impl From<ClientState> for u16  {

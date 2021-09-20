@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use bytes::Bytes;
 
 use tokio::net::TcpStream;
-use tracing::{error, warn, instrument};
+use tracing::{error, warn, debug, instrument};
 
 
 use crate::define_event;
@@ -158,10 +158,12 @@ impl ClientConn {
                     client_query::run(self, query).await?;
                 },
                 Tag::TERMINATE => {
+                    // This code is slightly different from close() in that it doesn't spawn a new task
                     self.transition(ClientState::Closed)?;
-                    let backend = self.backend();
+                    // This must come after state transition, so release_backend always releases it
+                    let backend = self.release_backend();
                     if backend.is_some() {
-                        BackendConn::return_to_pool(self.release_backend());
+                        BackendConn::return_to_pool(backend).await;
                     }
                     self.transport.close();
                     break;
@@ -285,9 +287,8 @@ impl ClientConn {
 
         let state = self.state.get();
         match state {
-            ClientState::Transaction | ClientState::Ready => {
+            ClientState::Transaction | ClientState::Ready | ClientState::FailedTransaction => {
                 if backend.is_none() && begins_tx {
-                    println!("*** BUFFER BEGIN ***");
                     let mut warn_already_in_tx = false;
                     {
                         let mut buffered = self.buffered.lock().unwrap();
@@ -298,39 +299,25 @@ impl ClientConn {
                         }
                     }
 
+                    // Note: We can send a response to the client here and not worry about it being out of order
+                    // because there is no backend yet.
+
                     // There shouldn't have been anything buffered, we received two begin statements back to back
                     // Behave the same as Postgres, give a warning and ignore the second one.
                     if warn_already_in_tx {
                         let msg = Messages::new_warning(error_codes::ACTIVE_SQL_TRANSACTION, "there is already a transaction in progress");
                         self.send(msg).await?;
                     }
+                    debug!("buffered begin statement");
                     self.send_command_successful("BEGIN", 'T').await?;
                     return Ok(());
                 } else if query.query_type() == QueryType::Commit || query.query_type() == QueryType::Rollback {
-                    println!("commit or rollback");
-                    if !query.normalized().contains("AND CHAIN") {
-                        println!("and chain");
+                    debug!("end transaction: {:?}", query.query_type());
+                    if query.query_type() == QueryType::ROLLBACK || !query.normalized().contains("AND CHAIN") {
                         self.transition(ClientState::Ready)?;
                     }
                 }
             },
-            ClientState::FailedTransaction => {
-                // Only ROLLBACK is permitted
-                if query.query_type() == QueryType::Rollback {
-                    if !query.normalized().contains("AND CHAIN") {
-                        // We already rolled back the backend and returned it to the pool
-                        self.transition(ClientState::Ready)?;
-                    }
-
-                    // Tell the client the command succeeded
-                    self.send_command_successful("ROLLBACK", 'I').await?;
-                } else {
-                    let error_msg = "current transaction is aborted, commands ignored until end of transaction block";
-                    let msg = Messages::new_error(error_codes::IN_FAILED_SQL_TRANSACTION, error_msg);
-                    self.send(msg).await?;
-                }
-                return Ok(());
-            }
             _ => panic!("forward called in unexpected state {:?}", state)
         };
 
@@ -346,13 +333,15 @@ impl ClientConn {
             // TODO not necessarily if defer_begin is enabled
             let msgs = self.buffered.lock().unwrap().take();
             if let Some(msgs) = msgs {
-                println!("*** FLUSH BUFFERED MSGS {} ***", msgs);
-                backend_ark.execute(msgs).await?;
-                println!("flushed begin");
-                // TODO, join futures to pipeline them
+                // Pipeline the begin statement with msgs
+                debug!("flush buffered {} to db", msgs);
+                try_join!(
+                    backend_ark.execute(msgs),
+                    backend_ark.send(query.into_messages())
+                )?;
+            } else {
+                backend_ark.send(query.into_messages()).await?;
             }
-
-            backend_ark.send(query.into_messages()).await?;
             self.set_backend(backend_ark);
         } else {
             backend.unwrap().send(query.into_messages()).await?;
@@ -608,9 +597,15 @@ impl ServerConnection for ClientConn {
 
     fn close(&self) {
         self.transition(ClientState::Closed).unwrap(); // does not fail
-        if self.backend.is_some() {
-            BackendConn::return_to_pool(self.release_backend());
+
+        // This must come after state transition, so release_backend always releases it
+        let backend = self.release_backend();
+        if backend.is_some() {
+            tokio::spawn(async move {
+                BackendConn::return_to_pool(backend).await;
+            });
         }
+
         self.transport.close();
     }
 }
