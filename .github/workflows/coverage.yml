@@ -1,5 +1,4 @@
 name:                           coverage
-
 on:                             [push]
 jobs:
   test:
@@ -8,17 +7,52 @@ jobs:
     container:
       image:                    xd009642/tarpaulin:develop-nightly
       options:                  --security-opt seccomp=unconfined
+    services:
+      postgres:
+        # Docker Hub image
+        image: postgres:latest
+        # service environment variables
+        # `POSTGRES_HOST` is `postgres`
+        env:
+          # optional (defaults to `postgres`)
+          POSTGRES_DB: riverdb_test
+          # required
+          POSTGRES_PASSWORD: "1234"
+          # optional (defaults to `5432`)
+          POSTGRES_PORT: 5432
+          # optional (defaults to `postgres`)
+          POSTGRES_USER: riverdb_test
+        ports:
+          # maps tcp port 5432 on service container to the host
+          - 5432:5432
+        # set health checks to wait until postgres has started
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
-      - name:                   Checkout repository
-        uses:                   actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v2
 
-      - name:                   Generate code coverage
+      - name: Install Postgres client
+        run: |
+          apt update
+          apt install --yes postgresql-client
+
+      - name: Setup test database
+        run: |
+          pg_restore -h postgres -U riverdb_test -d riverdb_test src/tests/dvdrental.tar
+        env:
+          PGPASSWORD: "1234"
+
+      - name: Generate code coverage
         run: |
           cargo +nightly tarpaulin --verbose --all-features --workspace --timeout 120 --out Xml
 
-      - name:                   Upload to codecov.io
-        uses:                   codecov/codecov-action@v1
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@v1
         with:
-          # token:                ${{secrets.CODECOV_TOKEN}} # not required for public repos
-          fail_ci_if_error:     true
+          # token: ${{secrets.CODECOV_TOKEN}} # not required for public repos
+          fail_ci_if_error: true
 

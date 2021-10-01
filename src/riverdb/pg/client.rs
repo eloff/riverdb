@@ -154,7 +154,7 @@ impl ClientConn {
                 Tag::QUERY => {
                     // TODO we could implement Query<'a> with Message instead?
                     // TODO can we still issue a bulk send here if Query is unaltered? This is the performance sensitive part
-                    let query = Query::new(msgs.split_message(&msg));
+                    let query = Query::new(msgs.split_message(&msg))?;
                     client_query::run(self, query).await?;
                 },
                 Tag::TERMINATE => {

@@ -1,18 +1,41 @@
 use std::fmt::{Debug, Formatter};
 
+use crate::riverdb::Result;
 use crate::riverdb::pg::protocol::{Tag, Messages};
 use crate::riverdb::pg::sql::QueryType;
 
+// TODO the type of object targeted by ALTER, DROP, CREATE queries
 pub enum ObjectType {}
+
+pub enum LiteralType {
+    Null,
+    String,
+    EscapeString,
+    UnicodeString,
+    DollarString,
+    Integer,
+    Numeric,
+    BitString,
+    Boolean
+}
+
+pub struct QueryParam {
+    pub value: &'static str, // 'static is a lie, this is the lifetime of the parent Query
+    pub ty: LiteralType,
+    pub negated: bool,
+    pub target_type: &'static str, // type 'string', 'string'::type, and CAST ( 'string' AS type )
+}
 
 pub struct Query {
     msgs: Messages,
+    params_buf: String,
     normalized_query: String,
     query_type: QueryType,
+    params: Vec<QueryParam>,
 }
 
 impl Query {
-    pub fn new(msgs: Messages) -> Self {
+    pub fn new(msgs: Messages) -> Result<Self> {
         debug_assert_eq!(msgs.count(), 1);
 
         let mut normalized_query = String::new();
@@ -27,7 +50,7 @@ impl Query {
 
         let query_type = QueryType::from(normalized_query.trim());
 
-        Self{msgs, normalized_query, query_type}
+        Ok(Self{msgs, params_buf: "".to_string(), normalized_query, query_type, params: vec![] })
     }
 
     pub fn query_type(&self) -> QueryType {
@@ -45,6 +68,10 @@ impl Query {
 
     pub fn normalized(&self) -> &str {
         &self.normalized_query
+    }
+
+    pub fn params(&self) -> &Vec<QueryParam> {
+        &self.params
     }
 }
 

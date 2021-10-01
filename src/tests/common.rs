@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::Ordering::{Relaxed};
 use std::net::{Ipv4Addr, SocketAddr, IpAddr};
@@ -71,11 +72,18 @@ pub fn cluster() -> &'static PostgresCluster {
 }
 
 pub fn psql(connection_str: &str, mut password: &str) -> Child {
+    let host = if env::var("CI").is_ok() {
+        "postgres"
+    } else {
+        "127.0.0.1"
+    };
+
     let s = if connection_str.contains("user") {
         connection_str.to_string()
     } else {
-        format!("user={} dbname={} {}", TEST_USER, TEST_DATABASE, connection_str)
+        format!("host={} user={} dbname={} {}", host, TEST_USER, TEST_DATABASE, connection_str)
     };
+
     if password.is_empty() {
         password = TEST_PASSWORD;
     }

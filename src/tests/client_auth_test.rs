@@ -53,7 +53,7 @@ async fn test_client_auth() -> std::result::Result<(), Box<dyn std::error::Error
     }
 
     let listener = common::listener();
-    let _psql = common::psql(format!("host=localhost port={}", listener.local_addr().unwrap().port()).as_str(), "");
+    let _psql = common::psql(format!("port={}", listener.local_addr().unwrap().port()).as_str(), "");
 
     let (s, _) = listener.accept().await?;
     let client = ClientConn::new(s, Connections::new(16, 0));
