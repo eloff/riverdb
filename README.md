@@ -1,3 +1,5 @@
+[![codecov](https://codecov.io/gh/riverdb/riverdb/branch/master/graph/badge.svg?token=EjhI1wBhtG)](https://codecov.io/gh/riverdb/riverdb)
+
 ## River DB - Rust Programmable PostgreSQL Proxy
 
 River DB is a Rust replacement for the connection pools / load balancers Pg Pool or PgBouncer.
