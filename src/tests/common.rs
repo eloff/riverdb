@@ -32,11 +32,17 @@ pub fn listener() -> TcpListener {
 }
 
 pub fn cluster() -> &'static PostgresCluster {
+    let host = if env::var("CI").is_ok() {
+        "postgres"
+    } else {
+        "127.0.0.1"
+    };
+
     let conf = Box::leak(Box::new(config::PostgresCluster{
         servers: vec![
             config::Postgres{
                 database: TEST_DATABASE.to_string(),
-                host: "127.0.0.1".to_string(),
+                host: host.to_string(),
                 user: TEST_USER.to_string(),
                 password: TEST_PASSWORD.to_string(),
                 tls_host: "".to_string(),
@@ -72,16 +78,10 @@ pub fn cluster() -> &'static PostgresCluster {
 }
 
 pub fn psql(connection_str: &str, mut password: &str) -> Child {
-    let host = if env::var("CI").is_ok() {
-        "postgres"
-    } else {
-        "127.0.0.1"
-    };
-
     let s = if connection_str.contains("user") {
         connection_str.to_string()
     } else {
-        format!("host={} user={} dbname={} {}", host, TEST_USER, TEST_DATABASE, connection_str)
+        format!("user={} dbname={} {}", TEST_USER, TEST_DATABASE, connection_str)
     };
 
     if password.is_empty() {

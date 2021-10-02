@@ -100,7 +100,7 @@ async fn test_proxy_queries() -> std::result::Result<(), Box<dyn std::error::Err
     }
 
     let listener = common::listener();
-    let mut psql = common::psql(format!("port={}", listener.local_addr().unwrap().port()).as_str(), "");
+    let mut psql = common::psql(format!("host=localhost port={}", listener.local_addr().unwrap().port()).as_str(), "");
 
     let plugin = QueryPlugin::new(psql.stdout.take().unwrap(), psql.stdin.take().unwrap());
     register_scoped!(plugin, CleanupStartup, QueryPlugin:client_complete_startup<'a>(cluster: &'static PostgresCluster) -> Result<()>);
