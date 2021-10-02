@@ -42,7 +42,7 @@ jobs:
 
       - name: Setup test database
         run: |
-          pg_restore -h postgres -U riverdb_test -d riverdb_test src/tests/dvdrental.tar
+          pg_restore -h postgres -U riverdb_test -d riverdb_test src/tests/dvdrental.tar || true
         env:
           PGPASSWORD: "1234"
 
