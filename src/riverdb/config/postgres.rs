@@ -1,14 +1,16 @@
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::Arc;
+use std::path::Path;
+use std::io::BufReader;
+use std::fs::File;
+
 use serde::{Deserialize};
+use rustls::{Certificate, PrivateKey};
 
 use crate::riverdb::config::enums::TlsMode;
 use crate::riverdb::{Error, Result};
-use std::net::SocketAddr;
-use std::sync::Arc;
 use crate::riverdb::server::DangerousCertificateNonverifier;
-use std::path::Path;
-use rustls::{Certificate, PrivateKey};
-use std::io::BufReader;
-use std::fs::File;
+
 
 #[derive(Deserialize, Default)]
 pub struct PostgresCluster {
@@ -264,5 +266,9 @@ impl Postgres {
 }
 
 fn to_address(host: &str, port: u16) -> Result<SocketAddr> {
-    format!("{}:{}", host, port).parse().map_err(Error::from)
+    format!("{}:{}", host, port)
+        .to_socket_addrs()
+        .map_err(Error::from)?
+        .next()
+        .ok_or_else(|| Error::new(format!("DNS lookup failed for {}", host)))
 }
