@@ -12,6 +12,9 @@ pub enum AuthType {
     GSS         = 7,
     GSSContinue = 8,
     SSPI        = 9,
+    SASL        = 10,
+    SASLContinue = 11,
+    SASLFinal = 12,
 }
 
 impl AuthType {
@@ -31,6 +34,9 @@ impl From<i32> for AuthType {
             7 => AuthType::GSS,
             8 => AuthType::GSSContinue,
             9 => AuthType::SSPI,
+            10 => AuthType::SASL,
+            11 => AuthType::SASLContinue,
+            12 => AuthType::SASLFinal,
             _ => panic!("unknown auth type {}", i)
         }
     }

@@ -23,10 +23,7 @@ use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, RefcountAndFlags};
 use crate::riverdb::pg::backend_state::{BackendState, StateEnum};
 use crate::riverdb::common::{SpscQueue, AtomicRef, coarse_monotonic_now, change_lifetime, AtomicRefCounted, Ark};
-use crate::riverdb::pg::protocol::{
-    ServerParams, Messages, MessageBuilder, Tag, SSL_ALLOWED, PROTOCOL_VERSION,
-    AuthType, PostgresError, hash_md5_password
-};
+use crate::riverdb::pg::protocol::{ServerParams, Messages, MessageBuilder, Tag, SSL_ALLOWED, PROTOCOL_VERSION, AuthType, PostgresError, hash_md5_password, Message};
 
 use crate::riverdb::pg::message_stream::MessageStream;
 use std::pin::Pin;
@@ -485,13 +482,13 @@ impl BackendConn {
                     if auth_type == 0 {
                         r.error()?;
                     }
-                    let auth_type = AuthType::from(auth_type);
                     let salt = r.read_i32();
-                    if salt == 0 && auth_type == AuthType::MD5 {
+                    if salt == 0 {
                         r.error()?;
                     }
-                    (auth_type, salt)
+                    (AuthType::from(auth_type), salt)
                 };
+
                 let (user, password) = {
                     let server_params = self.server_params.lock().unwrap();
                     (server_params.get("user").expect("missing user").to_string(),
@@ -513,14 +510,16 @@ impl BackendConn {
                         Ok(())
                     },
                     AuthType::MD5 => {
-
                         let md5_password = hash_md5_password(&user, &password, salt);
                         let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
                         mb.write_str(&md5_password);
                         self.send(mb.finish()).await?;
                         Ok(())
                     },
-                    _ => Err(Error::new(format!("unsupported authentication scheme (pull requests welcome!) {}", auth_type)))
+                    AuthType::SASL => {
+                        self.sasl_auth(msg, user, password).await
+                    },
+                    _ => Err(Error::new(format!("unsupported authentication scheme (use SASL, MD5, or plaintext over SSL) {}", auth_type)))
                 }
             },
             Tag::ERROR_RESPONSE => {
@@ -528,6 +527,10 @@ impl BackendConn {
             },
             _ => Err(Error::new(format!("unexpected message {}", msg.tag())))
         }
+    }
+
+    pub async fn sasl_auth(&self, msg: Message<'_>, user: String, password: String) -> Result<()> {
+        panic!("not implemented");
     }
 
     #[instrument]

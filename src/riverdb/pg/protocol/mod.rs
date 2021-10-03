@@ -12,6 +12,7 @@ mod auth_type;
 mod auth_md5;
 mod row_description;
 mod messages;
+mod sasl;
 
 pub use self::tag::*;
 pub use self::message::Message;

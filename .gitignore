@@ -2,3 +2,4 @@ target/
 private/
 .idea/
 .fsw.yml
+cobertura.xml
