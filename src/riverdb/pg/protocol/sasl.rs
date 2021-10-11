@@ -13,6 +13,9 @@ use crypto::hmac::{Hmac};
 use crypto::sha2::{Sha256};
 use crypto::mac::{Mac, MacResult};
 
+use crate::riverdb::{Error, Result};
+use crate::riverdb::pg::protocol::{Tag, PostgresError, AuthType, Messages};
+use std::convert::TryFrom;
 
 const NONCE_LENGTH: usize = 24;
 
@@ -170,6 +173,34 @@ impl ScramSha256 {
             panic!("invalid SCRAM state");
         }
         self.message.as_bytes()
+    }
+
+    pub fn update_from_message(&mut self, msgs: Messages) -> Result<()> {
+        let msg = msgs.first().unwrap(); // already checked this in caller
+
+        match msg.tag() {
+            Tag::AUTHENTICATION_OK => (),
+            Tag::ERROR_RESPONSE => {
+                return Err(Error::from(PostgresError::new(msgs)?));
+            },
+            _ => {
+                return Err(Error::new(format!("unexpected message {} for SASL authentication", msg.tag())));
+            }
+        }
+
+        let r = msg.reader();
+        let val = r.read_i32();
+        if val == 0 {
+            r.error()?;
+        }
+        let auth_type = AuthType::try_from(val)?;
+        let body = r.read_to_end();
+
+        match auth_type {
+            AuthType::SASLContinue => self.update(body).map_err(Error::from),
+            AuthType::SASLFinal => self.finish(body).map_err(Error::from),
+            _ => Err(Error::new(format!("unexpected auth type {} in sasl message", auth_type))),
+        }
     }
 
     /// Updates the state machine with the response from the backend.

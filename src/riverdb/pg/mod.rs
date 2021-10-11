@@ -10,14 +10,13 @@ mod isolation;
 mod pool;
 mod cluster;
 mod group;
-mod message_stream;
 mod transaction;
 mod rows;
 
 pub use self::service::PostgresService;
 pub use self::client_state::{ClientConnState, ClientState};
 pub use self::backend_state::{BackendConnState, BackendState};
-pub use self::connection::{Connection};
+pub use self::connection::{Connection, parse_messages};
 pub use self::client::*;
 pub use self::backend::*;
 pub use self::cluster::PostgresCluster;

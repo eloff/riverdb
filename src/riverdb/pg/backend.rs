@@ -4,12 +4,13 @@ use std::sync::atomic::Ordering::{Relaxed, Acquire, Release};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 use std::net::SocketAddr;
-
+use std::pin::Pin;
+use std::cell::UnsafeCell;
+use std::convert::TryFrom;
 
 use chrono::{Local, DateTime};
 use tokio::net::TcpStream;
 use tokio::io::Interest;
-
 use tokio::sync::Notify;
 use tracing::{error, warn, debug, instrument};
 use bytes::Bytes;
@@ -17,16 +18,17 @@ use bytes::Bytes;
 use crate::{define_event, query};
 use crate::riverdb::{config, Error, Result};
 use crate::riverdb::config::TlsMode;
-use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool, Rows};
+use crate::riverdb::pg::{BackendConnState, ClientConn, Connection, ConnectionPool, Rows, parse_messages};
 use crate::riverdb::server::{Transport, Connection as ServerConnection, Connections};
 use crate::riverdb::server;
 use crate::riverdb::pg::connection::{Backlog, RefcountAndFlags};
 use crate::riverdb::pg::backend_state::{BackendState, StateEnum};
 use crate::riverdb::common::{SpscQueue, AtomicRef, coarse_monotonic_now, change_lifetime, AtomicRefCounted, Ark};
-use crate::riverdb::pg::protocol::{ServerParams, Messages, MessageBuilder, Tag, SSL_ALLOWED, PROTOCOL_VERSION, AuthType, PostgresError, hash_md5_password, Message};
+use crate::riverdb::pg::protocol::{
+    ServerParams, Messages, MessageBuilder, MessageParser, Tag, SSL_ALLOWED, PROTOCOL_VERSION,
+    AuthType, PostgresError, hash_md5_password, Message, sasl,
+};
 
-use crate::riverdb::pg::message_stream::MessageStream;
-use std::pin::Pin;
 
 const MAX_PENDING_REQUESTS: u32 = 32;
 const CLIENT_REQUEST: u64 = 1;
@@ -36,7 +38,8 @@ const REQUEST_TYPE_MASK: u64 = 3;
 pub type MessageQueue = SpscQueue<Messages, 32>;
 
 pub struct BackendConn {
-    transport: Transport,
+    stream: Transport,
+    parser: UnsafeCell<MessageParser>,
     /// id is set once and then read-only. Starts as 0.
     id: AtomicU32,
     /// added_to_pool is a course-grained monotonic clock that is 0, or records when this was returned to the pool
@@ -66,14 +69,29 @@ impl BackendConn {
 
     #[instrument]
     pub async fn run(&self) -> Result<()> {
-        // XXX: This code is very similar to ClientConn::run.
+        // XXX: This code is very similar to ClientConn::run_inner.
         // If you change this, you probably need to change that too.
 
-        let mut stream = MessageStream::new(self);
         loop {
-            let msgs = stream.next(self.client()).await?;
+            // Safety: we only access self.stream from this thread
+            // Safety: we only access self.stream from this thread
+            let msgs = unsafe { self.recv().await? };
             backend_messages::run(self, msgs).await?;
         }
+    }
+
+    unsafe fn parser(&self) -> &mut MessageParser {
+        &mut *self.parser.get()
+    }
+
+    /// recv parses some Messages from the stream.
+    /// Safety: recv can only be called from the run thread, only from inside
+    /// methods called directly or indirectly by self.run(). Marked as unsafe
+    /// because the programmer must enforce that constraint.
+    #[inline]
+    pub async unsafe fn recv(&self) -> Result<Messages> {
+        let parser = self.parser();
+        parse_messages(parser, self, self.client()).await
     }
 
     #[inline]
@@ -191,10 +209,9 @@ impl BackendConn {
     }
 
     async fn run_until_state(&self, state: BackendState) -> Result<()> {
-        let mut stream = MessageStream::<Self, ClientConn>::new(self);
         while self.state() != state {
-            let msgs = stream.next(None).await?;
-
+            // Safety: This method is not called concurrently with run()
+            let msgs = unsafe { self.recv().await? };
             backend_messages::run(self, msgs).await?;
         }
         Ok(())
@@ -237,13 +254,13 @@ impl BackendConn {
         self.transition(BackendState::SSLHandshake)?;
         self.send(ssl_request).await?;
 
-        self.transport.ready(Interest::READABLE).await?;
+        self.stream.ready(Interest::READABLE).await?;
         let mut buf: [u8; 1] = [0];
-        let n = self.transport.try_read(&mut buf[..])?;
+        let n = self.stream.try_read(&mut buf[..])?;
         if n == 1 {
             if buf[0] == SSL_ALLOWED {
                 let tls_config = cluster.backend_tls_config.clone().unwrap();
-                self.transport.upgrade_client(tls_config, cluster.backend_tls, pool.config.tls_host.as_str()).await
+                self.stream.upgrade_client(tls_config, cluster.backend_tls, pool.config.tls_host.as_str()).await
             } else if let TlsMode::Prefer = cluster.backend_tls {
                 Err(Error::new(format!("{} does not support TLS", pool.config.address.as_ref().unwrap())))
             } else {
@@ -319,8 +336,7 @@ impl BackendConn {
     /// futures then it will pipeline the queries. Returns the number of affected rows.
     pub async fn execute(&self, escaped_query: Messages) -> Result<i32> {
         let mut rows = self.query(escaped_query).await?;
-        rows.finish().await?;
-        Ok(0) // return value from finish().await above
+        rows.finish().await
     }
 
     pub fn state(&self) -> BackendState {
@@ -476,17 +492,13 @@ impl BackendConn {
         let msg = msgs.first().unwrap(); // see assert above
         match msg.tag() {
             Tag::AUTHENTICATION_OK => {
-                let (auth_type, salt) = {
+                let auth_type = {
                     let r = msg.reader();
                     let auth_type = r.read_i32();
                     if auth_type == 0 {
                         r.error()?;
                     }
-                    let salt = r.read_i32();
-                    if salt == 0 {
-                        r.error()?;
-                    }
-                    (AuthType::from(auth_type), salt)
+                    AuthType::try_from(auth_type)?
                 };
 
                 let (user, password) = {
@@ -510,10 +522,19 @@ impl BackendConn {
                         Ok(())
                     },
                     AuthType::MD5 => {
-                        let md5_password = hash_md5_password(&user, &password, salt);
-                        let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
-                        mb.write_str(&md5_password);
-                        self.send(mb.finish()).await?;
+                        let password_msg = {
+                            let r = msg.reader();
+                            r.advance(4)?; // skip over auth_type
+                            let salt = r.read_i32();
+                            if salt == 0 {
+                                r.error()?;
+                            }
+                            let md5_password = hash_md5_password(&user, &password, salt);
+                            let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
+                            mb.write_str(&md5_password);
+                            mb.finish()
+                        };
+                        self.send(password_msg).await?;
                         Ok(())
                     },
                     AuthType::SASL => {
@@ -529,8 +550,65 @@ impl BackendConn {
         }
     }
 
-    pub async fn sasl_auth(&self, msg: Message<'_>, user: String, password: String) -> Result<()> {
-        panic!("not implemented");
+    pub async fn sasl_auth(&self, msg: Message<'_>, _user: String, password: String) -> Result<()> {
+        let mut have_scram_256 = false;
+        let mut have_scram_256_plus = false;
+
+        {
+            let r = msg.reader();
+            loop {
+                let mechanism = r.read_str()?;
+                if mechanism.is_empty() {
+                    break;
+                }
+                match mechanism {
+                    sasl::SCRAM_SHA_256 => have_scram_256 = true,
+                    sasl::SCRAM_SHA_256_PLUS => have_scram_256_plus = true,
+                    _ => (),
+                }
+            }
+        }
+
+        let tls_endpoint = vec![];
+
+        let (channel_binding, mechanism) = if have_scram_256_plus {
+            if tls_endpoint.is_empty() {
+                (sasl::ChannelBinding::unsupported(), sasl::SCRAM_SHA_256)
+            } else {
+                (sasl::ChannelBinding::tls_server_end_point(tls_endpoint), sasl::SCRAM_SHA_256_PLUS)
+            }
+        } else if have_scram_256 {
+            (sasl::ChannelBinding::unrequested(), sasl::SCRAM_SHA_256)
+        } else {
+            return Err(Error::new("unsupported SASL mechanism"));
+        };
+
+        let mut scram = sasl::ScramSha256::new(password.as_bytes(), channel_binding);
+        let sasl_initial = {
+            let message_data = scram.message();
+            let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
+            mb.write_str(mechanism);
+            mb.write_i32(message_data.len() as i32);
+            mb.write_bytes(message_data);
+            mb.finish()
+        };
+        self.send(sasl_initial).await?;
+
+        // Safety: this is called indirectly from inside run()
+        let msgs = unsafe { self.recv() }.await?;
+        scram.update_from_message(msgs)?;
+
+        let sasl_continue = {
+            let mut mb = MessageBuilder::new(Tag::PASSWORD_MESSAGE);
+            mb.write_bytes(scram.message());
+            mb.finish()
+        };
+        self.send(sasl_continue).await?;
+
+        let msgs = unsafe { self.recv() }.await?;
+        scram.update_from_message(msgs)?;
+
+        Ok(())
     }
 
     #[instrument]
@@ -588,7 +666,8 @@ impl AtomicRefCounted for BackendConn {
 impl server::Connection for BackendConn {
     fn new(stream: TcpStream, connections: &'static Connections<Self>) -> Self {
         BackendConn {
-            transport: Transport::new(stream),
+            stream: Transport::new(stream),
+            parser: UnsafeCell::new(MessageParser::new()),
             id: Default::default(),
             added_to_pool: Default::default(),
             refcount_and_flags: RefcountAndFlags::new(),
@@ -621,7 +700,7 @@ impl server::Connection for BackendConn {
     }
 
     fn close(&self) {
-        self.transport.close();
+        self.stream.close();
     }
 }
 
@@ -639,7 +718,7 @@ impl Connection for BackendConn {
     }
 
     fn transport(&self) -> &Transport {
-        &self.transport
+        &self.stream
     }
 
     fn is_closed(&self) -> bool {
@@ -667,6 +746,10 @@ impl Debug for BackendConn {
             self.state))
     }
 }
+
+// Safety: we use an UnsafeCell, but access is controlled safely, see recv method for details.
+unsafe impl Send for BackendConn {}
+unsafe impl Sync for BackendConn {}
 
 
 define_event! {

@@ -1,4 +1,7 @@
 use strum::Display;
+use std::convert::TryFrom;
+
+use crate::riverdb::{Error, Result};
 
 #[derive(Display, Debug, Clone, Copy, Eq, PartialEq)]
 #[non_exhaustive]
@@ -23,9 +26,11 @@ impl AuthType {
     }
 }
 
-impl From<i32> for AuthType {
-    fn from(i: i32) -> Self {
-        match i {
+impl TryFrom<i32> for AuthType {
+    type Error = Error;
+
+    fn try_from(i: i32) -> Result<Self> {
+        Ok(match i {
             0 => AuthType::Ok,
             2 => AuthType::KerberosV5,
             3 => AuthType::ClearText,
@@ -37,8 +42,8 @@ impl From<i32> for AuthType {
             10 => AuthType::SASL,
             11 => AuthType::SASLContinue,
             12 => AuthType::SASLFinal,
-            _ => panic!("unknown auth type {}", i)
-        }
+            _ => return Err(Error::new(format!("unknown auth type {}", i)))
+        })
     }
 }
 

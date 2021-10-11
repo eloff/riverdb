@@ -8,7 +8,8 @@ use crate::riverdb::pg::protocol::{Message};
 use crate::riverdb::{Error, Result};
 
 
-
+// TODO why is this using internal mutability - there must have been a good reason for it
+// We should make this mutable, see what fails, and then document it here.
 pub struct MessageReader<'a> {
     pub msg: &'a Message<'a>,
     pos: Cell<u32>, // track position for read_xxx methods
@@ -131,8 +132,16 @@ impl<'a> MessageReader<'a> {
         self.seek(new_pos)?;
 
         let bytes = &self.msg.as_slice()[pos as usize..new_pos as usize];
-        self.pos.set(new_pos);
         Ok(bytes)
+    }
+
+    /// read_to_end reads and returns the remainder of the message as a &[u8]
+    pub fn read_to_end(&self) -> &'a [u8] {
+        let end = self.len();
+        let pos = self.pos.get();
+        let bytes = &self.msg.as_slice()[pos as usize..end as usize];
+        self.pos.set(end);
+        bytes
     }
 
     pub fn seek(&self, pos: u32) -> Result<u32> {
@@ -145,5 +154,9 @@ impl<'a> MessageReader<'a> {
 
     pub fn tell(&self) -> u32 {
         self.pos.get()
+    }
+
+    pub fn advance(&self, bytes: u32) -> Result<u32> {
+        self.seek(self.tell() + bytes)
     }
 }

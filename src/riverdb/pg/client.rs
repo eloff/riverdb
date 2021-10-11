@@ -6,26 +6,21 @@ use std::sync::{Mutex};
 use std::collections::VecDeque;
 
 use bytes::Bytes;
-
 use tokio::net::TcpStream;
 use tracing::{error, warn, debug, instrument};
-
 
 use crate::define_event;
 use crate::riverdb::{Error, Result};
 use crate::riverdb::worker::{Worker};
 use crate::riverdb::pg::protocol::{
-    Messages, ServerParams, Tag,
+    Messages, ServerParams, Tag, MessageParser,
     PROTOCOL_VERSION, SSL_REQUEST, AuthType, MessageBuilder,
     error_codes, SSL_ALLOWED, SSL_NOT_ALLOWED
 };
 use crate::riverdb::pg::{ClientConnState, BackendConn, Connection, TransactionType};
 use crate::riverdb::server::{Transport, Connections, Connection as ServerConnection};
-
-use crate::riverdb::pg::{PostgresCluster, ConnectionPool};
+use crate::riverdb::pg::{PostgresCluster, ConnectionPool, parse_messages};
 use crate::riverdb::pg::connection::{Backlog, RefcountAndFlags};
-
-use crate::riverdb::pg::message_stream::MessageStream;
 use crate::riverdb::pg::client_state::ClientState;
 use crate::riverdb::pg::sql::{Query, QueryType};
 use crate::riverdb::pg::PostgresReplicationGroup;
@@ -34,8 +29,9 @@ use crate::riverdb::config::{conf, TlsMode};
 
 
 pub struct ClientConn {
-    /// client_stream is a possibly uninitialized Transport, may check if client_id != 0 first
-    transport: Transport,
+    /// stream is a possibly uninitialized Transport, may check if client_id != 0 first
+    stream: Transport,
+    parser: UnsafeCell<MessageParser>,
     /// id is set once and then read-only. Starts as 0.
     id: AtomicU32,
     /// last-active is a course-grained monotonic clock that is advanced when data is received from the client
@@ -75,11 +71,25 @@ impl ClientConn {
         // XXX: This code is very similar to BackendConn::run.
         // If you change this, you probably need to change that too.
 
-        let mut stream = MessageStream::new(self);
         loop {
-            let msgs = stream.next(self.backend()).await?;
+            // Safety: we only access self.stream from this thread
+            let msgs = unsafe { self.recv().await? };
             client_messages::run(self, msgs).await?;
         }
+    }
+
+    unsafe fn parser(&self) -> &mut MessageParser {
+        &mut *self.parser.get()
+    }
+
+    /// recv parses some Messages from the stream.
+    /// Safety: recv can only be called from the run thread, only from inside
+    /// methods called directly or indirectly by self.run(). Marked as unsafe
+    /// because the programmer must enforce that constraint.
+    #[inline]
+    pub async unsafe fn recv(&self) -> Result<Messages> {
+        let parser = self.parser();
+        parse_messages(parser, self, self.backend()).await
     }
 
     #[inline]
@@ -165,7 +175,7 @@ impl ClientConn {
                     if backend.is_some() {
                         BackendConn::return_to_pool(backend).await;
                     }
-                    self.transport.close();
+                    self.stream.close();
                     break;
                 },
                 _ => {
@@ -275,7 +285,7 @@ impl ClientConn {
                 debug_assert_eq!(n, 1);
                 self.transition(ClientState::SSLHandshake)?;
                 let tls_config = conf().postgres.tls_config.clone().unwrap();
-                self.transport.upgrade_server(tls_config, tls_mode).await
+                self.stream.upgrade_server(tls_config, tls_mode).await
             }
         }
     }
@@ -564,7 +574,8 @@ impl AtomicRefCounted for ClientConn {
 impl ServerConnection for ClientConn {
     fn new(stream: TcpStream, connections: &'static Connections<Self>) -> Self {
         ClientConn {
-            transport: Transport::new(stream),
+            stream: Transport::new(stream),
+            parser: UnsafeCell::new(MessageParser::new()),
             id: Default::default(),
             last_active: Default::default(),
             auth_type: AtomicCell::default(),
@@ -606,7 +617,7 @@ impl ServerConnection for ClientConn {
             });
         }
 
-        self.transport.close();
+        self.stream.close();
     }
 }
 
@@ -624,7 +635,7 @@ impl Connection for ClientConn {
     }
 
     fn transport(&self) -> &Transport {
-        &self.transport
+        &self.stream
     }
 
     fn is_closed(&self) -> bool {
@@ -653,7 +664,8 @@ impl Debug for ClientConn {
     }
 }
 
-// Safety: we use an UnsafeCell, but access is controlled safely, see connection_params method for details.
+// Safety: we use an UnsafeCell, but access is controlled safely, see connection_params and recv method for details.
+unsafe impl Send for ClientConn {}
 unsafe impl Sync for ClientConn {}
 
 

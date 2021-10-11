@@ -19,11 +19,11 @@ pub enum LiteralType {
     Boolean
 }
 
-pub struct QueryParam {
-    pub value: &'static str, // 'static is a lie, this is the lifetime of the parent Query
+pub struct QueryParam<'a> {
+    pub value: &'a str,
     pub ty: LiteralType,
     pub negated: bool,
-    pub target_type: &'static str, // type 'string', 'string'::type, and CAST ( 'string' AS type )
+    pub target_type: &'a str, // type 'string', 'string'::type, and CAST ( 'string' AS type )
 }
 
 pub struct Query {
@@ -31,7 +31,7 @@ pub struct Query {
     params_buf: String,
     normalized_query: String,
     query_type: QueryType,
-    params: Vec<QueryParam>,
+    params: Vec<QueryParam<'static>>, // 'static is a lie here, it's 'self
 }
 
 impl Query {

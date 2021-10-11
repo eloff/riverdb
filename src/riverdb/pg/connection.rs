@@ -5,14 +5,13 @@ use std::collections::VecDeque;
 
 use tokio::io::{Interest, Ready};
 use bytes::{Bytes, BytesMut, Buf};
+use tracing::debug;
 
 use crate::riverdb::server;
 use crate::riverdb::server::Transport;
 use crate::riverdb::{Error, Result};
 use crate::riverdb::common::{bytes_to_slice_mut, unsplit_bytes, bytes_are_contiguous};
-use crate::riverdb::pg::protocol::Tag;
-
-
+use crate::riverdb::pg::protocol::{Tag, Messages, MessageParser};
 
 pub type Backlog = Mutex<VecDeque<Bytes>>;
 
@@ -160,7 +159,6 @@ pub trait Connection: server::Connection {
     }
 }
 
-
 /// read_and_flush_backlog reads from transport and optionally flushes pending data for sender
 /// these two steps are combined in a single task to reduce synchronization and scheduling overhead.
 /// This is a free-standing function and not part of the Connection trait because traits don't
@@ -209,4 +207,37 @@ pub(crate) async fn read_and_flush_backlog<R: Connection, W: Connection>(
     };
 
     return Ok((read_bytes, write_bytes))
+}
+
+/// Using the given MessageParser to accumulate and parse messages, reads bytes from receiver,
+/// writes any pending backlog data to sender (if not None) and returns the parsed Messages.
+/// Reads at least one Message, or returns an Error.
+pub async fn parse_messages<R: Connection, W: Connection>(parser: &mut MessageParser, receiver: &R, sender: Option<&W>) -> Result<Messages> {
+    loop {
+        read_and_flush_backlog(
+            receiver,
+            parser.bytes_mut(),
+            sender,
+        ).await?;
+
+        loop {
+            if let Some(result) = parser.next() {
+                let msgs = result?;
+                debug!(msgs=?&msgs, sender=?receiver, "received messages");
+
+                return Ok(msgs);
+            } else {
+                // We can keep reading cheaper than calling read_and_flush_backlog again
+                // Until try_read returns EWOULDBLOCK, which is Ok(0) in this case.
+                // Because the docs for ready() used inside read_and_flush_backlog say:
+                //   Once a readiness event occurs, the method will continue to return
+                //   immediately until the readiness event is consumed by an attempt to
+                //   read or write that fails with WouldBlock.
+                let bytes_read = receiver.try_read(parser.bytes_mut())?;
+                if bytes_read == 0 {
+                    break;
+                }
+            }
+        }
+    }
 }
