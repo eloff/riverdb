@@ -15,7 +15,10 @@ const SSL_REQUEST: &[u8] = &[0, 0, 0, 8, 4, 210, 22, 47];
 
 #[tokio::test]
 async fn test_tls_client_handshake() -> Result<(), Box<dyn Error>> {
-    let s = TcpStream::connect("127.0.0.1:5432").await?;
+    let conf = common::cluster().config;
+    let server = conf.servers.first().unwrap();
+
+    let s = TcpStream::connect(server.address.as_ref().unwrap()).await?;
     let t = Transport::new(s);
     let n = t.try_write(SSL_REQUEST)?;
     assert_eq!(n, 8);
