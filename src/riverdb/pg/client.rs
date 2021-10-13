@@ -89,7 +89,17 @@ impl ClientConn {
     #[inline]
     pub async unsafe fn recv(&self) -> Result<Messages> {
         let parser = self.parser();
-        parse_messages(parser, self, self.backend()).await
+        parse_messages(parser, self, self.backend(), false).await
+    }
+
+    /// recv_one parses a single Message from the stream.
+    /// Safety: recv_one can only be called from the run thread, only from inside
+    /// methods called directly or indirectly by self.run(). Marked as unsafe
+    /// because the programmer must enforce that constraint.
+    #[inline]
+    pub async unsafe fn recv_one(&self) -> Result<Messages> {
+        let parser = self.parser();
+        parse_messages(parser, self, self.backend(), true).await
     }
 
     #[inline]

@@ -91,7 +91,17 @@ impl BackendConn {
     #[inline]
     pub async unsafe fn recv(&self) -> Result<Messages> {
         let parser = self.parser();
-        parse_messages(parser, self, self.client()).await
+        parse_messages(parser, self, self.client(), false).await
+    }
+
+    /// recv_one parses a single Message from the stream.
+    /// Safety: recv_one can only be called from the run thread, only from inside
+    /// methods called directly or indirectly by self.run(). Marked as unsafe
+    /// because the programmer must enforce that constraint.
+    #[inline]
+    pub async unsafe fn recv_one(&self) -> Result<Messages> {
+        let parser = self.parser();
+        parse_messages(parser, self, self.client(), true).await
     }
 
     #[inline]
@@ -556,6 +566,7 @@ impl BackendConn {
 
         {
             let r = msg.reader();
+            r.advance(4)?; // skip auth_type
             loop {
                 let mechanism = r.read_str()?;
                 if mechanism.is_empty() {
@@ -569,6 +580,7 @@ impl BackendConn {
             }
         }
 
+        // TODO support channel binding for better security when possible
         let tls_endpoint = vec![];
 
         let (channel_binding, mechanism) = if have_scram_256_plus {
@@ -595,7 +607,7 @@ impl BackendConn {
         self.send(sasl_initial).await?;
 
         // Safety: this is called indirectly from inside run()
-        let msgs = unsafe { self.recv() }.await?;
+        let msgs = unsafe { self.recv_one() }.await?;
         scram.update_from_message(msgs)?;
 
         let sasl_continue = {
@@ -605,8 +617,9 @@ impl BackendConn {
         };
         self.send(sasl_continue).await?;
 
-        let msgs = unsafe { self.recv() }.await?;
-        scram.update_from_message(msgs)?;
+        let mut msgs = unsafe { self.recv_one() }.await?;
+        let final_msg = msgs.split_first();
+        scram.update_from_message(final_msg)?;
 
         Ok(())
     }

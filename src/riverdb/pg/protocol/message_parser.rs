@@ -73,9 +73,9 @@ impl MessageParser {
         b
     }
 
-    /// Parses and returns the next Message in the buffer without copying,
+    /// Parses and returns the next Messages in the buffer without copying,
     /// or None if there isn't a complete message.
-    pub fn next(&mut self) -> Option<Result<Messages>> {
+    pub fn next(&mut self, first_only: bool) -> Option<Result<Messages>> {
         let mut pos = 0;
         let mut reserve_extra = 0;
         let data = self.data.chunk();
@@ -90,7 +90,11 @@ impl MessageParser {
                     if msg_end <= self.data.len() {
                         // We have the full message. Start after this message and loop again.
                         pos = msg_end;
-                        continue;
+                        if first_only {
+                            break;
+                        } else {
+                            continue;
+                        }
                     } else {
                         // We don't have this last message, make sure buffer is large enough for it
                         reserve_extra = msg_end - self.data.len();
@@ -152,26 +156,31 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_messages() {
+    fn test_parse_single_message() {
         let mut parser = MessageParser::new();
         for b in &[0u8,0,0,8,0,0,0,0] {
-            assert!(parser.next().is_none());
+            assert!(parser.next(true).is_none());
             parser.bytes_mut().put_u8(*b);
             assert_eq!(parser.peek().unwrap(), 0);
         }
-        let msgs = parser.next()
+        let msgs = parser.next(true)
             .expect("expected a message")
             .expect("parse error");
         assert_eq!(msgs.len(), 8);
 
         for b in &['P' as u8,0,0,0,4] {
-            assert!(parser.next().is_none());
+            assert!(parser.next(true).is_none());
             parser.bytes_mut().put_u8(*b);
             assert_eq!(parser.peek().unwrap(), 'P' as u8);
         }
-        let msgs = parser.next()
+        let msgs = parser.next(true)
             .expect("expected a message")
             .expect("parse error");
         assert_eq!(msgs.len(), 5);
+    }
+
+    #[test]
+    fn test_parse_multiple_messages() {
+        // TODO
     }
 }

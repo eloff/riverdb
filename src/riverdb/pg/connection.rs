@@ -212,7 +212,7 @@ pub(crate) async fn read_and_flush_backlog<R: Connection, W: Connection>(
 /// Using the given MessageParser to accumulate and parse messages, reads bytes from receiver,
 /// writes any pending backlog data to sender (if not None) and returns the parsed Messages.
 /// Reads at least one Message, or returns an Error.
-pub async fn parse_messages<R: Connection, W: Connection>(parser: &mut MessageParser, receiver: &R, sender: Option<&W>) -> Result<Messages> {
+pub async fn parse_messages<R: Connection, W: Connection>(parser: &mut MessageParser, receiver: &R, sender: Option<&W>, first_only: bool) -> Result<Messages> {
     loop {
         read_and_flush_backlog(
             receiver,
@@ -221,7 +221,7 @@ pub async fn parse_messages<R: Connection, W: Connection>(parser: &mut MessagePa
         ).await?;
 
         loop {
-            if let Some(result) = parser.next() {
+            if let Some(result) = parser.next(first_only) {
                 let msgs = result?;
                 debug!(msgs=?&msgs, sender=?receiver, "received messages");
 
