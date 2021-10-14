@@ -1,5 +1,5 @@
 mod client;
-mod sql;
+pub mod sql;
 pub mod protocol;
 mod client_state;
 mod service;
