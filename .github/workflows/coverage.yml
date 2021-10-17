@@ -10,7 +10,7 @@ jobs:
     services:
       postgres:
         # Docker Hub image
-        image: postgres:latest
+        image: ghcr.io/riverdb/pg14:latest
         # service environment variables
         # `POSTGRES_HOST` is `postgres`
         env:

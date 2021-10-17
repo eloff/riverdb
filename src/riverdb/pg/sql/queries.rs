@@ -44,14 +44,9 @@ impl Query {
         let mut normalized_query = String::new();
         let msg = msgs.first().unwrap();
         if msg.tag() == Tag::QUERY {
-            let r = msg.reader();
-            if let Ok(query) = r.read_str() {
-                // TODO the real query normalization algorithm
-                normalized_query = query.to_string().to_uppercase();
-            }
+            let normalizer = QueryNormalizer::new(msg);
+            return normalizer.normalize();
         }
-
-        let query_type = QueryType::from(normalized_query.trim());
 
         Ok(Self{msgs, params_buf: "".to_string(), normalized_query, query_type, params: vec![], tags: vec![] })
     }
