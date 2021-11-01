@@ -9,6 +9,7 @@ mod version;
 mod atomic_ref;
 mod spsc;
 mod ark;
+mod utf8;
 
 pub use self::errors::*;
 pub use self::bytes::*;
