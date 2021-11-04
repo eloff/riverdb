@@ -3,6 +3,8 @@ use std::fmt::{Debug, Formatter};
 use crate::riverdb::Result;
 use crate::riverdb::pg::protocol::{Tag, Messages};
 use crate::riverdb::pg::sql::QueryType;
+use std::ops::Range;
+use crate::riverdb::pg::sql::normalize::QueryNormalizer;
 
 // TODO the type of object targeted by ALTER, DROP, CREATE queries
 pub enum ObjectType {}
@@ -21,38 +23,76 @@ pub enum LiteralType {
 }
 
 #[derive(Eq, PartialEq, Debug)]
-pub struct QueryParam<'a> {
-    pub value: &'a str,
+pub struct QueryParam {
+    pub pos: u32, // start position in buffer
+    pub len: u32, // length
     pub ty: LiteralType,
     pub negated: bool,
-    pub target_type: &'a str, // type 'string', 'string'::type, and CAST ( 'string' AS type )
+    // pub target_type: &'a str, // type 'string', 'string'::type, and CAST ( 'string' AS type )
+}
+
+pub struct QueryTag {
+    pub key_pos: u32,
+    pub key_len: u32,
+    pub val_pos: u32,
+    pub val_len: u32,
+}
+
+impl QueryTag {
+    pub fn key_len(&self) -> usize {
+        self.key_len
+    }
+
+    pub fn key_range(&self) -> Range<usize> {
+        Range{ start: self.key_pos as usize, end: (self.key_pos + self.key_len) as usize }
+    }
+
+    pub fn value_range(&self) -> Range<usize> {
+        Range{ start: self.val_pos as usize, end: (self.val_pos + self.val_len) as usize }
+    }
+}
+
+pub struct QueryInfo {
+    pub params_buf: String,
+    pub normalized: String,
+    pub ty: QueryType,
+    pub params: Vec<QueryParam>
+}
+
+impl QueryInfo {
+    pub const fn new() -> Self {
+        Self{
+            params_buf: String::new(),
+            normalized: String::new(),
+            ty: QueryType::Other,
+            params: Vec::new(),
+        }
+    }
 }
 
 pub struct Query {
     msgs: Messages,
-    params_buf: String,
-    normalized_query: String,
-    query_type: QueryType,
-    params: Vec<QueryParam<'static>>, // 'static is a lie here, it's 'self
-    tags: Vec<(&'static str, &'static str)>, // 'static is a lie here, it's 'self
+    query: QueryInfo,
+    tags: Vec<QueryTag>, // indices that point into msgs.as_slice()
 }
 
 impl Query {
     pub fn new(msgs: Messages) -> Result<Self> {
         debug_assert_eq!(msgs.count(), 1);
 
-        let mut normalized_query = String::new();
         let msg = msgs.first().unwrap();
-        if msg.tag() == Tag::QUERY {
-            let normalizer = QueryNormalizer::new(msg);
-            return normalizer.normalize();
-        }
+        let (query, tags) = if msg.tag() == Tag::QUERY {
+            let mut normalizer = QueryNormalizer::new(&msg);
+            normalizer.normalize()?
+        } else {
+            (QueryInfo::new(), Vec::new())
+        };
 
-        Ok(Self{msgs, params_buf: "".to_string(), normalized_query, query_type, params: vec![], tags: vec![] })
+        Ok(Self{msgs, query, tags })
     }
 
     pub fn query_type(&self) -> QueryType {
-        self.query_type
+        self.query.ty
     }
 
     /// Returns the object type affected for ALTER, CREATE, or DROP queries
@@ -65,15 +105,33 @@ impl Query {
     }
 
     pub fn normalized(&self) -> &str {
-        &self.normalized_query
+        &self.query.normalized
     }
 
     pub fn params(&self) -> &Vec<QueryParam> {
-        &self.params
+        &self.query.params
     }
 
-    pub fn tags(&self) -> &Vec<(&str, &str)> {
-        &self.tags
+    /// Returns the value of the specified QueryParam which must have been returned by self.params()
+    pub fn param(&self, param: QueryParam) -> &str {
+        todo!()
+    }
+
+    /// Returns the value of the named tag (ascii case-insensitive) or None
+    pub fn tag(&self, name: &str) -> Option<&str> {
+        let bytes = self.msgs.as_slice();
+        for tag in self.tags {
+            if tag.key_len() as usize == name.len() {
+                let key = bytes&[tag.key_range()];
+                // Safety: we checked msg was valid utf8 when we normalized it in new()
+                if name.eq_ignore_ascii_case(unsafe { std::str::from_utf8_unchecked(key) }) {
+                    let val = &bytes[tag.value_range()];
+                    // Safety: see above
+                    return Some(unsafe { std::str::from_utf8_unchecked(val) });
+                }
+            }
+        }
+        None
     }
 }
 

@@ -1,7 +1,7 @@
 use tracing::{debug};
 
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::sql::{Query, QueryType, QueryParam};
+use crate::riverdb::pg::sql::{Query, QueryType, QueryParam, LiteralType, QueryTag, QueryInfo};
 use crate::riverdb::pg::protocol::{Message};
 
 // A list of operators which we don't format with a following space
@@ -20,35 +20,29 @@ pub(crate) struct QueryNormalizer<'a> {
     params_buf: String,
     normalized_query: String,
     query_type: QueryType,
-    params: Vec<QueryParam<'static>>, // 'static is a lie here, it's 'self
-    tags: Vec<(&'static str, &'static str)>, // 'static is a lie here, it's 'self
+    start_offset_in_msg: u32,
+    params: Vec<QueryParam>,
+    tags: Vec<QueryTag>,
 }
 
 impl<'a> QueryNormalizer<'a> {
-    pub fn normalize(msg: &Message<'a>) -> Result<Query> {
-        let src = msg.reader().read_to_end()?;
-        let mut this = Self {
+    pub fn new(msg: &Message<'a>) -> Self {
+        let reader = msg.reader();
+        let start_offset_in_msg = reader.tell();
+        let src = reader.read_to_end()?;
+
+       Self {
             src,
             pos: 0,
-            params_buf: "".to_string(),
-            normalized_query: "".to_string(),
-            query_type: QueryType::Other,
+            params_buf: String::new(),
+            normalized_query: String::new(),
+            start_offset_in_msg,
             params: Vec::new(),
             tags: Vec::new(),
-        };
-
-        let query_type = this.do_normalize()?;
-
-        return Ok(Query{
-            normalized_query: this.normalized_query,
-            query_type,
-            params_buf: this.params_buf,
-            params: this.params,
-            tags: this.tags,
-        })
+        }
     }
 
-    fn do_normalize(&mut self) -> Result<QueryType> {
+    pub fn normalize(mut self) -> Result<(QueryInfo, Vec<QueryTag>)> {
         loop {
             let c = self.next()?.get();
             debug!("main loop c='{}'", c); // TODO char format code
@@ -65,7 +59,7 @@ impl<'a> QueryNormalizer<'a> {
             } else if c == '.' || c.is_ascii_digit() {
                 res = self.numeric(c);
             } else if (c == 'N' || c == 'n') && self.match_fold("ull") {
-                res = self.null();
+                self.null();
             } else if (c == 'B' || c == 'b') && self.peek() == '\'' {
                 res = self.bit_string(c);
             } else if (c == 'E' || c == 'e') && self.peek() == '\'' {
@@ -73,9 +67,9 @@ impl<'a> QueryNormalizer<'a> {
             } else if (c == 'U' || c == 'u') && self.peek() == '&' {
                 res = self.unicode_string(c);
             } else if (c == 'T' || c == 't') && self.match_fold("rue") {
-                res = self.bool(true);
+                self.bool(true);
             } else if (c == 'F' || c == 'f') && self.match_fold("alse") {
-                res = self.bool(false);
+                self.bool(false);
             } else if c == '/' && self.peek() == '*' {
                 res = self.c_style_comment(c);
             } else if c == '-' && self.peek() == '-' {
@@ -96,13 +90,19 @@ impl<'a> QueryNormalizer<'a> {
             } else if c < 128 {
                 res = self.operator(c);
             } else {
-                res = Err(Error::new(format!("unexpected char {} in query", c))); // TODO char format code
+                res = Err(Error::new(format!("unexpected char '{}' in query", c)));
             }
 
             res?;
         }
 
-        Ok(QueryType::from(&this.normalized_query))
+        let ty = QueryType::from(&this.normalized_query);
+        Ok((QueryInfo{
+            params_buf: self.params_buf,
+            normalized: self.normalized_query,
+            ty,
+            params: self.params
+        }, self.tags))
     }
 
     fn peek(&mut self) -> Result<char> {
@@ -195,7 +195,7 @@ impl<'a> QueryNormalizer<'a> {
         panic!("look_behind_for_string_continuation can only be called after finding a string literal");
     }
 
-    fn replace_literal(&mut self, start: usize, ty: LiteralType, uppercase: bool) {
+    fn replace_literal(&mut self, start: usize, ty: LiteralType, ascii_uppercase: bool) {
         let tok = &self.src[start..self.pos];
 
         // Any string except a dollar string may be combined with a plain string literal
@@ -216,7 +216,7 @@ impl<'a> QueryNormalizer<'a> {
                         return
                     }
                 },
-                _ = (),
+                _ => (),
             }
         }
 
@@ -225,9 +225,30 @@ impl<'a> QueryNormalizer<'a> {
             negated = self.is_negative_number(start, self.pos);
             // Remove the - from the end of the normalized string
             if negated {
-                let trim = self.no
+                // Remove the - from the end of the normalized string
+                assert_eq!(self.normalized_query.last(), Ok('-'));
+                self.normalized_query.pop();
+                // Remove the space we added too
+                if self.normalized_query.last() == Ok(' ') {
+                    self.normalized_query.pop();
+                }
             }
         }
+
+        // Append token to buf as uppercase
+        if ascii_uppercase {
+            for b in tok {
+                self.params_buf.push((b as char).to_ascii_uppercase());
+            }
+        } else {
+
+        }
+
+        self.params.push(QueryParam{
+            len: tok.len(),
+            ty,
+            negated,
+        })
     }
 
     /// appends a NULL literal to params
