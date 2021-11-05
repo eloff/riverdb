@@ -31,6 +31,7 @@ pub struct QueryParam {
     // pub target_type: &'a str, // type 'string', 'string'::type, and CAST ( 'string' AS type )
 }
 
+#[derive(Clone, Copy)]
 pub struct QueryTag {
     pub key_pos: u32,
     pub key_len: u32,
@@ -39,8 +40,27 @@ pub struct QueryTag {
 }
 
 impl QueryTag {
+    pub const fn new() -> Self {
+        Self{
+            key_pos: 0,
+            key_len: 0,
+            val_pos: 0,
+            val_len: 0
+        }
+    }
+
+    pub fn key_eq_ignore_ascii_case(&self, bytes: &[u8], key: &str) -> bool {
+        if self.key_len() == key.len() {
+            let this_key = &bytes[tag.key_range()];
+            // Safety: we checked msg was valid utf8 when we normalized it in new()
+            key.eq_ignore_ascii_case(unsafe { std::str::from_utf8_unchecked(this_key) })
+        } else {
+            false
+        }
+    }
+    
     pub fn key_len(&self) -> usize {
-        self.key_len
+        self.key_len as usize
     }
 
     pub fn key_range(&self) -> Range<usize> {
@@ -121,14 +141,10 @@ impl Query {
     pub fn tag(&self, name: &str) -> Option<&str> {
         let bytes = self.msgs.as_slice();
         for tag in self.tags {
-            if tag.key_len() as usize == name.len() {
-                let key = bytes&[tag.key_range()];
+            if tag.key_eq_ignore_ascii_case(bytes, name) {
+                let val = &bytes[tag.value_range()];
                 // Safety: we checked msg was valid utf8 when we normalized it in new()
-                if name.eq_ignore_ascii_case(unsafe { std::str::from_utf8_unchecked(key) }) {
-                    let val = &bytes[tag.value_range()];
-                    // Safety: see above
-                    return Some(unsafe { std::str::from_utf8_unchecked(val) });
-                }
+                return Some(unsafe { std::str::from_utf8_unchecked(val) });
             }
         }
         None

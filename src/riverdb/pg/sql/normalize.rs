@@ -17,10 +17,12 @@ const REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS: &'static str = "~!@#%^&|`?";
 pub(crate) struct QueryNormalizer<'a> {
     src: &'a [u8],
     pos: usize,
+    last_char_size: usize,
+    last_char: char,
+    start_offset_in_msg: u32,
+    query_type: QueryType,
     params_buf: String,
     normalized_query: String,
-    query_type: QueryType,
-    start_offset_in_msg: u32,
     params: Vec<QueryParam>,
     tags: Vec<QueryTag>,
 }
@@ -31,12 +33,15 @@ impl<'a> QueryNormalizer<'a> {
         let start_offset_in_msg = reader.tell();
         let src = reader.read_to_end()?;
 
-       Self {
+        Self {
             src,
             pos: 0,
+            last_char_size: 0,
+            last_char: 0,
+            start_offset_in_msg,
+            query_type: QueryType::Other,
             params_buf: String::new(),
             normalized_query: String::new(),
-            start_offset_in_msg,
             params: Vec::new(),
             tags: Vec::new(),
         }
@@ -49,7 +54,7 @@ impl<'a> QueryNormalizer<'a> {
 
             let mut res = Ok(());
             if c.is_ascii_whitespace() {
-                self.consume_whitespace(c);
+                res = self.consume_whitespace(c);
             } else if c == '\'' {
                 res = self.single_quoted_string(c);
             } else if c == '"' {
@@ -105,9 +110,9 @@ impl<'a> QueryNormalizer<'a> {
         }, self.tags))
     }
 
-    fn peek(&mut self) -> Result<char> {
-        let (c, _) = util::decode_utf8_char(self.tail())?;
-        Ok(c)
+    fn peek(&mut self) -> char {
+        let (c, _) = util::decode_utf8_char(self.tail()).unwrap_or((0, 0));
+        c
     }
 
     fn next(&mut self) -> Result<char> {
@@ -123,8 +128,8 @@ impl<'a> QueryNormalizer<'a> {
     /// backup one character. Panics if at start.
     /// Can only be called exactly once after a call to next().
     fn backup(&mut self) {
-        assert!(self.pos != 0, "can't backup before start");
-        assert!(self.last_char_size != 0, "must call next() before backup()");
+        assert_ne!(self.pos, 0, "can't backup before start");
+        assert_ne!(self.last_char_size, 0, "must call next() before backup()");
         debug_assert!(self.pos >= self.last_char_size);
         self.pos -= self.last_char_size;
         self.last_char_size = 0;
@@ -169,9 +174,9 @@ impl<'a> QueryNormalizer<'a> {
     }
 
     /// consumes all whitespace characters, starting with c
-    fn consume_whitespace(&mut self, c: char) {
+    fn consume_whitespace(&mut self, mut c: char) -> Result<()> {
         while c.is_ascii_whitespace() {
-            c = self.next();
+            c = self.next()?;
         }
         self.backup();
     }
@@ -182,7 +187,7 @@ impl<'a> QueryNormalizer<'a> {
         let mut found_newline = false;
         let mut i = pos - 1;
         while i >= 0 {
-            let c = self.src.get(i).unwrap();
+            let c = self.src.get(i).unwrap() as char;
             match c {
                 ' ' | '\t' | '\x0c' => (),
                 '\n' | '\r' => { found_newline = true; },
@@ -195,7 +200,10 @@ impl<'a> QueryNormalizer<'a> {
         panic!("look_behind_for_string_continuation can only be called after finding a string literal");
     }
 
-    fn replace_literal(&mut self, start: usize, ty: LiteralType, ascii_uppercase: bool) {
+    /// Write a $N placeholder to the normalized query and push the literal value onto the params vec.
+    /// Combines string continuations into a single literal. It may include a leading - as part of a numeric literal.
+    /// Converts NULL and BOOLEAN literals to uppercase.
+    fn replace_literal(&mut self, start: usize, ty: Litee) {
         let tok = &self.src[start..self.pos];
 
         // Any string except a dollar string may be combined with a plain string literal
@@ -223,7 +231,8 @@ impl<'a> QueryNormalizer<'a> {
         let mut negated = false;
         if ty == LiteralType::Integer || ty == LiteralType::Numeric {
             negated = self.is_negative_number(start, self.pos);
-            // Remove the - from the end of the normalized string
+            // Remove the - from the end of the normalized string.
+            // We believe it to be part of the numeric literal.
             if negated {
                 // Remove the - from the end of the normalized string
                 assert_eq!(self.normalized_query.last(), Ok('-'));
@@ -235,25 +244,29 @@ impl<'a> QueryNormalizer<'a> {
             }
         }
 
-        // Append token to buf as uppercase
-        if ascii_uppercase {
-            for b in tok {
-                self.params_buf.push((b as char).to_ascii_uppercase());
+        let ascii_uppercase = ty == LiteralType::Null || ty == LiteralType::Boolean;
+        for b in tok {
+            let mut c = b as char;
+            if ascii_uppercase {
+                c = c.to_ascii_uppercase();
             }
-        } else {
-
+            self.params_buf.push(c);
         }
 
         self.params.push(QueryParam{
-            len: tok.len(),
+            pos: start as u32,
+            len: tok.len() as u32,
             ty,
             negated,
-        })
+        });
+
+        self.normalized_query.push('$');
+        write!(&mut self.normalized_query, "{}", self.params.len());
     }
 
     /// appends a NULL literal to params
     fn null(&mut self) {
-        self.replace_literal(self.pos - 4, LiteralType::Null, true);
+        self.replace_literal(self.pos - 4, LiteralType::Null);
     }
 
     /// appends a TRUE or FALSE literal to params depending on the value of b.
@@ -262,6 +275,110 @@ impl<'a> QueryNormalizer<'a> {
         if b {
             start += 1;
         }
-        n.replace_literal(start, LiteralType::Boolean, true);
+        n.replace_literal(start, LiteralType::Boolean);
+    }
+
+    /// parses the numeric literal and adds it to params
+    fn numeric(&mut self, mut c: char) -> Result<()> {
+        debug_assert!(c == '.' || c.is_ascii_digit(), "c must start a number");
+        debug_assert_ne!(self.pos, 0);
+
+        let start = self.pos - 1;
+        let mut decimal = false;
+        loop {
+            match c {
+                '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | 'e' | 'E' => (),
+                '+' | '-' => {
+                    let prev = self.last();
+                    if prev.to_ascii_lowercase() != 'e' {
+                        return Err(Error::new(format!("unexpected '{}' in numeric value following '{}'", c, prev)));
+                    }
+                },
+                '.' => {
+                    if decimal {
+                        return Err(Error::new("cannot have two decimals in numeric value"));
+                    }
+                    // Only valid if there are digits on at least one side
+                    if !self.peek().is_ascii_digit() && !self.last().is_ascii_digit() {
+                        // Not actually a number, must be part of a dotted identifier (with a preceding space - why?!?)
+                        assert_eq!(self.pos, start + 1, ". without digits not at the start of the literal");
+                        return self.operator(c);
+                    }
+                    decimal = true
+                },
+                '\0' => {
+                    break; // EOF
+                },
+                _ => {
+                    if c.is_alphabetic() {
+                        return Err(Error::new(format!("unexpected '{}' in numeric value", c)));
+                    }
+                    break;
+                },
+            }
+            c = self.next()?;
+        }
+
+        // backup to position of last char so we don't include the terminating char
+        let prev = n.backup();
+        if prev == 'e' || prev == 'E' || prev == '+' || prev == '-' {
+            // Can't end in an exponent symbol
+            return Err(Error::new(format!("numeric constant cannot end in exponent '{}'", prev)));
+        }
+
+        let mut ty = LiteralType::Integer;
+        if decimal && prev != '.' {
+            // If the number included, but did not end in a decimal,
+            // then it's a numeric type instead of an integer.
+            // => SELECT .1, 2., 3.0;
+            // 0.1  |    2 |  3.0
+            ty = LiteralType::Numeric;
+        }
+
+        // We have a number. It may be prefixed with a - or + unary operator.
+        // Unlike Postgres where that's treated as an operator, we need to treat it as part of
+        // the constant, otherwise queries with negative numbers won't have the same form as
+        // queries with positive numbers and this can cause an exponential explosion in the
+        // number of query forms which we use for cache keys in various caches.
+        self.replace_literal(start, ty);
+
+        // If it was an integer but ended in ., then strip the ending . from the literal value
+        if decimal && prev == '.' {
+            assert_eq!(self.params_buf.pop().unwrap(), '.');
+            self.params.last_mut().len -= 1;
+        }
+
+        Ok(())
+    }
+
+    /// parses the c-style /* comment */ including possible tags
+    fn c_style_comment(&mut self, mut c: char) -> Result<()> {
+        debug_assert_eq!(c, '/', "c must start a c-style comment");
+
+        let start = self.pos;
+        let mut tag = QueryTag::new();
+
+        loop {
+            if c == '/' && self.peek() == '*' {
+                self.next().unwrap();
+            } else if c == '*' && self.peek() == '/' {
+                if tag.val_pos != 0 {
+                    tag.val_len = self.pos as u32 - tag.val_pos;
+                    self.append_tag(tag);
+                }
+                self.next().unwrap();
+
+            } else if c == '=' {
+                // This might be part of a tag.
+                // Scan backward for a dotted identifier A-Za-z0-9-_.
+            } else if c.is_ascii_whitespace() || c == '"' {
+                // Don't permit double-quotes in a tag, we may want to allow quoted values later
+                if tag.val_pos != 0 {
+                    tag.val_len = self.pos as u32 - tag.val_pos;
+                    self.append_tag(tag);
+                }
+            }
+
+        }
     }
 }
