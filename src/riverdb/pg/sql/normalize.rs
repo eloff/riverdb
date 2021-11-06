@@ -20,6 +20,7 @@ pub(crate) struct QueryNormalizer<'a> {
     last_char_size: usize,
     last_char: char,
     start_offset_in_msg: u32,
+    comment_level: u8,
     query_type: QueryType,
     params_buf: String,
     normalized_query: String,
@@ -39,6 +40,7 @@ impl<'a> QueryNormalizer<'a> {
             last_char_size: 0,
             last_char: 0,
             start_offset_in_msg,
+            comment_level: 0,
             query_type: QueryType::Other,
             params_buf: String::new(),
             normalized_query: String::new(),
@@ -278,6 +280,13 @@ impl<'a> QueryNormalizer<'a> {
         n.replace_literal(start, LiteralType::Boolean);
     }
 
+    fn append_tag(&mut self, tag: QueryTag) {
+        debug_assert_ne!(tag.key_len, 0);
+        debug_assert!(tag.val_pos > tag.key_pos + tag.key_len);
+
+        self.tags.push(tag);
+    }
+
     /// parses the numeric literal and adds it to params
     fn numeric(&mut self, mut c: char) -> Result<()> {
         debug_assert!(c == '.' || c.is_ascii_digit(), "c must start a number");
@@ -358,27 +367,74 @@ impl<'a> QueryNormalizer<'a> {
         let start = self.pos;
         let mut tag = QueryTag::new();
 
+        let complete_tag = || {
+            if tag.val_pos != 0 {
+                tag.val_len = self.pos as u32 - tag.val_pos;
+                self.append_tag(tag);
+                tag = QueryTag::new();
+            }
+        };
+
         loop {
             if c == '/' && self.peek() == '*' {
+                complete_tag();
                 self.next().unwrap();
+                self.comment_level += 1;
             } else if c == '*' && self.peek() == '/' {
-                if tag.val_pos != 0 {
-                    tag.val_len = self.pos as u32 - tag.val_pos;
-                    self.append_tag(tag);
-                }
+                complete_tag();
                 self.next().unwrap();
-
+                self.comment_level -= 1;
+                if n.commentLevel == 0 {
+                    break;
+                }
             } else if c == '=' {
                 // This might be part of a tag.
                 // Scan backward for a dotted identifier A-Za-z0-9-_.
+                debug_assert!(self.pos > 2);
+                let mut i = self.pos - 2;
+                while i > start {
+                    let b = self.src.get(i).unwrap() as char;
+                    if c.is_ascii_alphabetic() || c == '.' || c == '-' || c == '_' {
+                        i -= 1;
+                    } else {
+                        tag.key_pos = (i + 1) as u32;
+                        tag.key_len = self.pos as u32 - tag.key_pos - 1;
+                        break;
+                    }
+                }
             } else if c.is_ascii_whitespace() || c == '"' {
                 // Don't permit double-quotes in a tag, we may want to allow quoted values later
-                if tag.val_pos != 0 {
-                    tag.val_len = self.pos as u32 - tag.val_pos;
-                    self.append_tag(tag);
-                }
+                complete_tag();
             }
 
+            c = self.next()?;
+            if c == 0 {
+                return Err(Error::new("unexpected eof while parsing c-style comment"));
+            }
         }
+
+        Ok(())
+    }
+
+    fn sql_comment(&mut self, mut c: char) -> Result<()> {
+        let c2 = self.next()?;
+        // Guaranteed by caller
+        debug_assert_eq!(c, '-');
+        debug_assert_eq!(c2, '-');
+
+        // Look for a newline or EOF indicating the end of the comment
+        // (it's always possible to scan to the end, so this always succeeds)
+        loop {
+            c = self.next()?;
+            if c == '\r' || c == '\n' || c == '\0' {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn string(&mut self, c: char, ty: LiteralType) -> Result<()> {
+
     }
 }
