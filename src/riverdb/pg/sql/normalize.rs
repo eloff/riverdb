@@ -435,6 +435,38 @@ impl<'a> QueryNormalizer<'a> {
     }
 
     fn string(&mut self, c: char, ty: LiteralType) -> Result<()> {
+        Ok(())
+    }
 
+    fn quoted_identifier(&mut self, c: char) -> Result<()> {
+        Ok(())
+    }
+
+    fn maybe_dollar_string(&mut self, c: char) -> Result<()> {
+        Ok(())
+    }
+
+    fn single_quoted_string(&mut self, c: char) -> Result<()> {
+        Ok(())
+    }
+
+    fn bit_string(&mut self, c: char) -> Result<()> {
+        Ok(())
+    }
+
+    fn escape_string(&mut self, c: char) -> Result<()> {
+        Ok(())
+    }
+
+    fn unicode_string(&mut self, c: char) -> Result<()> {
+        Ok(())
+    }
+
+    fn operator(&mut self, c: char) -> Result<()> {
+        Ok(())
+    }
+
+    fn keyword_or_identifier(&mut self, c: char) -> Result<()> {
+        Ok(())
     }
 }
