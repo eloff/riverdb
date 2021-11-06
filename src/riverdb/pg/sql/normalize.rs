@@ -3,6 +3,7 @@ use tracing::{debug};
 use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::sql::{Query, QueryType, QueryParam, LiteralType, QueryTag, QueryInfo};
 use crate::riverdb::pg::protocol::{Message};
+use std::intrinsics::sinf32;
 
 // A list of operators which we don't format with a following space
 const TOKENS_WITHOUT_FOLLOWING_WHITESPACE: &'static str = ".([:";
@@ -145,6 +146,19 @@ impl<'a> QueryNormalizer<'a> {
     /// tail returns the remaining part of the source bytes from the current position.
     fn tail(&mut self) -> &'a [u8] {
         &self.src[self.pos..]
+    }
+
+    /// append a token to the normalized query, inserting a space first, if required
+    fn append_token(&mut self, tok: &[u8]) {
+        if len(tok) == 1 {
+            self.normalized_query.push(tok.get(0).unwrap() as char);
+        } else {
+            self.write_space();
+            self.normalized_query.push_str(
+                // Safety: we already parsed this as valid utf8
+                unsafe { std::str::from_utf8_unchecked(tok) }
+            );
+        }
     }
 
     /// matches str s at tail() case-insensitively
@@ -462,11 +476,148 @@ impl<'a> QueryNormalizer<'a> {
         Ok(())
     }
 
-    fn operator(&mut self, c: char) -> Result<()> {
+    fn operator(&mut self, mut c: char) -> Result<()> {
+        if c == '.' {
+            self.normalized_query.push(c);
+            return Ok(());
+        }
+
+        // From https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-PRECEDENCE
+        // An operator name is a sequence of up to NAMEDATALEN-1 (63 by default) characters from the following list:
+        //
+        // + - * / < > = ~ ! @ # % ^ & | ` ?
+        //
+        // There are a few restrictions on operator names, however:
+        //
+        //    -- and /* cannot appear anywhere in an operator name, since they will be taken as the start of a comment.
+        //
+        //    A multiple-character operator name cannot end in + or -, unless the name also contains at least one of these characters:
+        //
+        //    ~ ! @ # % ^ & | ` ?
+        //
+        //    For example, @- is an allowed operator name, but *- is not. This restriction allows PostgreSQL to parse SQL-compliant queries without requiring spaces between tokens.
+
+        if !ALL_OPERATORS.contains(c) {
+            return Err(Error::new(format!("invalid char '{}' for operator", c)));
+        }
+
+        let start = self.pos - 1;
+        loop {
+            c = self.next()?;
+            if c < 128 && ALL_OPERATORS.contains(c) {
+                continue;
+            }
+            break;
+        }
+
+        // We already checked for comments, so check that second restriction above applies here.
+        self.backup();
+        c = self.last();
+        if self.pos - start > 1 && (c == '+' || c == '-') {
+            if !REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS.contains(c) {
+                return Err(Error::new(format!("an operator cannot end in + or - unless it includes one of \"{}\"", REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS)));
+            }
+        }
+
+        self.append_token(&self.src[start..self.pos]);
         Ok(())
     }
 
-    fn keyword_or_identifier(&mut self, c: char) -> Result<()> {
+    /// parses and appends a keyword or identifier to the normalized query
+    fn keyword_or_identifier(&mut self, mut c: char) -> Result<()> {
+        debug_assert!(c.is_alphabetic() || c == '_', "a keyword/identifier must start with a letter or underscore");
+
+        // Key words and identifiers have the same lexical structure, meaning that one cannot know whether a token is an identifier or a key word without knowing the language.
+        // It's also context dependant, something could be a keyword in some context, but an identifier in another context:
+        //
+        // e.g. in SELECT 55 AS CHECK; check is an identifier, despite being a reserved keyword.
+        //
+        // We don't distinguish here, that's something we use the AST for.
+        //
+        // SQL identifiers and key words must begin with a letter or an underscore (_).
+        // Letter here also includes letters with diacritical marks and non-Latin letters, so a letter in the unicode sense.
+        // Subsequent characters in an identifier or key word can be letters, underscores, digits (0-9), or dollar signs ($).
+        // Note that dollar signs are not allowed in identifiers according to the letter of the SQL standard, so their use might render applications less portable.
+        // We also include an internal '.' here as part of the keyword/identifier rather than treat it as an operator.
+        // That means we parse `SELECT foo. bar` as two identifiers "foo." and "bar", and keep the weird whitespace.
+        // That's odd, but it's not an error to treat that as a separate query form, so that's what we do. Not worth the code to fix it.
+
+        let start = self.pos - 1;
+        loop {
+            c = self.next()?;
+            if c.is_alphabetic() || c.is_ascii_digit() || c == '_' || c == '$' || c == '.' {
+                continue;
+            }
+            break;
+        }
+
+        self.backup();
+        self.append_token(&self.src[start..self.pos]);
+
         Ok(())
+    }
+
+    /// isNegativeNumber checks if there is a '-' preceded the numeric constant
+    /// and returns true if it is believed to be a unary -, the start of a negative number.
+    /// This is not 100% accurate, so we have to verify it after using the normalized query to load the AST.
+    fn is_negative_number(&self, start: usize) -> bool {
+        debug_assert!(start <= self.src.len());
+
+        // Is this an infix + or - operator? Or is it a unary operator.
+        // See: https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-OPERATORS
+        //
+        // It's not possible to solve without a full contextual aware parse tree - the AST.
+        // Since we're using the normalized query as a cache key to speed up parsing to an AST,
+        // this puts us in a catch-22. But we're spared because we don't have to answer
+        // this question correctly - we merely have to guess, then lookup the actual AST
+        // and normalized query - and negate our numeric parameters that we extracted if we got it wrong.
+        //
+        // It's still mildy important to guess correctly, because multiple wrong guesses per
+        // query lead to a exponential explosion in "bad guesses" which alias the same
+        // AST. Because for each numeric constant that can be positive or negative, we end up
+        // with a version of the query with or without the - sign in front of the parameter.
+        // If you have N paramters like that in one query, you have 2^N possible distinct queries.
+        //
+        // We just ignore a unary +, since it's meaningless. For -, we use these heuristics:
+        //  a) If there's a space before the -, but not between the - and the constant, assume it's unary -.
+        //  b) If there's a space between both, assume binary.
+        //  c) If there's a ( or [ before the -, it's unary.
+        //  d) If there's an alpha-numeric char, ), or ] before the -, assume binary
+        //  e) It's not a -, it's an empty -- comment on the preceding line
+
+        let mut signed = false;
+        let mut whitespace_after = false;
+        let mut i = start - 1;
+        while i >= 0 {
+            // Safety: We check the bounds here ourself
+            let b = unsafe { self.src.get_unchecked(i) };
+            if b.is_ascii_whitespace() {
+                if signed {
+                    // Case b if whitespace after (binary), otherwise case a (unary)
+                    return !whitespace_after;
+                } else {
+                    whitespace_after = true;
+                }
+            } else if b == '-' {
+                // If this is the second '-', this could technically be an empty comment followed by whitespace (including at least one newline)
+                // Otherwise, if it's an actual second '-', there had to be whitespace between them, so the case
+                // above for a or b was triggered and execution never reached here. So it can only have been an empty comment.
+                if signed {
+                    // Case e, not a '-' at all
+                    break;
+                }
+                signed = true;
+            } else if b == '(' || b == '[' {
+                // Case c, this is unary - (if there was a -, otherwise we return false)
+                return signed;
+            } else {
+                // Case d, this binary -
+                // Or there wasn't a -, either way we return false
+                break;
+            }
+            i -= 1;
+        }
+
+        false
     }
 }
