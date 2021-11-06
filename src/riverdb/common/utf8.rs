@@ -1,5 +1,4 @@
 use crate::riverdb::{Result, Error};
-use std::str::Utf8Error;
 
 const LENGTHS: [u8; 32] = [
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
@@ -29,28 +28,28 @@ pub fn decode_utf8_char(bytes: &[u8]) -> Result<(char, usize)> {
     // Safety: we do the bounds checking here
     unsafe {
         // Compute these as early as possible for better pipelining
-        let mut s0: u32 = bytes.get_unchecked(0) as u32;
-        let len = LENGTHS.get_unchecked(s0 >> 3);
+        let mut s0 = *bytes.get_unchecked(0) as u32;
+        let len = *LENGTHS.get_unchecked((s0 >> 3) as usize) as usize;
 
         if n < 4 {
             if n >= 2 {
-                s1 = bytes.get_unchecked(1) as u32;
+                s1 = *bytes.get_unchecked(1) as u32;
                 if n == 3 {
-                    s2 = bytes.get_unchecked(2) as u32;
+                    s2 = *bytes.get_unchecked(2) as u32;
                 }
             }
             // else n == 1
         } else {
-            s1 = bytes.get_unchecked(1) as u32;
-            s2 = bytes.get_unchecked(2) as u32;
-            s3 = bytes.get_unchecked(3) as u32;
+            s1 = *bytes.get_unchecked(1) as u32;
+            s2 = *bytes.get_unchecked(2) as u32;
+            s3 = *bytes.get_unchecked(3) as u32;
         }
 
         s1 &= 0x3f;
         s2 &= 0x3f;
         s3 &= 0x3f;
 
-        let mut c = (s0 & MASKS.get_unchecked(len)) << 18;
+        let mut c = (s0 & *MASKS.get_unchecked(len) as u32) << 18;
         c |= s1 << 12;
         c |= s2 << 6;
         c |= s3;
@@ -58,7 +57,7 @@ pub fn decode_utf8_char(bytes: &[u8]) -> Result<(char, usize)> {
 
         // Check for errors:
         // invalid byte sequence, non-canonical encoding, or a surrogate half.
-        let mut e = ((c < MINS.get_unchecked(len)) as u32) << 6; // non-canonical encoding
+        let mut e = ((c < *MINS.get_unchecked(len)) as u32) << 6; // non-canonical encoding
         e |= (((c >> 11) == 0x1b) as u32) << 7;  // surrogate half?
         e |= ((c > 0x10FFFF) as u32) << 8;  // out of range?
         e |= (s1 & 0xc0) >> 2;
@@ -70,7 +69,8 @@ pub fn decode_utf8_char(bytes: &[u8]) -> Result<(char, usize)> {
         if e != 0 {
             Err(Error::new("invalid utf8"))
         } else {
-            Ok((c as char, len as usize))
+            // We checked error conditions above
+            Ok((std::char::from_u32(c).unwrap(), len))
         }
     }
 }

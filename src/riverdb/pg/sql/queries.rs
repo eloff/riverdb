@@ -51,7 +51,7 @@ impl QueryTag {
 
     pub fn key_eq_ignore_ascii_case(&self, bytes: &[u8], key: &str) -> bool {
         if self.key_len() == key.len() {
-            let this_key = &bytes[tag.key_range()];
+            let this_key = &bytes[self.key_range()];
             // Safety: we checked msg was valid utf8 when we normalized it in new()
             key.eq_ignore_ascii_case(unsafe { std::str::from_utf8_unchecked(this_key) })
         } else {

@@ -1,10 +1,13 @@
 use tracing::{debug};
+use std::fmt::Write; // this is used don't remove it
+
+use memmem::{TwoWaySearcher, Searcher};
 
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::sql::{Query, QueryType, QueryParam, LiteralType, QueryTag, QueryInfo};
+use crate::riverdb::pg::sql::{QueryType, QueryParam, LiteralType, QueryTag, QueryInfo};
 use crate::riverdb::pg::protocol::{Message};
-use std::intrinsics::sinf32;
-use memmem::{TwoWaySearcher, Searcher};
+use crate::riverdb::common::{decode_utf8_char};
+
 
 // A list of operators which we don't format with a following space
 const TOKENS_WITHOUT_FOLLOWING_WHITESPACE: &'static str = ".([:";
@@ -31,16 +34,16 @@ pub(crate) struct QueryNormalizer<'a> {
 }
 
 impl<'a> QueryNormalizer<'a> {
-    pub fn new(msg: &Message<'a>) -> Self {
+    pub fn new(msg: &'a Message<'a>) -> Self {
         let reader = msg.reader();
         let start_offset_in_msg = reader.tell();
-        let src = reader.read_to_end()?;
+        let src = reader.read_to_end();
 
         Self {
             src,
             pos: 0,
             last_char_size: 0,
-            last_char: 0,
+            last_char: '\0',
             start_offset_in_msg,
             comment_level: 0,
             query_type: QueryType::Other,
@@ -53,8 +56,8 @@ impl<'a> QueryNormalizer<'a> {
 
     pub fn normalize(mut self) -> Result<(QueryInfo, Vec<QueryTag>)> {
         loop {
-            let c = self.next()?.get();
-            debug!("main loop c='{}'", c); // TODO char format code
+            let c = self.next()?;
+            debug!("main loop c='{}'", c);
 
             let mut res = Ok(());
             if c.is_ascii_whitespace() {
@@ -86,17 +89,17 @@ impl<'a> QueryNormalizer<'a> {
             } else if c.is_alphabetic() || c == '_' {
                 res = self.keyword_or_identifier(c);
             } else if c == '(' || c == ')' || c == '[' || c == ']' || c == ',' {
-                self.append_byte(c as u8);
+                self.append_char(c);
             } else if c == ';' {
                 // Ignore ; if it occurs at the end of the query
-                this.consume_whitespace(this.next()?);
-                if self.peek() == 0 {
-                    break
+                self.consume_whitespace(self.next()?)?;
+                if self.peek() == '\0' {
+                    break;
                 } else {
                     // TODO verify this is correct and add test case for this too
                     res = self.operator(c);
                 }
-            } else if c < 128 {
+            } else if c < (128 as char) {
                 res = self.operator(c);
             } else {
                 res = Err(Error::new(format!("unexpected char '{}' in query", c)));
@@ -105,7 +108,7 @@ impl<'a> QueryNormalizer<'a> {
             res?;
         }
 
-        let ty = QueryType::from(&this.normalized_query);
+        let ty = QueryType::from(self.normalized_query.as_str());
         Ok((QueryInfo{
             params_buf: self.params_buf,
             normalized: self.normalized_query,
@@ -115,12 +118,12 @@ impl<'a> QueryNormalizer<'a> {
     }
 
     fn peek(&mut self) -> char {
-        let (c, _) = util::decode_utf8_char(self.tail()).unwrap_or((0, 0));
+        let (c, _) = decode_utf8_char(self.tail()).unwrap_or(('\0', 0));
         c
     }
 
     fn next(&mut self) -> Result<char> {
-        let (c, size) = util::decode_utf8_char(self.tail())?;
+        let (c, size) = decode_utf8_char(self.tail())?;
         // TODO maybe we don't need this condition
         if size != 0 {
             self.last_char = c;
@@ -149,10 +152,18 @@ impl<'a> QueryNormalizer<'a> {
         &self.src[self.pos..]
     }
 
+    /// append a char to the normalized query, inserting a space first, if required
+    fn append_char(&mut self, c: char) {
+        if !TOKENS_WITHOUT_PRECEDING_WHITESPACE.contains(c) {
+            self.write_space();
+        }
+        self.normalized_query.push(c);
+    }
+
     /// append a token to the normalized query, inserting a space first, if required
     fn append_token(&mut self, tok: &[u8]) {
-        if len(tok) == 1 {
-            self.normalized_query.push(tok.get(0).unwrap() as char);
+        if tok.len() == 1 {
+            self.append_char(*tok.get(0).unwrap() as char);
         } else {
             self.write_space();
             self.normalized_query.push_str(
@@ -169,12 +180,10 @@ impl<'a> QueryNormalizer<'a> {
         if tail.len() < len {
             false
         } else {
-            let mut i = 0;
-            for c in s {
-                if !tail.get(i).unwrap().eq_ignore_ascii_case(c) {
+            for (sc, tc) in s.chars().zip(tail) {
+                if !(*tc as char).eq_ignore_ascii_case(&sc) {
                     return false;
                 }
-                i += 1;
             }
             true
         }
@@ -196,6 +205,7 @@ impl<'a> QueryNormalizer<'a> {
             c = self.next()?;
         }
         self.backup();
+        Ok(())
     }
 
     /// returns true if a string continuation is found immediately prior to pos
@@ -204,7 +214,8 @@ impl<'a> QueryNormalizer<'a> {
         let mut found_newline = false;
         let mut i = pos - 1;
         while i >= 0 {
-            let c = self.src.get(i).unwrap() as char;
+            // Safety: checked bounds above
+            let c = unsafe { *self.src.get_unchecked(i) } as char;
             match c {
                 ' ' | '\t' | '\x0c' => (),
                 '\n' | '\r' => { found_newline = true; },
@@ -220,23 +231,23 @@ impl<'a> QueryNormalizer<'a> {
     /// Write a $N placeholder to the normalized query and push the literal value onto the params vec.
     /// Combines string continuations into a single literal. It may include a leading - as part of a numeric literal.
     /// Converts NULL and BOOLEAN literals to uppercase.
-    fn replace_literal(&mut self, start: usize, ty: Litee) {
+    fn replace_literal(&mut self, start: usize, ty: LiteralType) {
         let tok = &self.src[start..self.pos];
 
         // Any string except a dollar string may be combined with a plain string literal
         // if separated with only whitespace including at least one newline.
-        if ty == LiteralType::String && !n.params.is_empty() {
-            let prev_param = self.params.last_mut();
+        if ty == LiteralType::String && !self.params.is_empty() {
+            let prev_param = self.params.last_mut().unwrap(); // not empty, see above
             match prev_param.ty {
                 LiteralType::String | LiteralType::EscapeString | LiteralType::UnicodeString | LiteralType::BitString => {
                     // Check that there is only whitespace separating them, and it includes a newline
                     if self.look_behind_for_string_continuation(start) {
                         // Cut off the terminating single quote
-                        self.param_buf.pop().unwrap();
+                        assert_eq!(self.params_buf.pop(), Some('\''));
                         // Append the string token, minus the starting single quote
                         // Safety: We already decoded this as utf8.
                         unsafe {
-                            self.param_buf.push_str(std::str::from_utf8_unchecked(&tok[1..]))
+                            self.params_buf.push_str(std::str::from_utf8_unchecked(&tok[1..]));
                         }
                         return
                     }
@@ -247,23 +258,27 @@ impl<'a> QueryNormalizer<'a> {
 
         let mut negated = false;
         if ty == LiteralType::Integer || ty == LiteralType::Numeric {
-            negated = self.is_negative_number(start, self.pos);
+            negated = self.is_negative_number(start);
             // Remove the - from the end of the normalized string.
             // We believe it to be part of the numeric literal.
             if negated {
                 // Remove the - from the end of the normalized string
-                assert_eq!(self.normalized_query.last(), Ok('-'));
-                self.normalized_query.pop();
+                assert_eq!(self.normalized_query.pop(), Some('-'));
                 // Remove the space we added too
-                if self.normalized_query.last() == Ok(' ') {
-                    self.normalized_query.pop();
+                match self.normalized_query.pop() {
+                    Some(' ') => (),
+                    Some(c) => {
+                        // Whoops, it wasn't a space, put it back
+                        self.normalized_query.push(c);
+                    }
+                    None => (),
                 }
             }
         }
 
         let ascii_uppercase = ty == LiteralType::Null || ty == LiteralType::Boolean;
         for b in tok {
-            let mut c = b as char;
+            let mut c = *b as char;
             if ascii_uppercase {
                 c = c.to_ascii_uppercase();
             }
@@ -277,7 +292,7 @@ impl<'a> QueryNormalizer<'a> {
             negated,
         });
 
-        self.normalized_query.push('$');
+        self.append_char('$');
         write!(&mut self.normalized_query, "{}", self.params.len());
     }
 
@@ -292,14 +307,16 @@ impl<'a> QueryNormalizer<'a> {
         if b {
             start += 1;
         }
-        n.replace_literal(start, LiteralType::Boolean);
+        self.replace_literal(start, LiteralType::Boolean);
     }
 
-    fn append_tag(&mut self, tag: QueryTag) {
+    fn append_tag(&mut self, tag: &mut QueryTag) {
         debug_assert_ne!(tag.key_len, 0);
         debug_assert!(tag.val_pos > tag.key_pos + tag.key_len);
 
-        self.tags.push(tag);
+        tag.val_len = self.pos as u32 - tag.val_pos;
+        self.tags.push(*tag);
+        *tag = QueryTag::new();
     }
 
     /// parses the numeric literal and adds it to params
@@ -344,7 +361,8 @@ impl<'a> QueryNormalizer<'a> {
         }
 
         // backup to position of last char so we don't include the terminating char
-        let prev = n.backup();
+        self.backup();
+        let prev = self.last();
         if prev == 'e' || prev == 'E' || prev == '+' || prev == '-' {
             // Can't end in an exponent symbol
             return Err(Error::new(format!("numeric constant cannot end in exponent '{}'", prev)));
@@ -368,8 +386,9 @@ impl<'a> QueryNormalizer<'a> {
 
         // If it was an integer but ended in ., then strip the ending . from the literal value
         if decimal && prev == '.' {
+            // We just pushed to params in replace_literal so it's not empty
             assert_eq!(self.params_buf.pop().unwrap(), '.');
-            self.params.last_mut().len -= 1;
+            self.params.last_mut().unwrap().len -= 1;
         }
 
         Ok(())
@@ -382,24 +401,20 @@ impl<'a> QueryNormalizer<'a> {
         let start = self.pos;
         let mut tag = QueryTag::new();
 
-        let complete_tag = || {
-            if tag.val_pos != 0 {
-                tag.val_len = self.pos as u32 - tag.val_pos;
-                self.append_tag(tag);
-                tag = QueryTag::new();
-            }
-        };
-
         loop {
             if c == '/' && self.peek() == '*' {
-                complete_tag();
+                if tag.val_pos != 0 {
+                    self.append_tag(&mut tag);
+                }
                 self.next().unwrap();
                 self.comment_level += 1;
             } else if c == '*' && self.peek() == '/' {
-                complete_tag();
+                if tag.val_pos != 0 {
+                    self.append_tag(&mut tag);
+                }
                 self.next().unwrap();
                 self.comment_level -= 1;
-                if n.commentLevel == 0 {
+                if self.comment_level == 0 {
                     break;
                 }
             } else if c == '=' {
@@ -408,7 +423,8 @@ impl<'a> QueryNormalizer<'a> {
                 debug_assert!(self.pos > 2);
                 let mut i = self.pos - 2;
                 while i > start {
-                    let b = self.src.get(i).unwrap() as char;
+                    // Safety: we just checked the bounds above
+                    c = unsafe { *self.src.get_unchecked(i) } as char;
                     if c.is_ascii_alphabetic() || c == '.' || c == '-' || c == '_' {
                         i -= 1;
                     } else {
@@ -419,11 +435,13 @@ impl<'a> QueryNormalizer<'a> {
                 }
             } else if c.is_ascii_whitespace() || c == '"' {
                 // Don't permit double-quotes in a tag, we may want to allow quoted values later
-                complete_tag();
+                if tag.val_pos != 0 {
+            self.append_tag(&mut tag);
+        }
             }
 
             c = self.next()?;
-            if c == 0 {
+            if c == '\0' {
                 return Err(Error::new("unexpected eof while parsing c-style comment"));
             }
         }
@@ -470,7 +488,7 @@ impl<'a> QueryNormalizer<'a> {
                 '\'' => {
                     // This is the end of the string, unless it's an escape string
                     // and it was preceded by an odd number of backslashes.
-                    if ty == LiteralEscapeString && backslashes%2 != 0 {
+                    if ty == LiteralType::EscapeString && backslashes%2 != 0 {
                         backslashes = 0;
                     } else {
                         break;
@@ -490,7 +508,7 @@ impl<'a> QueryNormalizer<'a> {
     }
 
     fn quoted_identifier(&mut self, mut c: char) -> Result<()> {
-        debug_assert_eq!(c == '"', "c must start a double quoted identifier");
+        debug_assert_eq!(c, '"', "c must start a double quoted identifier");
 
         let start = self.pos - 1;
         loop {
@@ -515,7 +533,7 @@ impl<'a> QueryNormalizer<'a> {
         debug_assert_eq!(c, '$', "c must start a single quoted string");
 
         let start = self.pos - 1;
-        return match self.tail().iter().position(|b| b == '$' as u8) {
+        return match self.tail().iter().position(|b| *b == '$' as u8) {
             Some(mut i) => {
                 i += 1; // include the $
                 let tag_end = start + i + 1;
@@ -530,7 +548,7 @@ impl<'a> QueryNormalizer<'a> {
                         Ok(())
                     },
                     None => {
-                        Err(Error::new(format!("missing ending {} for $ quoted string", std::str::from_utf8(tag)))
+                        Err(Error::new(format!("missing ending {} for $ quoted string", std::str::from_utf8(tag)?)))
                     }
                 }
             },
@@ -594,7 +612,7 @@ impl<'a> QueryNormalizer<'a> {
 
     fn operator(&mut self, mut c: char) -> Result<()> {
         if c == '.' {
-            self.normalized_query.push(c);
+            self.append_char(c);
             return Ok(());
         }
 
@@ -620,7 +638,7 @@ impl<'a> QueryNormalizer<'a> {
         let start = self.pos - 1;
         loop {
             c = self.next()?;
-            if c < 128 && ALL_OPERATORS.contains(c) {
+            if c < 128 as char && ALL_OPERATORS.contains(c) {
                 continue;
             }
             break;
@@ -706,15 +724,15 @@ impl<'a> QueryNormalizer<'a> {
         let mut i = start - 1;
         while i >= 0 {
             // Safety: We check the bounds here ourself
-            let b = unsafe { self.src.get_unchecked(i) };
-            if b.is_ascii_whitespace() {
+            let c = unsafe { *self.src.get_unchecked(i) } as char;
+            if c.is_ascii_whitespace() {
                 if signed {
                     // Case b if whitespace after (binary), otherwise case a (unary)
                     return !whitespace_after;
                 } else {
                     whitespace_after = true;
                 }
-            } else if b == '-' {
+            } else if c == '-' {
                 // If this is the second '-', this could technically be an empty comment followed by whitespace (including at least one newline)
                 // Otherwise, if it's an actual second '-', there had to be whitespace between them, so the case
                 // above for a or b was triggered and execution never reached here. So it can only have been an empty comment.
@@ -723,7 +741,7 @@ impl<'a> QueryNormalizer<'a> {
                     break;
                 }
                 signed = true;
-            } else if b == '(' || b == '[' {
+            } else if c == '(' || c == '[' {
                 // Case c, this is unary - (if there was a -, otherwise we return false)
                 return signed;
             } else {

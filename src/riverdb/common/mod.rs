@@ -21,3 +21,4 @@ pub use self::atomic_cell::AtomicCell;
 pub use self::atomic_ref::AtomicRef;
 pub use self::spsc::SpscQueue;
 pub use self::ark::{Ark, AtomicRefCounted};
+pub use self::utf8::decode_utf8_char;
