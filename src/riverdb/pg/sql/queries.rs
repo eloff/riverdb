@@ -9,7 +9,7 @@ use crate::riverdb::pg::sql::normalize::QueryNormalizer;
 // TODO the type of object targeted by ALTER, DROP, CREATE queries
 pub enum ObjectType {}
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
 pub enum LiteralType {
     Null,
     String,

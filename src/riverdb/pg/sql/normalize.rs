@@ -4,6 +4,7 @@ use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::sql::{Query, QueryType, QueryParam, LiteralType, QueryTag, QueryInfo};
 use crate::riverdb::pg::protocol::{Message};
 use std::intrinsics::sinf32;
+use memmem::{TwoWaySearcher, Searcher};
 
 // A list of operators which we don't format with a following space
 const TOKENS_WITHOUT_FOLLOWING_WHITESPACE: &'static str = ".([:";
@@ -448,32 +449,147 @@ impl<'a> QueryNormalizer<'a> {
         Ok(())
     }
 
-    fn string(&mut self, c: char, ty: LiteralType) -> Result<()> {
+    fn string(&mut self, mut c: char, ty: LiteralType) -> Result<()> {
+        debug_assert_eq!(c, '\'', "c must start a single quoted string");
+
+        let mut start = self.pos - 1;
+        // Adjust start for literal prefix length
+        if ty == LiteralType::EscapeString {
+            start -= 1;
+        } else if ty == LiteralType::UnicodeString {
+            start -= 2;
+        }
+
+        let mut backslashes = 0;
+        loop {
+            c = self.next()?;
+            match c {
+                '\0' => {
+                    return Err(Error::new("unexpected eof parsing string"));
+                },
+                '\'' => {
+                    // This is the end of the string, unless it's an escape string
+                    // and it was preceded by an odd number of backslashes.
+                    if ty == LiteralEscapeString && backslashes%2 != 0 {
+                        backslashes = 0;
+                    } else {
+                        break;
+                    }
+                },
+                '\\' => {
+                    backslashes += 1;
+                },
+                _ => {
+                    backslashes = 0;
+                }
+            }
+        }
+
+        self.replace_literal(start, ty);
         Ok(())
     }
 
-    fn quoted_identifier(&mut self, c: char) -> Result<()> {
+    fn quoted_identifier(&mut self, mut c: char) -> Result<()> {
+        debug_assert_eq!(c == '"', "c must start a double quoted identifier");
+
+        let start = self.pos - 1;
+        loop {
+            c = self.next()?;
+            if c == '"' {
+                if self.peek() == '"' {
+                    // This is an escaped ", not the end of the identifier
+                    self.next()?;
+                } else {
+                    break; // end of the identifier
+                }
+            } else if c == '\0' {
+                return Err(Error::new("unexpected eof parsing quoted identifier"));
+            }
+        }
+
+        self.append_token(&self.src[start..self.pos]);
         Ok(())
     }
 
     fn maybe_dollar_string(&mut self, c: char) -> Result<()> {
-        Ok(())
+        debug_assert_eq!(c, '$', "c must start a single quoted string");
+
+        let start = self.pos - 1;
+        return match self.tail().iter().position(|b| b == '$' as u8) {
+            Some(mut i) => {
+                i += 1; // include the $
+                let tag_end = start + i + 1;
+                let tag = &self.src[start..tag_end];
+                let search = TwoWaySearcher::new(tag);
+                match search.search_in(&self.src[tag_end..]) {
+                    Some(j) => {
+                        self.pos = tag_end + j;
+                        // Verify it's valid utf8, we didn't parse it
+                        std::str::from_utf8(&self.src[start..self.pos])?;
+                        self.replace_literal(start, LiteralType::DollarString);
+                        Ok(())
+                    },
+                    None => {
+                        Err(Error::new(format!("missing ending {} for $ quoted string", std::str::from_utf8(tag)))
+                    }
+                }
+            },
+            None => {
+                // not a $ string, this is an error.
+                // If we didn't enter this function, normally this would fall under operator,
+                // so call operator to ensure the error path is consistent.
+                self.operator(c)
+            }
+        };
     }
 
     fn single_quoted_string(&mut self, c: char) -> Result<()> {
-        Ok(())
+        self.string(c, LiteralType::String)
     }
 
-    fn bit_string(&mut self, c: char) -> Result<()> {
-        Ok(())
+    fn bit_string(&mut self, mut c: char) -> Result<()> {
+        let start = self.pos - 1;
+        let c2 = self.next()?;
+        debug_assert!((c == 'b' || c == 'B') && c2 == '\'', "c must start a bit string");
+
+        loop {
+            c = self.next()?;
+            match c {
+                '0' | '1' => (),
+                '\'' => {
+                    self.replace_literal(start, LiteralType::BitString);
+                    return Ok(());
+                },
+                '\0' => {
+                    return Err(Error::new("unexpected eof while parsing bit string"));
+                },
+                _ => {
+                    return Err(Error::new(format!("unexpected char '{}' in bit string literal", c)));
+                }
+            }
+        }
     }
 
     fn escape_string(&mut self, c: char) -> Result<()> {
-        Ok(())
+        let c2 = self.next()?;
+        debug_assert!((c == 'e' || c == 'E') && c2 == '\'', "c must start an escape string");
+
+        self.string(c2, LiteralType::EscapeString)
     }
 
     fn unicode_string(&mut self, c: char) -> Result<()> {
-        Ok(())
+        let c2 = self.next()?;
+        debug_assert!((c == 'u' || c == 'U') && c2 == '&', "c must start a unicode string");
+        let c3 = self.next()?;
+        if c3 != '\'' {
+            // It wasn't a unicode string
+            // That means u was an identifier, and & was an operator
+            self.backup();
+            self.pos -= 1; // backup one more (we know we had an ascii &, so this is ok.)
+            self.keyword_or_identifier(c)
+        } else {
+            self.string(c, LiteralType::UnicodeString)
+        }
     }
 
     fn operator(&mut self, mut c: char) -> Result<()> {

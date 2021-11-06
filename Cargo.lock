@@ -375,6 +375,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "memmem"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a64a92489e2744ce060c349162be1c5f33c6969234104dbd99ddb5feb08b8c15"
+
+[[package]]
 name = "mio"
 version = "0.7.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -781,6 +787,7 @@ dependencies = [
  "hex",
  "libc",
  "memchr",
+ "memmem",
  "nanorand",
  "num_cpus",
  "rand 0.8.4",
