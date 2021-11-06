@@ -92,7 +92,8 @@ impl<'a> QueryNormalizer<'a> {
                 self.append_char(c);
             } else if c == ';' {
                 // Ignore ; if it occurs at the end of the query
-                self.consume_whitespace(self.next()?)?;
+                let c2 = self.next()?;
+                self.consume_whitespace(c2)?;
                 if self.peek() == '\0' {
                     break;
                 } else {
@@ -213,7 +214,7 @@ impl<'a> QueryNormalizer<'a> {
     fn look_behind_for_string_continuation(&self, pos: usize) -> bool {
         let mut found_newline = false;
         let mut i = pos - 1;
-        while i >= 0 {
+        loop {
             // Safety: checked bounds above
             let c = unsafe { *self.src.get_unchecked(i) } as char;
             match c {
@@ -222,10 +223,11 @@ impl<'a> QueryNormalizer<'a> {
                 '\'' => return found_newline,
                 _ => return false,
             }
+            if i == 0 {
+                return false;
+            }
             i -= 1;
         }
-        // unreachable because there *has* to be a preceding ' because we only call this if the last literal was a string literal
-        panic!("look_behind_for_string_continuation can only be called after finding a string literal");
     }
 
     /// Write a $N placeholder to the normalized query and push the literal value onto the params vec.
@@ -293,7 +295,7 @@ impl<'a> QueryNormalizer<'a> {
         });
 
         self.append_char('$');
-        write!(&mut self.normalized_query, "{}", self.params.len());
+        write!(&mut self.normalized_query, "{}", self.params.len()).unwrap();
     }
 
     /// appends a NULL literal to params
@@ -722,7 +724,7 @@ impl<'a> QueryNormalizer<'a> {
         let mut signed = false;
         let mut whitespace_after = false;
         let mut i = start - 1;
-        while i >= 0 {
+        loop {
             // Safety: We check the bounds here ourself
             let c = unsafe { *self.src.get_unchecked(i) } as char;
             if c.is_ascii_whitespace() {
@@ -748,6 +750,9 @@ impl<'a> QueryNormalizer<'a> {
                 // Case d, this binary -
                 // Or there wasn't a -, either way we return false
                 break;
+            }
+            if i == 0 {
+                return signed;
             }
             i -= 1;
         }

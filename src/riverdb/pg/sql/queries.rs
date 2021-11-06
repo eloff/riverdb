@@ -102,7 +102,7 @@ impl Query {
 
         let msg = msgs.first().unwrap();
         let (query, tags) = if msg.tag() == Tag::QUERY {
-            let mut normalizer = QueryNormalizer::new(&msg);
+            let normalizer = QueryNormalizer::new(&msg);
             normalizer.normalize()?
         } else {
             (QueryInfo::new(), Vec::new())
@@ -140,7 +140,7 @@ impl Query {
     /// Returns the value of the named tag (ascii case-insensitive) or None
     pub fn tag(&self, name: &str) -> Option<&str> {
         let bytes = self.msgs.as_slice();
-        for tag in self.tags {
+        for tag in &self.tags {
             if tag.key_eq_ignore_ascii_case(bytes, name) {
                 let val = &bytes[tag.value_range()];
                 // Safety: we checked msg was valid utf8 when we normalized it in new()

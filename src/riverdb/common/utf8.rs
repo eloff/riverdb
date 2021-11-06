@@ -28,7 +28,7 @@ pub fn decode_utf8_char(bytes: &[u8]) -> Result<(char, usize)> {
     // Safety: we do the bounds checking here
     unsafe {
         // Compute these as early as possible for better pipelining
-        let mut s0 = *bytes.get_unchecked(0) as u32;
+        let s0 = *bytes.get_unchecked(0) as u32;
         let len = *LENGTHS.get_unchecked((s0 >> 3) as usize) as usize;
 
         if n < 4 {
