@@ -3,37 +3,44 @@ use bytes::{Bytes};
 use crate::riverdb::pg::protocol::{Messages};
 use crate::riverdb::pg::sql::{Query, QueryParam, LiteralType};
 
+struct QueryParamTest {
+    value: &'static str,
+    ty: LiteralType,
+    negated: bool,
+    target_type: &'static str,
+}
+
 #[test]
 fn test_normalize_ok() {
     let tests = &[
         (
             "select 1",
             "SELECT $1",
-            vec![QueryParam { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" }],
+            vec![QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" }],
         ),
         (
             "select +1",
             "SELECT + $1",
-            vec![QueryParam { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" }],
+            vec![QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" }],
         ),
         (
             "select -1",
             "SELECT $1",
-            vec![QueryParam { value: "1", ty: LiteralType::Integer, negated: true, target_type: "" }],
+            vec![QueryParamTest { value: "1", ty: LiteralType::Integer, negated: true, target_type: "" }],
         ),
         (
             "select - 1",
             "SELECT - $1",
-            vec![QueryParam { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" }],
+            vec![QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" }],
         ),
         (
             "select coalesce(null,'ByteScout', null ,'Byte')",
             "SELECT COALESCE($1, $2, $3, $4)",
             vec![
-                QueryParam { value: "NULL", ty: LiteralType::Null, negated: false, target_type: "" },
-                QueryParam { value: "'ByteScout'", ty: LiteralType::String, negated: false, target_type: "" },
-                QueryParam { value: "NULL", ty: LiteralType::Null, negated: false, target_type: "" },
-                QueryParam { value: "'Byte'", ty: LiteralType::String, negated: false, target_type: "" },
+                QueryParamTest { value: "NULL", ty: LiteralType::Null, negated: false, target_type: "" },
+                QueryParamTest { value: "'ByteScout'", ty: LiteralType::String, negated: false, target_type: "" },
+                QueryParamTest { value: "NULL", ty: LiteralType::Null, negated: false, target_type: "" },
+                QueryParamTest { value: "'Byte'", ty: LiteralType::String, negated: false, target_type: "" },
             ],
         ),
         (
@@ -45,49 +52,49 @@ fn test_normalize_ok() {
             r#"select true, FALSE, null, .12, -4.0e3, -5, 'foo',"bar" from baz"#,
             r#"SELECT $1, $2, $3, $4, $5, $6, $7, "bar" FROM BAZ"#,
             vec![
-                QueryParam { value: "TRUE", ty: LiteralType::Boolean, negated: false, target_type: "" },
-                QueryParam { value: "FALSE", ty: LiteralType::Boolean, negated: false, target_type: "" },
-                QueryParam { value: "NULL", ty: LiteralType::Null, negated: false, target_type: "" },
-                QueryParam { value: ".12", ty: LiteralType::Numeric, negated: false, target_type: "" },
-                QueryParam { value: "4.0e3", ty: LiteralType::Numeric, negated: true, target_type: "" },
-                QueryParam { value: "5", ty: LiteralType::Integer, negated: true, target_type: "" },
-                QueryParam { value: "'foo'", ty: LiteralType::String, negated: false, target_type: "" },
+                QueryParamTest { value: "TRUE", ty: LiteralType::Boolean, negated: false, target_type: "" },
+                QueryParamTest { value: "FALSE", ty: LiteralType::Boolean, negated: false, target_type: "" },
+                QueryParamTest { value: "NULL", ty: LiteralType::Null, negated: false, target_type: "" },
+                QueryParamTest { value: ".12", ty: LiteralType::Numeric, negated: false, target_type: "" },
+                QueryParamTest { value: "4.0e3", ty: LiteralType::Numeric, negated: true, target_type: "" },
+                QueryParamTest { value: "5", ty: LiteralType::Integer, negated: true, target_type: "" },
+                QueryParamTest { value: "'foo'", ty: LiteralType::String, negated: false, target_type: "" },
             ],
         ),
         (
             "selECT $$quoted$$, b'1010', e'\n', U&'\0441\043B\043E\043D'",
             "SELECT $1, $2, $3, $4",
             vec![
-                QueryParam { value: "$$quoted$$", ty: LiteralType::DollarString, negated: false, target_type: "" },
-                QueryParam { value: "b'1010'", ty: LiteralType::BitString, negated: false, target_type: "" },
-                QueryParam { value: "e'\\n'", ty: LiteralType::EscapeString, negated: false, target_type: "" },
-                QueryParam { value: "U&'\\0441\\043B\\043E\\043D'", ty: LiteralType::UnicodeString, negated: false, target_type: "" },
+                QueryParamTest { value: "$$quoted$$", ty: LiteralType::DollarString, negated: false, target_type: "" },
+                QueryParamTest { value: "b'1010'", ty: LiteralType::BitString, negated: false, target_type: "" },
+                QueryParamTest { value: "e'\\n'", ty: LiteralType::EscapeString, negated: false, target_type: "" },
+                QueryParamTest { value: "U&'\\0441\\043B\\043E\\043D'", ty: LiteralType::UnicodeString, negated: false, target_type: "" },
             ],
         ),
         (
             "SELECT -.4e+32, -.4E-32",
             "SELECT $1, $2",
             vec![
-                QueryParam { value: ".4e+32", ty: LiteralType::Numeric, negated: true, target_type: "" },
-                QueryParam { value: ".4E-32", ty: LiteralType::Numeric, negated: true, target_type: "" },
+                QueryParamTest { value: ".4e+32", ty: LiteralType::Numeric, negated: true, target_type: "" },
+                QueryParamTest { value: ".4E-32", ty: LiteralType::Numeric, negated: true, target_type: "" },
             ],
         ),
         (
             "SELECT +.0",
             "SELECT + $1",
             vec![
-                QueryParam { value: ".0", ty: LiteralType::Numeric, negated: false, target_type: "" },
+                QueryParamTest { value: ".0", ty: LiteralType::Numeric, negated: false, target_type: "" },
             ],
         ),
         (
             "SELECT +1.",
             "SELECT + $1",
-            vec![QueryParam { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" }],
+            vec![QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" }],
         ),
         (
             "SELECT 1 -- foo=bar",
             "SELECT $1",
-            vec![QueryParam { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" }],
+            vec![QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" }],
         ),
         (
             "select fal",
@@ -128,15 +135,15 @@ fn test_normalize_ok() {
         (
             "select 'combine'\n'strings'",
             "SELECT $1",
-            vec![QueryParam { value: "'combinestrings'", ty: LiteralType::String, negated: false, target_type: "" }],
+            vec![QueryParamTest { value: "'combinestrings'", ty: LiteralType::String, negated: false, target_type: "" }],
         ),
         // string continuations require a newline
         (
             "select 'no combine', 'strings'",
             "SELECT $1, $2",
             vec![
-                QueryParam { value: "'no combine'", ty: LiteralType::String, negated: false, target_type: "" },
-                QueryParam { value: "'strings'", ty: LiteralType::String, negated: false, target_type: "" },
+                QueryParamTest { value: "'no combine'", ty: LiteralType::String, negated: false, target_type: "" },
+                QueryParamTest { value: "'strings'", ty: LiteralType::String, negated: false, target_type: "" },
             ],
         ),
         (
@@ -163,8 +170,8 @@ fn test_normalize_ok() {
             "select e'foo\''",
             "SELECT $1",
             vec![
-                QueryParam { value: "e'foo\''", ty: LiteralType::EscapeString, negated: false, target_type: "" },
-                QueryParam { value: "e'foo\\'", ty: LiteralType::EscapeString, negated: false, target_type: "" },
+                QueryParamTest { value: "e'foo\''", ty: LiteralType::EscapeString, negated: false, target_type: "" },
+                QueryParamTest { value: "e'foo\\'", ty: LiteralType::EscapeString, negated: false, target_type: "" },
             ],
         ),
         (
@@ -181,21 +188,21 @@ fn test_normalize_ok() {
             "select u&1 from bar",
             "SELECT U & $1 FROM BAR",
             vec![
-                QueryParam { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" },
+                QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" },
             ],
         ),
         (
             "select foo && true from bar",
             "SELECT FOO && $1 FROM BAR",
             vec![
-                QueryParam { value: "TRUE", ty: LiteralType::Boolean, negated: false, target_type: "" },
+                QueryParamTest { value: "TRUE", ty: LiteralType::Boolean, negated: false, target_type: "" },
             ],
         ),
         (
             "select fOo#>>'{a,2}' from bar",
             "SELECT FOO #>> $1 FROM BAR",
             vec![
-                QueryParam { value: "'{a,2}'", ty: LiteralType::String, negated: false, target_type: "" },
+                QueryParamTest { value: "'{a,2}'", ty: LiteralType::String, negated: false, target_type: "" },
             ],
         ),
         (
@@ -207,42 +214,42 @@ fn test_normalize_ok() {
             "select --\n12",
             "SELECT $1",
             vec![
-                QueryParam { value: "12", ty: LiteralType::Integer, negated: false, target_type: "" },
+                QueryParamTest { value: "12", ty: LiteralType::Integer, negated: false, target_type: "" },
             ],
         ),
         (
             "select-1",
             "SELECT - $1", // this is wrong, but we don't know that until we get the ast
             vec![
-                QueryParam { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" },
+                QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" },
             ],
         ),
         (
             "select+1",
             "SELECT + $1", // this is wrong, but we don't know that until we get the ast
             vec![
-                QueryParam { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" },
+                QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" },
             ],
         ),
         (
             "-1",
             "- $1", // this is not valid sql, but it tests an otherwise unreachable edge case
             vec![
-                QueryParam { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" },
+                QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" },
             ],
         ),
         (
             "select arr[-1] from foo",
             "SELECT ARR[$1] FROM FOO",
             vec![
-                QueryParam { value: "1", ty: LiteralType::Integer, negated: true, target_type: "" },
+                QueryParamTest { value: "1", ty: LiteralType::Integer, negated: true, target_type: "" },
             ],
         ),
         (
             "select (-1)",
             "SELECT($1)",
             vec![
-                QueryParam { value: "1", ty: LiteralType::Integer, negated: true, target_type: "" },
+                QueryParamTest { value: "1", ty: LiteralType::Integer, negated: true, target_type: "" },
             ],
         ),
     ];

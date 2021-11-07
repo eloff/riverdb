@@ -24,11 +24,10 @@ pub enum LiteralType {
 
 #[derive(Eq, PartialEq, Debug)]
 pub struct QueryParam {
-    pub pos: u32, // start position in buffer
-    pub len: u32, // length
+    pub value: (u32, u32), // range in buffer
     pub ty: LiteralType,
     pub negated: bool,
-    // pub target_type: &'a str, // type 'string', 'string'::type, and CAST ( 'string' AS type )
+    pub target_type: (u32, u32), // type name in casts: type 'string', 'string'::type, and CAST ( 'string' AS type )
 }
 
 #[derive(Clone, Copy)]
@@ -93,7 +92,7 @@ impl QueryInfo {
 pub struct Query {
     msgs: Messages,
     query: QueryInfo,
-    tags: Vec<QueryTag>, // indices that point into msgs.as_slice()
+    pub tags: Vec<QueryTag>, // indices that point into msgs.as_slice()
 }
 
 impl Query {

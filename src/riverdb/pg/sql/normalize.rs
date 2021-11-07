@@ -129,6 +129,7 @@ impl<'a> QueryNormalizer<'a> {
         if size != 0 {
             self.last_char = c;
             self.last_char_size = size;
+            self.pos += size;
         }
         Ok(c)
     }
