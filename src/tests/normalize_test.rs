@@ -1,8 +1,9 @@
 use bytes::{Bytes};
 
 use crate::riverdb::pg::protocol::{Messages};
-use crate::riverdb::pg::sql::{Query, QueryParam, LiteralType};
+use crate::riverdb::pg::sql::{Query, LiteralType};
 
+#[derive(Debug)]
 struct QueryParamTest {
     value: &'static str,
     ty: LiteralType,
@@ -258,7 +259,11 @@ fn test_normalize_ok() {
         let msgs = Messages::new(Bytes::from_static(query.as_bytes()));
         let res = Query::new(msgs).expect("expected Ok(Query)");
         assert_eq!(res.normalized(), *normalized);
-        assert_eq!(res.params(), params);
+        for (param, expected) in res.params().iter().zip(params) {
+            assert_eq!(param.ty, expected.ty);
+            assert_eq!(param.negated, expected.negated);
+            assert_eq!(param.value(query.as_bytes()), expected.value);
+        }
     }
 }
 
@@ -276,7 +281,9 @@ fn test_normalize_tags() {
         let msgs = Messages::new(Bytes::from_static(query.as_bytes()));
         let res = Query::new(msgs).expect("expected Ok(Query)");
         assert_eq!(res.normalized(), *normalized);
-        assert_eq!(res.tags(), tags);
+        for &(key, val) in tags {
+            assert_eq!(res.tag(key), Some(val));
+        }
     }
 }
 

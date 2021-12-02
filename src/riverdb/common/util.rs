@@ -1,4 +1,29 @@
 use std::mem;
+use std::ops::Range;
+
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+pub struct Range32 {
+    pub start: u32,
+    pub end: u32,
+}
+
+impl Range32 {
+    pub(crate) const fn default() -> Self {
+        Self{start: 0, end: 0}
+    }
+
+    pub fn new(start: usize, end: usize) -> Self {
+        Self{
+            start: start as u32,
+            end: end as u32,
+        }
+    }
+
+    pub fn as_range(&self) -> Range<usize> {
+        self.start as usize .. self.end as usize
+    }
+}
 
 /// change_lifetime extends or shortens a lifetime via std::mem::transmute
 /// # Safety

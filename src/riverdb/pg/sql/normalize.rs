@@ -6,7 +6,7 @@ use memmem::{TwoWaySearcher, Searcher};
 use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::sql::{QueryType, QueryParam, LiteralType, QueryTag, QueryInfo};
 use crate::riverdb::pg::protocol::{Message};
-use crate::riverdb::common::{decode_utf8_char};
+use crate::riverdb::common::{decode_utf8_char, Range32};
 
 
 // A list of operators which we don't format with a following space
@@ -289,10 +289,10 @@ impl<'a> QueryNormalizer<'a> {
         }
 
         self.params.push(QueryParam{
-            pos: start as u32,
-            len: tok.len() as u32,
+            value: Range32::new(start, start + tok.len()),
             ty,
             negated,
+            target_type: Range32::default()
         });
 
         self.append_char('$');
@@ -314,10 +314,12 @@ impl<'a> QueryNormalizer<'a> {
     }
 
     fn append_tag(&mut self, tag: &mut QueryTag) {
-        debug_assert_ne!(tag.key_len, 0);
-        debug_assert!(tag.val_pos > tag.key_pos + tag.key_len);
+        debug_assert_ne!(tag.key_len(), 0);
+        debug_assert!(tag.val.start > tag.key.end);
 
-        tag.val_len = self.pos as u32 - tag.val_pos;
+        if tag.val.end == 0 {
+            tag.val.end = self.pos as u32;
+        }
         self.tags.push(*tag);
         *tag = QueryTag::new();
     }
@@ -391,7 +393,7 @@ impl<'a> QueryNormalizer<'a> {
         if decimal && prev == '.' {
             // We just pushed to params in replace_literal so it's not empty
             assert_eq!(self.params_buf.pop().unwrap(), '.');
-            self.params.last_mut().unwrap().len -= 1;
+            self.params.last_mut().unwrap().value.end -= 1;
         }
 
         Ok(())
@@ -406,13 +408,15 @@ impl<'a> QueryNormalizer<'a> {
 
         loop {
             if c == '/' && self.peek() == '*' {
-                if tag.val_pos != 0 {
+                // A tag can never legitimately start at index 0, since it must be inside a comment
+                if tag.val.start != 0 {
                     self.append_tag(&mut tag);
                 }
                 self.next().unwrap();
                 self.comment_level += 1;
             } else if c == '*' && self.peek() == '/' {
-                if tag.val_pos != 0 {
+                // A tag can never legitimately start at index 0, since it must be inside a comment
+                if tag.val.start != 0 {
                     self.append_tag(&mut tag);
                 }
                 self.next().unwrap();
@@ -431,16 +435,17 @@ impl<'a> QueryNormalizer<'a> {
                     if c.is_ascii_alphabetic() || c == '.' || c == '-' || c == '_' {
                         i -= 1;
                     } else {
-                        tag.key_pos = (i + 1) as u32;
-                        tag.key_len = self.pos as u32 - tag.key_pos - 1;
+                        tag.key.start = (i + 1) as u32;
+                        tag.key.end = self.pos as u32 - 1;
                         break;
                     }
                 }
             } else if c.is_ascii_whitespace() || c == '"' {
                 // Don't permit double-quotes in a tag, we may want to allow quoted values later
-                if tag.val_pos != 0 {
-            self.append_tag(&mut tag);
-        }
+                // A tag can never legitimately start at index 0, since it must be inside a comment
+                if tag.val.start != 0 {
+                    self.append_tag(&mut tag);
+                }
             }
 
             c = self.next()?;

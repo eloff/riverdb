@@ -1,10 +1,11 @@
 use std::fmt::{Debug, Formatter};
+use std::ops::Range;
 
 use crate::riverdb::Result;
 use crate::riverdb::pg::protocol::{Tag, Messages};
 use crate::riverdb::pg::sql::QueryType;
-use std::ops::Range;
 use crate::riverdb::pg::sql::normalize::QueryNormalizer;
+use crate::riverdb::common::Range32;
 
 // TODO the type of object targeted by ALTER, DROP, CREATE queries
 pub enum ObjectType {}
@@ -24,27 +25,37 @@ pub enum LiteralType {
 
 #[derive(Eq, PartialEq, Debug)]
 pub struct QueryParam {
-    pub value: (u32, u32), // range in buffer
+    pub value: Range32, // range in buffer
     pub ty: LiteralType,
     pub negated: bool,
-    pub target_type: (u32, u32), // type name in casts: type 'string', 'string'::type, and CAST ( 'string' AS type )
+    pub target_type: Range32, // type name in casts: type 'string', 'string'::type, and CAST ( 'string' AS type )
+}
+
+impl QueryParam {
+    pub fn value<'a>(&self, src: &'a [u8]) -> &'a str {
+        let val = &src[self.value.as_range()];
+        // Safety: we checked this was valid utf8 when constructing the QueryParam
+        unsafe { std::str::from_utf8_unchecked(val) }
+    }
+
+    pub fn target_type<'a>(&self, src: &'a [u8]) -> &'a str {
+        let target_ty = &src[self.target_type.as_range()];
+        // Safety: we checked this was valid utf8 when constructing the QueryParam
+        unsafe { std::str::from_utf8_unchecked(target_ty) }
+    }
 }
 
 #[derive(Clone, Copy)]
 pub struct QueryTag {
-    pub key_pos: u32,
-    pub key_len: u32,
-    pub val_pos: u32,
-    pub val_len: u32,
+    pub key: Range32,
+    pub val: Range32,
 }
 
 impl QueryTag {
     pub const fn new() -> Self {
         Self{
-            key_pos: 0,
-            key_len: 0,
-            val_pos: 0,
-            val_len: 0
+            key: Range32::default(),
+            val: Range32::default(),
         }
     }
 
@@ -59,15 +70,16 @@ impl QueryTag {
     }
     
     pub fn key_len(&self) -> usize {
-        self.key_len as usize
+        debug_assert!(self.key.end >= self.key.start);
+        (self.key.end - self.key.start) as usize
     }
 
     pub fn key_range(&self) -> Range<usize> {
-        Range{ start: self.key_pos as usize, end: (self.key_pos + self.key_len) as usize }
+        self.key.as_range()
     }
 
     pub fn value_range(&self) -> Range<usize> {
-        Range{ start: self.val_pos as usize, end: (self.val_pos + self.val_len) as usize }
+        self.val.as_range()
     }
 }
 
