@@ -1,6 +1,7 @@
 use bytes::{Bytes};
 
-use crate::riverdb::pg::protocol::{Messages};
+use crate::riverdb::{Result};
+use crate::riverdb::pg::protocol::{Messages, MessageBuilder, Tag};
 use crate::riverdb::pg::sql::{Query, LiteralType};
 
 #[derive(Debug)]
@@ -9,6 +10,13 @@ struct QueryParamTest {
     ty: LiteralType,
     negated: bool,
     target_type: &'static str,
+}
+
+fn make_query(query: &'static [u8]) -> Result<Query> {
+    let mut mb = MessageBuilder::new(Tag::QUERY);
+    mb.write_bytes(query);
+    let msgs = mb.finish();
+    Query::new(msgs)
 }
 
 #[test]
@@ -256,8 +264,7 @@ fn test_normalize_ok() {
     ];
 
     for (query, normalized, params) in tests {
-        let msgs = Messages::new(Bytes::from_static(query.as_bytes()));
-        let res = Query::new(msgs).expect("expected Ok(Query)");
+        let res = make_query(query.as_bytes()).expect("expected Ok(Query)");
         assert_eq!(res.normalized(), *normalized);
         for (param, expected) in res.params().iter().zip(params) {
             assert_eq!(param.ty, expected.ty);
@@ -278,8 +285,7 @@ fn test_normalize_tags() {
     ];
 
     for (query, normalized, tags) in tests {
-        let msgs = Messages::new(Bytes::from_static(query.as_bytes()));
-        let res = Query::new(msgs).expect("expected Ok(Query)");
+        let res = make_query(query.as_bytes()).expect("expected Ok(Query)");
         assert_eq!(res.normalized(), *normalized);
         for &(key, val) in tags {
             assert_eq!(res.tag(key), Some(val));
@@ -290,19 +296,18 @@ fn test_normalize_tags() {
 #[test]
 fn test_normalize_utf8_err() {
     const TESTS: &[(&'static [u8], &'static str)] = &[
-        (&[0xff, 0xff], "invalid UTF-8 string"),
-        (&['1' as u8, 0xff, 0xff], "invalid UTF-8 string"),
-        (&['1' as u8, 0xff, 0xff], "invalid UTF-8 string"),
-        (&['b' as u8, '1' as u8, 0xff, 0xff], "invalid UTF-8 string"),
-        (&['/' as u8, '*' as u8, 0xff, 0xff], "invalid UTF-8 string"),
-        (&['"' as u8, 0xff, 0xff], "invalid UTF-8 string"),
-        (&['#' as u8, 0xff, 0xff], "invalid UTF-8 string"),
-        (&['s' as u8, 'e' as u8, 'l' as u8, 0xff, 0xff], "invalid UTF-8 string"),
+        (&[0xff, 0xff], "invalid utf8"),
+        (&['1' as u8, 0xff, 0xff], "invalid utf8"),
+        (&['1' as u8, 0xff, 0xff], "invalid utf8"),
+        (&['b' as u8, '1' as u8, 0xff, 0xff], "invalid utf8"),
+        (&['/' as u8, '*' as u8, 0xff, 0xff], "invalid utf8"),
+        (&['"' as u8, 0xff, 0xff], "invalid utf8"),
+        (&['#' as u8, 0xff, 0xff], "invalid utf8"),
+        (&['s' as u8, 'e' as u8, 'l' as u8, 0xff, 0xff], "invalid utf8"),
     ];
 
-    for (bytes, err) in TESTS {
-        let msgs = Messages::new(Bytes::from_static(bytes));
-        let res = Query::new(msgs);
+    for &(bytes, err) in TESTS {
+        let res = make_query(bytes);
         let err_msg = res.expect_err("expected an error").to_string();
         assert!(err_msg.contains(err), "expected {} in err {}", err, err_msg);
     }
@@ -329,9 +334,8 @@ fn test_normalize_err() {
         ("select *+1", "an operator cannot end in + or - unless it includes one of \"~!@#%^&|`?\""),
     ];
 
-    for (query, err) in TESTS {
-        let msgs = Messages::new(Bytes::from_static(query.as_bytes()));
-        let res = Query::new(msgs);
+    for &(query, err) in TESTS {
+        let res = make_query(query.as_bytes());
         let err_msg = res.expect_err("expected an error").to_string();
         assert!(err_msg.contains(err), "expected {} in err {}", err, err_msg);
     }

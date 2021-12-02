@@ -556,7 +556,7 @@ impl<'a> QueryNormalizer<'a> {
                         Ok(())
                     },
                     None => {
-                        Err(Error::new(format!("missing ending {} for $ quoted string", std::str::from_utf8(tag)?)))
+                        Err(Error::new(format!("missing ending \"{}\" for $ quoted string", std::str::from_utf8(tag)?)))
                     }
                 }
             },
