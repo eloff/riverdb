@@ -45,21 +45,17 @@ pub fn decode_utf8_char(bytes: &[u8]) -> Result<(char, usize)> {
             s3 = *bytes.get_unchecked(3) as u32;
         }
 
-        s1 &= 0x3f;
-        s2 &= 0x3f;
-        s3 &= 0x3f;
-
         let mut c = (s0 & *MASKS.get_unchecked(len) as u32) << 18;
-        c |= s1 << 12;
-        c |= s2 << 6;
-        c |= s3;
+        c |= (s1 & 0x3f) << 12;
+        c |= (s2 & 0x3f) << 6;
+        c |= s3 & 0x3f;
         c >>= SHIFT.get_unchecked(len);
 
         // Check for errors:
         // invalid byte sequence, non-canonical encoding, or a surrogate half.
         let mut e = ((c < *MINS.get_unchecked(len)) as u32) << 6; // non-canonical encoding
         e |= (((c >> 11) == 0x1b) as u32) << 7;  // surrogate half?
-        e |= ((c > 0x10FFFF) as u32) << 8;  // out of range?
+        e |= ((c > 0x10ffff) as u32) << 8;  // out of range?
         e |= (s1 & 0xc0) >> 2;
         e |= (s2 & 0xc0) >> 4;
         e |= s3 >> 6;
@@ -67,10 +63,63 @@ pub fn decode_utf8_char(bytes: &[u8]) -> Result<(char, usize)> {
         e >>= SHIFT_ERR.get_unchecked(len);
 
         if e != 0 {
+            println!("c={}, e={}, len={}, n={}", c, e, len, n);
             Err(Error::new("invalid utf8"))
         } else {
             // We checked error conditions above
             Ok((std::char::from_u32(c).unwrap(), len))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::TryInto;
+    use crate::riverdb::common::decode_utf8_char;
+
+    fn is_surrogate(c: i32) -> bool {
+        c >= 0xd800 && c <= 0xdfff
+    }
+
+    fn utf8_encode(c: i32) -> ([u8; 4], usize) {
+        let mut len = 0;
+        let mut s = [0; 4];
+        if c >= (1 << 16) {
+            s[0] = 0xf0 |  (c >> 18) as u8;
+            s[1] = 0x80 | ((c >> 12) & 0x3f) as u8;
+            s[2] = 0x80 | ((c >>  6) & 0x3f) as u8;
+            s[3] = 0x80 | (c & 0x3f) as u8;
+            len = 4;
+        } else if c >= (1 << 11) {
+            s[0] = 0xe0 |  (c >> 12) as u8;
+            s[1] = 0x80 | ((c >>  6) & 0x3f) as u8;
+            s[2] = 0x80 | (c & 0x3f) as u8;
+            len = 3;
+        } else if c >= (1 << 7) {
+            s[0] = 0xc0 |  (c >>  6) as u8;
+            s[1] = 0x80 | (c & 0x3f) as u8;
+            len = 2;
+        } else {
+            s[0] = c as u8;
+            len = 1;
+        }
+        (s, len)
+    }
+
+    #[test]
+    fn decode_all_utf8() {
+        for i in 0..0x10ffff {
+            if is_surrogate(i) {
+                continue;
+            }
+            let (input, size) = utf8_encode(i);
+            assert!(size > 0 && size <= 4);
+            let utf8_s = &input[..size];
+            let s = std::str::from_utf8(utf8_s).expect("utf8 encode failure");
+            let res = decode_utf8_char(utf8_s);
+            assert!(res.is_ok(), "could not decode {}-byte '{:?}' as {}", size, utf8_s, i);
+            let (c, size) = res.unwrap();
+            assert_eq!(c as i32, i);
         }
     }
 }
