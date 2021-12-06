@@ -63,7 +63,6 @@ pub fn decode_utf8_char(bytes: &[u8]) -> Result<(char, usize)> {
         e >>= SHIFT_ERR.get_unchecked(len);
 
         if e != 0 {
-            println!("c={}, e={}, len={}, n={}", c, e, len, n);
             Err(Error::new("invalid utf8"))
         } else {
             // We checked error conditions above
@@ -120,6 +119,46 @@ mod tests {
             assert!(res.is_ok(), "could not decode {}-byte '{:?}' as {}", size, utf8_s, i);
             let (c, size) = res.unwrap();
             assert_eq!(c as i32, i);
+        }
+    }
+
+    #[test]
+    fn reject_out_of_range() {
+        for i in 0x110000..0x1fffff {
+            let (input, size) = utf8_encode(i);
+            assert_eq!(size, 4);
+            let utf8_s = &input[..size];
+            let res = decode_utf8_char(utf8_s);
+            assert!(res.is_err());
+        }
+    }
+
+    #[test]
+    fn reject_surrogate_halves() {
+        for i in 0xd800..0xdfff {
+            let (input, size) = utf8_encode(i);
+            assert_eq!(size, 3);
+            let utf8_s = &input[..size];
+            let res = decode_utf8_char(utf8_s);
+            assert!(res.is_err());
+        }
+    }
+
+    #[test]
+    fn reject_invalid_utf8() {
+        let tests: &[&'static [u8]] = &[
+            &[0xff], // invalid first byte
+            &[0x80], // invalid first byte
+            &[0xc0, 0x0a], // invalid second byte
+            // Non-canonical encodings
+            &[0xc0, 0xa4],
+            &[0xe0, 0x80, 0xa4],
+            &[0xf0, 0x80, 0x80, 0xa4],
+        ];
+
+        for &input in tests {
+            let res = decode_utf8_char(input);
+            assert!(res.is_err());
         }
     }
 }
