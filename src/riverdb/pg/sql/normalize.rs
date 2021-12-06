@@ -22,9 +22,11 @@ const REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS: &'static str = "~!@#%^&|`?";
 pub(crate) struct QueryNormalizer<'a> {
     src: &'a [u8],
     pos: usize,
-    last_char_size: usize,
+    current_char: char,
     last_char: char,
     start_offset_in_msg: u32,
+    current_char_size: u8,
+    last_char_size: u8,
     comment_level: u8,
     query_type: QueryType,
     params_buf: String,
@@ -42,8 +44,10 @@ impl<'a> QueryNormalizer<'a> {
         Self {
             src,
             pos: 0,
-            last_char_size: 0,
             last_char: '\0',
+            last_char_size: 0,
+            current_char: '\0',
+            current_char_size: 0,
             start_offset_in_msg,
             comment_level: 0,
             query_type: QueryType::Other,
@@ -51,6 +55,7 @@ impl<'a> QueryNormalizer<'a> {
             normalized_query: String::new(),
             params: Vec::new(),
             tags: Vec::new(),
+
         }
     }
 
@@ -125,28 +130,45 @@ impl<'a> QueryNormalizer<'a> {
 
     fn next(&mut self) -> Result<char> {
         let (c, size) = decode_utf8_char(self.tail())?;
-        // TODO maybe we don't need this condition
-        if size != 0 {
-            self.last_char = c;
-            self.last_char_size = size;
-            self.pos += size;
-        }
+        self.last_char = self.current_char;
+        self.last_char_size = self.current_char_size;
+        self.current_char = c;
+        self.current_char_size = size as u8;
+        self.pos += size;
         Ok(c)
     }
 
-    /// backup one character. Panics if at start.
-    /// Can only be called exactly once after a call to next().
-    fn backup(&mut self) {
+    /// backup one character and return the character before the new position.
+    /// If at EOF, this is the last character in the input. Otherwise it's the
+    /// same as would be returned by calling self.second_last() prior to this.
+    /// Panics if at start. Can only be called exactly once after a call to next().
+    fn backup(&mut self) -> char {
         assert_ne!(self.pos, 0, "can't backup before start");
-        assert_ne!(self.last_char_size, 0, "must call next() before backup()");
-        debug_assert!(self.pos >= self.last_char_size);
-        self.pos -= self.last_char_size;
+        // If we're at EOF, we don't backup, we just return the last char read (self.last_char)
+        if self.current_char_size != 0 {
+            let backup_by = self.current_char_size as usize;
+            assert_ne!(backup_by, 0, "must call next() before backup()");
+            debug_assert!(self.pos >= backup_by);
+            self.pos -= backup_by;
+            self.current_char_size = self.last_char_size;
+            self.current_char = self.last_char;
+        };
+        let result = self.last_char;
+        self.last_char = '\0';
         self.last_char_size = 0;
+        result
     }
 
-    /// last returns the previously read character, without changing the position.
-    fn last(&self) -> char {
+    /// second_last returns the char returned in the previous (second most recent) call to next()
+    /// without changing the position.
+    fn second_last(&self) -> char {
         self.last_char
+    }
+
+    /// current returns the char returned in the most recent call to next()
+    /// without changing the position.
+    fn current(&self) -> char {
+        self.current_char
     }
 
     /// tail returns the remaining part of the source bytes from the current position.
@@ -335,7 +357,7 @@ impl<'a> QueryNormalizer<'a> {
             match c {
                 '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | 'e' | 'E' => (),
                 '+' | '-' => {
-                    let prev = self.last();
+                    let prev = self.second_last();
                     if prev.to_ascii_lowercase() != 'e' {
                         return Err(Error::new(format!("unexpected '{}' in numeric value following '{}'", c, prev)));
                     }
@@ -345,7 +367,7 @@ impl<'a> QueryNormalizer<'a> {
                         return Err(Error::new("cannot have two decimals in numeric value"));
                     }
                     // Only valid if there are digits on at least one side
-                    if !self.peek().is_ascii_digit() && !self.last().is_ascii_digit() {
+                    if !self.peek().is_ascii_digit() && !self.second_last().is_ascii_digit() {
                         // Not actually a number, must be part of a dotted identifier (with a preceding space - why?!?)
                         assert_eq!(self.pos, start + 1, ". without digits not at the start of the literal");
                         return self.operator(c);
@@ -366,8 +388,8 @@ impl<'a> QueryNormalizer<'a> {
         }
 
         // backup to position of last char so we don't include the terminating char
-        self.backup();
-        let prev = self.last();
+        let prev = self.backup();
+        println!("numeric current={} prev={}", c as i32, prev as i32);
         if prev == 'e' || prev == 'E' || prev == '+' || prev == '-' {
             // Can't end in an exponent symbol
             return Err(Error::new(format!("numeric constant cannot end in exponent '{}'", prev)));
@@ -653,8 +675,7 @@ impl<'a> QueryNormalizer<'a> {
         }
 
         // We already checked for comments, so check that second restriction above applies here.
-        self.backup();
-        c = self.last();
+        c = self.backup();
         if self.pos - start > 1 && (c == '+' || c == '-') {
             if !REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS.contains(c) {
                 return Err(Error::new(format!("an operator cannot end in + or - unless it includes one of \"{}\"", REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS)));
