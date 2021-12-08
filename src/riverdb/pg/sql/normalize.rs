@@ -24,7 +24,6 @@ pub(crate) struct QueryNormalizer<'a> {
     pos: usize,
     current_char: char,
     last_char: char,
-    start_offset_in_msg: u32,
     current_char_size: u8,
     last_char_size: u8,
     comment_level: u8,
@@ -39,16 +38,15 @@ impl<'a> QueryNormalizer<'a> {
     pub fn new(msg: &'a Message<'a>) -> Self {
         let reader = msg.reader();
         let start_offset_in_msg = reader.tell();
-        let src = reader.read_to_end();
+        let src = msg.as_slice();
 
         Self {
             src,
-            pos: 0,
+            pos: start_offset_in_msg as usize,
             last_char: '\0',
             last_char_size: 0,
             current_char: '\0',
             current_char_size: 0,
-            start_offset_in_msg,
             comment_level: 0,
             query_type: QueryType::Other,
             params_buf: String::new(),
@@ -65,7 +63,9 @@ impl<'a> QueryNormalizer<'a> {
             debug!("main loop c='{}'", c);
 
             let mut res = Ok(());
-            if c.is_ascii_whitespace() {
+            if c == '\0' {
+                break;
+            } else if c.is_ascii_whitespace() {
                 res = self.consume_whitespace(c);
             } else if c == '\'' {
                 res = self.single_quoted_string(c);
@@ -197,6 +197,16 @@ impl<'a> QueryNormalizer<'a> {
         }
     }
 
+    /// append a token to the normalized query, converting to uppercase,
+    /// and inserting a space first, if required.
+    fn append_token_uppercase(&mut self, tok: &[u8]) {
+        self.write_space();
+        // Safety: we already parsed this as valid utf8
+        for c in unsafe { std::str::from_utf8_unchecked(tok) }.chars() {
+            self.normalized_query.push(c.to_ascii_uppercase());
+        }
+    }
+
     /// matches str s at tail() case-insensitively
     fn match_fold(&mut self, s: &'static str) -> bool {
         let len = s.len();
@@ -217,7 +227,7 @@ impl<'a> QueryNormalizer<'a> {
     fn write_space(&mut self) {
         if !self.normalized_query.is_empty() {
             let last_byte = self.normalized_query.as_bytes()[self.normalized_query.len()-1];
-            if TOKENS_WITHOUT_FOLLOWING_WHITESPACE.as_bytes().contains(&last_byte) {
+            if !TOKENS_WITHOUT_FOLLOWING_WHITESPACE.as_bytes().contains(&last_byte) {
                 self.normalized_query.push(' ');
             }
         }
@@ -340,7 +350,8 @@ impl<'a> QueryNormalizer<'a> {
         debug_assert!(tag.val.start > tag.key.end);
 
         if tag.val.end == 0 {
-            tag.val.end = self.pos as u32;
+            // pos points after the char that's after the value
+            tag.val.end = self.pos as u32 - 1;
         }
         self.tags.push(*tag);
         *tag = QueryTag::new();
@@ -449,6 +460,7 @@ impl<'a> QueryNormalizer<'a> {
             } else if c == '=' {
                 // This might be part of a tag.
                 // Scan backward for a dotted identifier A-Za-z0-9-_.
+                // pos is currently after =, backup 2 to get index of char before =
                 debug_assert!(self.pos > 2);
                 let mut i = self.pos - 2;
                 while i > start {
@@ -459,6 +471,7 @@ impl<'a> QueryNormalizer<'a> {
                     } else {
                         tag.key.start = (i + 1) as u32;
                         tag.key.end = self.pos as u32 - 1;
+                        tag.val.start = self.pos as u32;
                         break;
                     }
                 }
@@ -715,7 +728,7 @@ impl<'a> QueryNormalizer<'a> {
         }
 
         self.backup();
-        self.append_token(&self.src[start..self.pos]);
+        self.append_token_uppercase(&self.src[start..self.pos]);
 
         Ok(())
     }

@@ -45,7 +45,7 @@ impl QueryParam {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct QueryTag {
     pub key: Range32,
     pub val: Range32,
@@ -63,7 +63,8 @@ impl QueryTag {
         if self.key_len() == key.len() {
             let this_key = &bytes[self.key_range()];
             // Safety: we checked msg was valid utf8 when we normalized it in new()
-            key.eq_ignore_ascii_case(unsafe { std::str::from_utf8_unchecked(this_key) })
+            let stored_key = unsafe { std::str::from_utf8_unchecked(this_key) };
+            key.eq_ignore_ascii_case(stored_key)
         } else {
             false
         }
