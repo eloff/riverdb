@@ -32,10 +32,8 @@ pub struct QueryParam {
 }
 
 impl QueryParam {
-    pub fn value<'a>(&self, src: &'a [u8]) -> &'a str {
-        let val = &src[self.value.as_range()];
-        // Safety: we checked this was valid utf8 when constructing the QueryParam
-        unsafe { std::str::from_utf8_unchecked(val) }
+    pub fn value<'a>(&self, src: &'a str) -> &'a str {
+        &src[self.value.as_range()]
     }
 
     pub fn target_type<'a>(&self, src: &'a [u8]) -> &'a str {
@@ -145,8 +143,8 @@ impl Query {
     }
 
     /// Returns the value of the specified QueryParam which must have been returned by self.params()
-    pub fn param(&self, param: QueryParam) -> &str {
-        todo!()
+    pub fn param(&self, param: &QueryParam) -> &str {
+        param.value(self.query.params_buf.as_str())
     }
 
     /// Returns the value of the named tag (ascii case-insensitive) or None

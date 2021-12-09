@@ -71,10 +71,11 @@ fn test_normalize_ok() {
             ],
         ),
         (
-            "selECT $$quoted$$, b'1010', e'\n', U&'\0441\043B\043E\043D'",
-            "SELECT $1, $2, $3, $4",
+            "selECT $$quoted$$, $tag$quoted with tag$tag$, b'1010', e'\\n', U&'\\0441\\043B\\043E\\043D'",
+            "SELECT $1, $2, $3, $4, $5",
             vec![
                 QueryParamTest { value: "$$quoted$$", ty: LiteralType::DollarString, negated: false, target_type: "" },
+                QueryParamTest { value: "$tag$quoted with tag$tag$", ty: LiteralType::DollarString, negated: false, target_type: "" },
                 QueryParamTest { value: "b'1010'", ty: LiteralType::BitString, negated: false, target_type: "" },
                 QueryParamTest { value: "e'\\n'", ty: LiteralType::EscapeString, negated: false, target_type: "" },
                 QueryParamTest { value: "U&'\\0441\\043B\\043E\\043D'", ty: LiteralType::UnicodeString, negated: false, target_type: "" },
@@ -176,17 +177,11 @@ fn test_normalize_ok() {
             vec![],
         ),
         (
-            "select e'foo\''",
+            "select e'foo\\''",
             "SELECT $1",
             vec![
-                QueryParamTest { value: "e'foo\''", ty: LiteralType::EscapeString, negated: false, target_type: "" },
-                QueryParamTest { value: "e'foo\\'", ty: LiteralType::EscapeString, negated: false, target_type: "" },
+                QueryParamTest { value: "e'foo\\''", ty: LiteralType::EscapeString, negated: false, target_type: "" },
             ],
-        ),
-        (
-            "select e'foo\\'",
-            "SELECT $1",
-            vec![],
         ),
         (
             r#"select "fo""o" from bar"#,
@@ -264,15 +259,14 @@ fn test_normalize_ok() {
     ];
 
     for (query, normalized, params) in tests {
-        println!("{}", query);
+        println!("{} of len {}", query, query.len());
         let res = make_query(query.as_bytes()).expect("expected Ok(Query)");
         assert_eq!(res.normalized(), *normalized);
         for (param, expected) in res.params().iter().zip(params) {
             assert_eq!(param.ty, expected.ty);
             assert_eq!(param.negated, expected.negated);
-            assert_eq!(param.value(query.as_bytes()), expected.value);
+            assert_eq!(res.param(param), expected.value);
         }
-        break;
     }
 }
 

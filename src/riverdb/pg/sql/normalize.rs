@@ -129,7 +129,9 @@ impl<'a> QueryNormalizer<'a> {
     }
 
     fn next(&mut self) -> Result<char> {
+        println!("next at {} of {}", self.pos, self.src.len());
         let (c, size) = decode_utf8_char(self.tail())?;
+        println!("c={} size={} tail_len={}", c as i32, size, self.tail().len());
         self.last_char = self.current_char;
         self.last_char_size = self.current_char_size;
         self.current_char = c;
@@ -219,6 +221,7 @@ impl<'a> QueryNormalizer<'a> {
                     return false;
                 }
             }
+            self.pos += s.len();
             true
         }
     }
@@ -268,22 +271,25 @@ impl<'a> QueryNormalizer<'a> {
     /// Converts NULL and BOOLEAN literals to uppercase.
     fn replace_literal(&mut self, start: usize, ty: LiteralType) {
         let tok = &self.src[start..self.pos];
+        let param_start = self.params_buf.len();
 
         // Any string except a dollar string may be combined with a plain string literal
         // if separated with only whitespace including at least one newline.
         if ty == LiteralType::String && !self.params.is_empty() {
-            let prev_param = self.params.last_mut().unwrap(); // not empty, see above
-            match prev_param.ty {
+            match self.params.last().unwrap().ty {
                 LiteralType::String | LiteralType::EscapeString | LiteralType::UnicodeString | LiteralType::BitString => {
                     // Check that there is only whitespace separating them, and it includes a newline
+                    println!("looking back for string continuation");
                     if self.look_behind_for_string_continuation(start) {
+                        println!("found it");
                         // Cut off the terminating single quote
                         assert_eq!(self.params_buf.pop(), Some('\''));
                         // Append the string token, minus the starting single quote
                         // Safety: We already decoded this as utf8.
-                        unsafe {
-                            self.params_buf.push_str(std::str::from_utf8_unchecked(&tok[1..]));
-                        }
+                        let continued_s = unsafe { std::str::from_utf8_unchecked(&tok[1..]) };
+                        println!("appending {}", continued_s);
+                        self.params_buf.push_str(continued_s);
+                        self.params.last_mut().unwrap().value.end += continued_s.len() as u32 - 1;
                         return
                     }
                 },
@@ -321,7 +327,7 @@ impl<'a> QueryNormalizer<'a> {
         }
 
         self.params.push(QueryParam{
-            value: Range32::new(start, start + tok.len()),
+            value: Range32::new(param_start, self.params_buf.len()),
             ty,
             negated,
             target_type: Range32::default()
@@ -513,6 +519,7 @@ impl<'a> QueryNormalizer<'a> {
     fn string(&mut self, mut c: char, ty: LiteralType) -> Result<()> {
         debug_assert_eq!(c, '\'', "c must start a single quoted string");
 
+        println!("new string at {}", self.pos);
         let mut start = self.pos - 1;
         // Adjust start for literal prefix length
         if ty == LiteralType::EscapeString {
@@ -522,8 +529,10 @@ impl<'a> QueryNormalizer<'a> {
         }
 
         let mut backslashes = 0;
+    'Loop:
         loop {
             c = self.next()?;
+            println!("loop string {} at {}", c as i32, self.pos);
             match c {
                 '\0' => {
                     return Err(Error::new("unexpected eof parsing string"));
@@ -534,7 +543,8 @@ impl<'a> QueryNormalizer<'a> {
                     if ty == LiteralType::EscapeString && backslashes%2 != 0 {
                         backslashes = 0;
                     } else {
-                        break;
+                        println!("break");
+                        break 'Loop;
                     }
                 },
                 '\\' => {
@@ -584,7 +594,7 @@ impl<'a> QueryNormalizer<'a> {
                 let search = TwoWaySearcher::new(tag);
                 match search.search_in(&self.src[tag_end..]) {
                     Some(j) => {
-                        self.pos = tag_end + j;
+                        self.pos = tag_end + j + tag.len();
                         // Verify it's valid utf8, we didn't parse it
                         std::str::from_utf8(&self.src[start..self.pos])?;
                         self.replace_literal(start, LiteralType::DollarString);
@@ -649,7 +659,7 @@ impl<'a> QueryNormalizer<'a> {
             self.pos -= 1; // backup one more (we know we had an ascii &, so this is ok.)
             self.keyword_or_identifier(c)
         } else {
-            self.string(c, LiteralType::UnicodeString)
+            self.string(c3, LiteralType::UnicodeString)
         }
     }
 
