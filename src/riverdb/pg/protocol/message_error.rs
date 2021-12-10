@@ -63,7 +63,7 @@ impl PostgresError {
             _ => { return Err(Error::protocol_error("message not an error message")); }
         }
 
-        let r = m.reader();
+        let mut r = m.reader();
         loop {
             let field = ErrorFieldTag::new(r.read_byte())?;
             if field == ErrorFieldTag::NULL_TERMINATOR {
@@ -115,7 +115,7 @@ impl PostgresError {
             return "";
         }
         let m = &self.msg.first().unwrap();
-        let r = MessageReader::new_at(m, pos);
+        let mut r = MessageReader::new_at(m, pos);
         let s = r.read_str().expect("expected null-terminated string");
         // Safety: s isn't borrowed from m here, it's borrowed from self.msg
         unsafe { change_lifetime(s) }

@@ -437,13 +437,13 @@ impl BackendConn {
                     for msg in msgs.iter(0) {
                         match msg.tag() {
                             Tag::PARAMETER_STATUS => {
-                                let r = msg.reader();
+                                let mut r = msg.reader();
                                 let key = r.read_str()?;
                                 let val = r.read_str()?;
                                 params.set(key.to_string(), val.to_string());
                             },
                             Tag::BACKEND_KEY_DATA => {
-                                let r = msg.reader();
+                                let mut r = msg.reader();
                                 // The mutex release will publish these writes
                                 self.pid.store(r.read_i32(), Relaxed);
                                 self.secret.store(r.read_i32(), Relaxed);
@@ -467,7 +467,7 @@ impl BackendConn {
                     for msg in msgs.iter(0) {
                         match msg.tag() {
                             Tag::PARAMETER_STATUS => {
-                                let r = msg.reader();
+                                let mut r = msg.reader();
                                 let key = r.read_str()?;
                                 let val = r.read_str()?;
                                 params.set(key.to_string(), val.to_string());
@@ -503,7 +503,7 @@ impl BackendConn {
         match msg.tag() {
             Tag::AUTHENTICATION_OK => {
                 let auth_type = {
-                    let r = msg.reader();
+                    let mut r = msg.reader();
                     let auth_type = r.read_i32();
                     if auth_type == 0 {
                         r.error()?;
@@ -533,7 +533,7 @@ impl BackendConn {
                     },
                     AuthType::MD5 => {
                         let password_msg = {
-                            let r = msg.reader();
+                            let mut r = msg.reader();
                             r.advance(4)?; // skip over auth_type
                             let salt = r.read_i32();
                             if salt == 0 {
@@ -565,7 +565,7 @@ impl BackendConn {
         let mut have_scram_256_plus = false;
 
         {
-            let r = msg.reader();
+            let mut r = msg.reader();
             r.advance(4)?; // skip auth_type
             loop {
                 let mechanism = r.read_str()?;

@@ -18,7 +18,7 @@ impl RowDescription {
         let m = msg.first().unwrap();
         assert_eq!(m.tag(), Tag::ROW_DESCRIPTION);
 
-        let r = m.reader();
+        let mut r = m.reader();
         let num_fields = r.read_i16();
         let mut fields = Vec::with_capacity(num_fields as usize);
         for _i in 0..num_fields as usize {

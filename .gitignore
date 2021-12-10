@@ -3,3 +3,4 @@ private/
 .idea/
 .fsw.yml
 cobertura.xml
+debug-env.sh

@@ -36,7 +36,7 @@ pub(crate) struct QueryNormalizer<'a> {
 
 impl<'a> QueryNormalizer<'a> {
     pub fn new(msg: &'a Message<'a>) -> Self {
-        let reader = msg.reader();
+        let mut reader = msg.reader();
         let start_offset_in_msg = reader.tell();
         let src = msg.as_slice();
 

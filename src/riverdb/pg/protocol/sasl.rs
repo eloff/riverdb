@@ -188,7 +188,7 @@ impl ScramSha256 {
             }
         }
 
-        let r = msg.reader();
+        let mut r = msg.reader();
         let val = r.read_i32();
         if val == 0 {
             r.error()?;

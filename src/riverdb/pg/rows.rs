@@ -175,7 +175,7 @@ impl<'a> Rows<'a> {
                 match msg.tag() {
                     Tag::DATA_ROW => {
                         self.raw.clear();
-                        let r = msg.reader();
+                        let mut r = msg.reader();
                         let num_fields = r.read_i16() as usize;
                         let bytes = msg.as_slice();
                         for _ in 0..num_fields {
@@ -230,7 +230,7 @@ impl<'a> Drop for Rows<'a> {
 }
 
 fn parse_affected_rows(msg: &Message<'_>) -> Result<i32> {
-    let r = msg.reader();
+    let mut r = msg.reader();
     // For all command tags that have a row count, it's the last part of the tag after a space
     let cmd_tag = r.read_str()?;
     Ok(if let Some(i) = cmd_tag.rfind(' ') {

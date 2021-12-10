@@ -148,7 +148,7 @@ mod tests {
         let msg = msgs.first().unwrap();
         assert_eq!(msg.len(), MSG_LEN);
         assert_eq!(msg.tag(), Tag::AUTHENTICATION_OK);
-        let r = msg.reader();
+        let mut r = msg.reader();
         assert_eq!(r.read_i32(), 34343434);
         assert_eq!(r.read_i16(), 1212);
         assert_eq!(r.read_byte(), 250);
@@ -186,20 +186,20 @@ mod tests {
         msg = it.next().unwrap();
         assert_eq!(msg.tag(), Tag::PARAMETER_STATUS);
         assert_eq!(msg.len(), 13);
-        let r = msg.reader();
+        let mut r = msg.reader();
         assert_eq!(r.read_str().unwrap(), "foo");
         assert_eq!(r.read_str().unwrap(), "bar");
 
         msg = it.next().unwrap();
         assert_eq!(msg.tag(), Tag::PARAMETER_STATUS);
         assert_eq!(msg.len(), 22);
-        let r = msg.reader();
+        let mut r = msg.reader();
         assert_eq!(r.read_str().unwrap(), "some_key");
         assert_eq!(r.read_str().unwrap(), "a value");
 
         msg = it.next().unwrap();
         assert_eq!(msg.tag(), Tag::BACKEND_KEY_DATA);
-        let r = msg.reader();
+        let mut r = msg.reader();
         assert_eq!(r.read_i32(), 123456789);
         assert_eq!(r.read_i32(), 987654321);
 

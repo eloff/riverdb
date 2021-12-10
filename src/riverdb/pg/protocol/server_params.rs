@@ -16,10 +16,10 @@ impl ServerParams {
 
     pub fn from_startup_message(msg: &Message<'_>) -> Result<Self> {
         assert_eq!(msg.tag(), Tag::UNTAGGED);
-        let r = msg.reader();
+        let mut r = msg.reader();
         r.seek(r.tell() + 4)?; // skip the version number
         let start = msg.body_start() + 4;
-        let r = MessageReader::new_at(&msg, start as u32);
+        let mut r = MessageReader::new_at(&msg, start as u32);
 
         let mut result = Self::new();
         let mut user: Option<&str> = None;

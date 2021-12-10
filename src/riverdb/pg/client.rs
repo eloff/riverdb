@@ -267,8 +267,7 @@ impl ClientConn {
 
         let msg = msgs.first().unwrap(); // see msgs.count() condition above
         assert_eq!(msg.tag(), Tag::UNTAGGED); // was previously checked by msg_is_allowed
-        let r = msg.reader();
-        let protocol_version = r.read_i32();
+        let protocol_version = msg.reader().read_i32();
         match protocol_version {
             PROTOCOL_VERSION => {
                 let params= ServerParams::from_startup_message(&msg)?;
