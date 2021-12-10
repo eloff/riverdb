@@ -5,12 +5,15 @@ use crate::riverdb::pg::protocol::message_parser::MIN_MESSAGE_LEN;
 use crate::riverdb::common::bytes_to_slice_mut;
 
 
+/// A wrapper around a mutable byte buffer (BytesMut) for creating
+/// one or more PostgreSQL wire protocol messages.
 pub struct MessageBuilder {
     data: BytesMut,
     start: usize, // start position of current Message being built
 }
 
 impl MessageBuilder {
+    /// Create a new builder object
     pub fn new(tag: Tag) -> Self {
         let mut builder = MessageBuilder {
             data: BytesMut::with_capacity(256), // typically we build short messages
@@ -20,22 +23,30 @@ impl MessageBuilder {
         builder
     }
 
+    /// Reserve at least additional_size bytes in the mutable buffer
     pub fn reserve(&mut self, additional_size: usize) {
         self.data.reserve(additional_size)
     }
 
+    /// Return a mutable BytesMut reference to the internal buffer
     pub fn bytes_mut(&mut self) -> &mut BytesMut {
         &mut self.data
     }
 
+    /// Return a mutable byte slice &[u8] up to the capacity of the buffer.
+    /// This is unsafe because data from [len, capacity) may be unitialized.
+    /// Do not read from any unwritten part of this returned slice.
     pub unsafe fn as_slice_mut(&mut self) -> &mut [u8] {
         bytes_to_slice_mut(&mut self.data)
     }
 
+    /// Set the length of the internal buffer (calls BytesMut::set_len)
+    /// Must have written to all bytes up to the new length.
     pub unsafe fn set_len(&mut self, len: usize) {
         self.data.set_len(len)
     }
 
+    /// Get the length of the written part of the internal buffer.
     pub fn len(&self) -> usize {
         self.data.len()
     }
@@ -61,6 +72,8 @@ impl MessageBuilder {
         self.data.put_i32(0);
     }
 
+    /// Complete the message by writing the length field with the current
+    /// message length.
     fn complete_message(&mut self) {
         let mut len = self.len();
         if len - self.start < MIN_MESSAGE_LEN as usize {
@@ -80,27 +93,34 @@ impl MessageBuilder {
         }
     }
 
+    /// Write a single byte.
     pub fn write_byte(&mut self, b: u8) {
         self.data.put_u8(b);
     }
 
+    /// Write a string, including a trailing null terminating byte.
     pub fn write_str(&mut self, s: &str) {
         self.write_bytes(s.as_bytes());
         self.write_byte(0);
     }
 
+    /// Write a slice of bytes.
     pub fn write_bytes(&mut self, bytes: &[u8]) {
         self.data.extend_from_slice(bytes);
     }
 
+    /// Write a big-endian 16 bit value
     pub fn write_i16(&mut self, i: i16) {
         self.data.put_i16(i);
     }
 
+    /// Write a big-endian 32 bit value
     pub fn write_i32(&mut self, i: i32) {
         self.data.put_i32(i);
     }
 
+    /// Write a ServerParams object in Postgres wire protocol.
+    /// Note the caller is responsible for writing the terminating null byte.
     pub fn write_params(&mut self, params: &ServerParams) {
         for (k, v) in params.iter() {
             self.write_str(k);

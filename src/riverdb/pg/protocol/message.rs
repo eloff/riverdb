@@ -1,16 +1,12 @@
 use std::fmt;
 use std::fmt::{Display, Formatter, Debug};
 
-
-
-
-
 use crate::riverdb::pg::protocol::{Tag, MessageReader};
 use crate::riverdb::pg::protocol::message_parser::{Header};
 
 
 /// Message represents a single PostgreSQL wire protocol message
-/// It's borrowed from a Messages buffer.
+/// It's borrowed from an owning Messages buffer which contains one or more messages.
 pub struct Message<'a> {
     header: Header,
     data: &'a [u8],
@@ -18,6 +14,7 @@ pub struct Message<'a> {
 }
 
 impl<'a> Message<'a> {
+    /// Create a new Message with decoded header and data starting with header at offset.
     pub fn new(header: Header, data: &'a [u8], offset: usize) -> Self {
         Message{
             header,
@@ -26,6 +23,7 @@ impl<'a> Message<'a> {
         }
     }
 
+    /// Return the Header object for this message (tag byte and length)
     pub fn header(&self) -> Header {
         self.header
     }
@@ -72,12 +70,14 @@ impl<'a> Message<'a> {
 }
 
 impl<'a> Display for Message<'a> {
+    /// Format message as "$Type Message"
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!("{} Message", self.tag()))
     }
 }
 
 impl<'a> Debug for Message<'a> {
+    /// Format message as "$Type Message"
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         self::Display::fmt(self, f)
     }

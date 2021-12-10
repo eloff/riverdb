@@ -3,7 +3,8 @@
 use crypto::md5::Md5;
 use crypto::digest::Digest;
 
-
+/// Construct a String hex-encoded MD5 digest of the user, password, and salt
+/// According to the PostgreSQL auth algorithm.
 pub fn hash_md5_password(user: &str, password: &str, salt: i32) -> String {
     let mut hasher = Md5::new();
     hasher.input_str(password);

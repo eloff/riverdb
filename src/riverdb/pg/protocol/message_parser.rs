@@ -8,9 +8,10 @@ use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::protocol::{Tag, Messages};
 use crate::riverdb::config::{conf};
 
-
+/// The shortest legal Postgres wire protocol message.
 pub const MIN_MESSAGE_LEN: u32 = 5;
 
+/// A struct containing the Postgres message tag byte and 32 bit length.
 #[derive(Copy, Clone, Debug)]
 pub struct Header {
     pub tag: Tag,
@@ -45,16 +46,19 @@ impl Header {
 }
 
 impl Display for Header {
+    /// Format the header as "$message_type(len=$length)"
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("{}(len={})", &self.tag, self.length.get()))
     }
 }
 
+/// A parser for incrementally parsing Postgres messages from a BytesMut buffer
 pub struct MessageParser {
     data: BytesMut,
 }
 
 impl MessageParser {
+    /// Create a new parser with configured recv_buffer_size
     pub fn new() -> Self {
         Self {
             data: BytesMut::with_capacity(conf().recv_buffer_size as usize),

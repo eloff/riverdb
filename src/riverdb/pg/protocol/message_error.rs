@@ -7,7 +7,8 @@ use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::protocol::{Tag, Messages, MessageReader};
 use crate::riverdb::pg::protocol::{ErrorSeverity, ErrorFieldTag};
 
-
+/// PostgresError represents a decoded error from a Postgres server
+/// It provides efficient access to each of the optional error fields.
 pub struct PostgresError {
     msg: Messages,
     severity: ErrorSeverity,
@@ -31,6 +32,8 @@ pub struct PostgresError {
 }
 
 impl PostgresError {
+    /// Decode a Postgres error from the first Message in the
+    /// given Messages buffer. Takes ownership of the buffer.
     pub fn new(msg: Messages) -> Result<Self> {
         let mut err = Self{
             msg,
@@ -102,6 +105,7 @@ impl PostgresError {
         Ok(err)
     }
 
+    /// The error severity
     pub fn severity(&self) -> ErrorSeverity {
         self.severity
     }
@@ -117,87 +121,107 @@ impl PostgresError {
         unsafe { change_lifetime(s) }
     }
 
+    /// The error severity name
     pub fn severity_name(&self) -> &str {
         self.read_str_at(self._severity)
     }
 
+    /// The Postgres error code. See errors.rs in this package.
     pub fn code(&self) -> &str {
         self.read_str_at(self._code)
     }
 
+    /// The column name
     pub fn column_name(&self) -> &str
     {
         self.read_str_at(self._column_name)
     }
 
+    /// The constraint name
     pub fn constraint_name(&self) -> &str {
         self.read_str_at(self._constraint_name)
     }
 
+    /// The data type name
     pub fn data_type_name(&self) -> &str {
         self.read_str_at(self._data_type_name)
     }
 
+    /// The error detail
     pub fn detail(&self) -> &str {
         self.read_str_at(self._detail)
     }
 
+    /// The file (Postgres C source file)
     pub fn file(&self) -> &str {
         self.read_str_at(self._file)
     }
 
+    /// An error hint
     pub fn hint(&self) -> &str {
         self.read_str_at(self._hint)
     }
 
+    /// The internal position
     pub fn internal_position(&self) -> &str {
         self.read_str_at(self._internal_position)
     }
 
+    /// The internal query
     pub fn internal_query(&self) -> &str {
         self.read_str_at(self._internal_query)
     }
 
+    /// The line number in the Postgres source file.
     pub fn line(&self) -> &str {
         self.read_str_at(self._line)
     }
 
+    /// The error message
     pub fn message(&self) -> &str {
         self.read_str_at(self._message)
     }
 
+    /// The error position
     pub fn position(&self) -> &str {
         self.read_str_at(self._position)
     }
 
+    /// The routine (function) with the error
     pub fn routine(&self) -> &str {
         self.read_str_at(self._routine)
     }
 
+    /// The schema name
     pub fn schema_name(&self) -> &str {
         self.read_str_at(self._schema_name)
     }
 
+    /// The table name
     pub fn table_name(&self) -> &str {
         self.read_str_at(self._table_name)
     }
 
+    /// The error context
     pub fn context(&self) -> &str {
         self.read_str_at(self._where)
     }
 
+    /// Return the underlying Messages buffer
     pub fn into_messages(self) -> Messages {
         self.msg
     }
 }
 
 impl Display for PostgresError {
+    /// Format the error as "$severity $code: $message"
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!("{} {}: {}", self.severity_name(), self.code(), self.message()))
     }
 }
 
 impl Debug for PostgresError {
+    /// Format the error as "$severity $code: $message"
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         Display::fmt(self, f)
     }

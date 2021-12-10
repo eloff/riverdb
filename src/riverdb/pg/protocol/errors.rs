@@ -6,6 +6,8 @@ use strum::{EnumString};
 
 use crate::riverdb::{Error, Result};
 
+/// An enum of Postgres error severity levels.
+/// Serializes to the uppercase string used by Postgres.
 #[derive(EnumString, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Debug)]
 #[strum(serialize_all = "UPPERCASE")]
 #[repr(u8)]
@@ -21,6 +23,7 @@ pub enum ErrorSeverity {
 }
 
 impl ErrorSeverity {
+    /// The error severity level as a title-case string.
     pub fn as_str(&self) -> &'static str {
         match *self {
             ErrorSeverity::Fatal => "Fatal",
@@ -36,17 +39,20 @@ impl ErrorSeverity {
 }
 
 impl Display for ErrorSeverity {
+    /// Formats the error severity level as a title-case string.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
 impl Default for ErrorSeverity {
+    /// Returns ErrorSeverity::Log
     fn default() -> Self {
         ErrorSeverity::Log
     }
 }
 
+/// The error field tag bytes used in the Postgres wire protocol.
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct ErrorFieldTag(u8);
 
@@ -71,15 +77,18 @@ impl ErrorFieldTag {
     pub const LINE: ErrorFieldTag = ErrorFieldTag::new_unchecked('L' as u8);
     pub const ROUTINE: ErrorFieldTag = ErrorFieldTag::new_unchecked('R' as u8);
 
+    /// Construct a new error field tag from the raw byte, if it's one of the recognized values.
     pub fn new(b: u8) -> Result<Self> {
         let tag = Self::new_unchecked(b);
         tag.check().and(Ok(tag))
     }
 
+    /// Construct a new error field tag from the raw byte without checking if it's valid.
     pub const fn new_unchecked(b: u8) -> Self {
         ErrorFieldTag(b)
     }
 
+    /// Check if the error field tag is one of the supported values.
     pub fn check(&self) -> Result<()> {
         match *self {
             ErrorFieldTag::NULL_TERMINATOR |
@@ -105,12 +114,14 @@ impl ErrorFieldTag {
         }
     }
 
+    /// Return the wire protocol byte for this error field tag.
     pub fn as_u8(&self) -> u8 {
         self.0
     }
 }
 
 impl Display for ErrorFieldTag {
+    /// Format this error field tag as a lowercase human readable string.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let name = match *self {
             ErrorFieldTag::NULL_TERMINATOR => "null terminator",
