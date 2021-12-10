@@ -11,10 +11,13 @@ use crate::riverdb::pg::protocol::message_parser::{Header, MIN_MESSAGE_LEN};
 use crate::riverdb::common::unsplit_bytes;
 
 
+/// One or more Postgres messages in a sharable Bytes buffer
 #[derive(Clone)]
 pub struct Messages(Bytes);
 
 impl Messages {
+    /// Create a new messages object from the given buffer.
+    /// Does not check that buf contains valid messages.
     pub fn new(buf: Bytes) -> Self {
         let len = buf.len() as u32;
         assert!(len == 0 || len >= MIN_MESSAGE_LEN);
@@ -51,20 +54,22 @@ impl Messages {
         self.0.len() as u32
     }
 
+    /// Return the underlying bytes as a &[u8] slice
     pub fn as_slice(&self) -> &[u8] {
         self.0.chunk()
     }
 
+    /// Return a reference to the underlying Bytes buffer
     pub fn bytes(&self) -> &Bytes {
         &self.0
     }
 
-    /// into_bytes consumes Messages and returns the underlying Bytes buffer
+    /// Consumes Messages and returns the underlying Bytes buffer
     pub fn into_bytes(self) -> Bytes {
         self.0
     }
 
-    /// Is returns true if other and msgs are the same because they share the same backing buffer
+    /// Returns true if other and msgs are the same because they share the same backing buffer
     /// or if is_empty() is true for both.
     pub fn is(&self, other: &Self) -> bool {
         self.0.as_ptr() == other.0.as_ptr()
@@ -159,12 +164,14 @@ impl Messages {
 }
 
 impl Default for Messages {
+    /// Returns an empty Messages object
     fn default() -> Self {
         Self(Bytes::new())
     }
 }
 
 impl Display for Messages {
+    /// Formats the messages as Messages{msg1, ...} using Message::fmt
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str("Messages{")?;
         let mut first = true;
@@ -181,17 +188,20 @@ impl Display for Messages {
 }
 
 impl Debug for Messages {
+    /// Formats the messages as Messages{msg1, ...} using Message::fmt
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         self::Display::fmt(self, f)
     }
 }
 
+/// An iterator over each Message in the Messages buffer
 pub struct MessageIter<'a> {
     messages: &'a Bytes,
     pos: usize,
 }
 
 impl<'a> MessageIter<'a> {
+    /// Create a new MessageIter from a given Bytes buffer starting at the given offset (typically 0)
     fn new(messages: &'a Bytes, start_offset: usize) -> Self {
         Self{messages, pos: start_offset}
     }
@@ -200,6 +210,7 @@ impl<'a> MessageIter<'a> {
 impl<'a> Iterator for MessageIter<'a> {
     type Item = Message<'a>;
 
+    /// Return the next Some(Message) or None if there are no more
     fn next(&mut self) -> Option<Self::Item> {
         if self.messages.is_empty() {
             return None;

@@ -8,12 +8,17 @@ use crate::riverdb::pg::protocol::{Messages, Tag};
 
 const FIELD_DESCRIPTION_SIZE: u32 = 3*4 + 3*2;
 
+/// An object for efficiently accessing a Postgres row description in Messages
 pub struct RowDescription {
     msg: Messages,
     fields: Vec<FieldOffset>,
 }
 
 impl RowDescription {
+    /// Create a RowDescription object from first message in Messages.
+    /// Reads the field descriptions from the message and uses them to populate fields
+    /// which can be accessed via len() and get(index) methods.
+    /// Takes ownership of Messages.
     pub fn new(msg: Messages) -> Result<Self> {
         let m = msg.first().unwrap();
         assert_eq!(m.tag(), Tag::ROW_DESCRIPTION);
@@ -36,20 +41,24 @@ impl RowDescription {
         })
     }
 
+    /// Returns the number of fields
     pub fn len(&self) -> usize {
         self.fields.len()
     }
 
+    /// Get the field at index (or return None if out of range)
     pub fn get(&self, index: usize) -> Option<FieldDescription> {
         self.fields.get(index).cloned().map(|off| FieldDescription::new(self.msg.as_slice(), off))
     }
 
+    /// Return the underlying Messages buffer
     pub fn into_message(self) -> Messages {
         self.msg
     }
 }
 
 impl Default for RowDescription {
+    /// Return an empty RowDescription
     fn default() -> Self {
         Self{
             msg: Messages::default(),
@@ -58,12 +67,15 @@ impl Default for RowDescription {
     }
 }
 
+/// An accessor for reading a Postgres field description
 pub struct FieldDescription<'a> {
     data: &'a [u8],
     offset: FieldOffset,
 }
 
 impl<'a> FieldDescription<'a> {
+    /// Create a FieldDescription accessor object over the Postgres field description
+    /// in data at the given FieldOffset.
     pub fn new(data: &'a [u8], offset: FieldOffset) -> Self {
         Self{
             data,
@@ -119,6 +131,7 @@ impl<'a> FieldDescription<'a> {
     }
 }
 
+/// An object representing a field description at an offset in the message.
 #[derive(Copy, Clone)]
 pub struct FieldOffset(u32);
 
@@ -143,11 +156,13 @@ impl FieldOffset {
         (self.0 >> 24) as usize
     }
 
+    /// Returns the offset after the field name
     pub fn name_end(&self) -> usize {
         self.offset() + self.name_len()
     }
 }
 
+/// Wire protocol format code (see Postgres docs)
 #[repr(u8)]
 pub enum FormatCode {
     Text = 0,
