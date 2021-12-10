@@ -129,9 +129,7 @@ impl<'a> QueryNormalizer<'a> {
     }
 
     fn next(&mut self) -> Result<char> {
-        println!("next at {} of {}", self.pos, self.src.len());
         let (c, size) = decode_utf8_char(self.tail())?;
-        println!("c={} size={} tail_len={}", c as i32, size, self.tail().len());
         self.last_char = self.current_char;
         self.last_char_size = self.current_char_size;
         self.current_char = c;
@@ -279,15 +277,12 @@ impl<'a> QueryNormalizer<'a> {
             match self.params.last().unwrap().ty {
                 LiteralType::String | LiteralType::EscapeString | LiteralType::UnicodeString | LiteralType::BitString => {
                     // Check that there is only whitespace separating them, and it includes a newline
-                    println!("looking back for string continuation");
                     if self.look_behind_for_string_continuation(start) {
-                        println!("found it");
                         // Cut off the terminating single quote
                         assert_eq!(self.params_buf.pop(), Some('\''));
                         // Append the string token, minus the starting single quote
                         // Safety: We already decoded this as utf8.
                         let continued_s = unsafe { std::str::from_utf8_unchecked(&tok[1..]) };
-                        println!("appending {}", continued_s);
                         self.params_buf.push_str(continued_s);
                         self.params.last_mut().unwrap().value.end += continued_s.len() as u32 - 1;
                         return
@@ -311,7 +306,7 @@ impl<'a> QueryNormalizer<'a> {
                     Some(c) => {
                         // Whoops, it wasn't a space, put it back
                         self.normalized_query.push(c);
-                    }
+                    },
                     None => (),
                 }
             }
@@ -406,7 +401,6 @@ impl<'a> QueryNormalizer<'a> {
 
         // backup to position of last char so we don't include the terminating char
         let prev = self.backup();
-        println!("numeric current={} prev={}", c as i32, prev as i32);
         if prev == 'e' || prev == 'E' || prev == '+' || prev == '-' {
             // Can't end in an exponent symbol
             return Err(Error::new(format!("numeric constant cannot end in exponent '{}'", prev)));
@@ -519,7 +513,6 @@ impl<'a> QueryNormalizer<'a> {
     fn string(&mut self, mut c: char, ty: LiteralType) -> Result<()> {
         debug_assert_eq!(c, '\'', "c must start a single quoted string");
 
-        println!("new string at {}", self.pos);
         let mut start = self.pos - 1;
         // Adjust start for literal prefix length
         if ty == LiteralType::EscapeString {
@@ -529,10 +522,8 @@ impl<'a> QueryNormalizer<'a> {
         }
 
         let mut backslashes = 0;
-    'Loop:
         loop {
             c = self.next()?;
-            println!("loop string {} at {}", c as i32, self.pos);
             match c {
                 '\0' => {
                     return Err(Error::new("unexpected eof parsing string"));
@@ -543,8 +534,7 @@ impl<'a> QueryNormalizer<'a> {
                     if ty == LiteralType::EscapeString && backslashes%2 != 0 {
                         backslashes = 0;
                     } else {
-                        println!("break");
-                        break 'Loop;
+                        break;
                     }
                 },
                 '\\' => {
@@ -684,23 +674,29 @@ impl<'a> QueryNormalizer<'a> {
         //
         //    For example, @- is an allowed operator name, but *- is not. This restriction allows PostgreSQL to parse SQL-compliant queries without requiring spaces between tokens.
 
-        if !ALL_OPERATORS.contains(c) {
-            return Err(Error::new(format!("invalid char '{}' for operator", c)));
-        }
-
+        let mut can_end_in_plus_or_minus = false;
         let start = self.pos - 1;
         loop {
-            c = self.next()?;
-            if c < 128 as char && ALL_OPERATORS.contains(c) {
-                continue;
+            match c {
+                '~' | '!' | '@' | '#' | '%' | '^' | '&' | '|' | '`' | '?' => {
+                    can_end_in_plus_or_minus = true;
+                },
+                '+' | '-' | '*' | '/' | '<' | '>' | '=' => (),
+                _ => break,
             }
-            break;
+            c = self.next()?;
         }
 
         // We already checked for comments, so check that second restriction above applies here.
-        c = self.backup();
-        if self.pos - start > 1 && (c == '+' || c == '-') {
-            if !REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS.contains(c) {
+        let prev_c = self.backup();
+
+        // First character was not a valid operator
+        if self.pos == start {
+            return Err(Error::new(format!("invalid char '{}' for operator", c)));
+        }
+
+        if self.pos - start > 1 && (prev_c == '+' || prev_c == '-') {
+            if !can_end_in_plus_or_minus {
                 return Err(Error::new(format!("an operator cannot end in + or - unless it includes one of \"{}\"", REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS)));
             }
         }
