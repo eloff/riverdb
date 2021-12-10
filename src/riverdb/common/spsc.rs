@@ -20,6 +20,7 @@ pub struct SpscQueue<T, const SIZE: usize> {
 impl<T, const SIZE: usize> SpscQueue<T, SIZE> {
     const MASK: usize = SIZE - 1;
 
+    /// Construct a new queue.
     pub fn new() -> Self {
         debug_assert!(SIZE.is_power_of_two());
         Self{

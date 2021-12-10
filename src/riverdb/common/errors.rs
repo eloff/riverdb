@@ -37,6 +37,7 @@ impl Eq for ErrorKind {}
 
 /// Error type that boxes errors for performance.
 /// Having a large error type means copying large Result objects around everywhere.
+/// Using boxed errors results in a small but consistent performance improvement.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Error(Box<ErrorKind>);
 
@@ -126,5 +127,6 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// A Result using the boxed Error type from this module.
 pub type Result<T> = std::result::Result<T, Error>;
 

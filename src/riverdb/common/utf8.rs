@@ -10,8 +10,9 @@ const MINS: [u32; 5] = [4194304, 0, 128, 2048, 65536];
 const SHIFT: [u32; 5] = [0, 18, 12, 6, 0];
 const SHIFT_ERR: [u32; 5] = [0, 6, 4, 2, 0];
 
-// Decode a single code point from the utf8 stream.
-// Returns (0, 0) if bytes is empty.
+/// Decode a single code point from the utf8 stream.
+/// Returns Ok(0, 0) if bytes is empty.
+/// Returns Err("invalid utf8") on error.
 pub fn decode_utf8_char(bytes: &[u8]) -> Result<(char, usize)> {
     let n = bytes.len();
     if n == 0 {

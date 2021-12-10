@@ -36,15 +36,20 @@ macro_rules! atomic {
     };
 }
 
+/// AtomicCell is an atomic version of Cell.
+/// It holds a word sized type (1, 2, 4, or 8 bytes on x64) and
+/// allows returning or modifying it atomically by bitwise copy.
 pub struct AtomicCell<T: Copy>(UnsafeCell<T>);
 
 impl<T: Copy> AtomicCell<T> {
+    /// Construct a new AtomicCell with a copy of the passed value of type T.
     pub fn new(value: T) -> Self {
         // We could use static_assertions, but debug-only runtime assertions don't hurt compile time as much
         debug_assert!(std::mem::size_of::<T>() <= std::mem::size_of::<usize>());
         Self(UnsafeCell::new(value))
     }
 
+    /// Return a copy of the stored T. Acquire ordering.
     #[inline]
     pub fn load(&self) -> T {
         atomic! { T, a = &self.0, unsafe {
@@ -53,11 +58,14 @@ impl<T: Copy> AtomicCell<T> {
         }}
     }
 
+    /// Store a copy of the passed T. Release ordering.
     #[inline]
     pub fn store(&self, value: T) {
         atomic! { T, a = &self.0, unsafe { a.store(transmute_copy(&value), Release) } };
     }
 
+    /// Swap the stored T with the passed T, returning a copy of what was stored.
+    /// Acquire + Release ordering.
     #[inline]
     pub fn swap(&self, value: T) -> T {
         atomic! { T, a = &self.0, unsafe {
@@ -66,6 +74,9 @@ impl<T: Copy> AtomicCell<T> {
         }}
     }
 
+    /// Compare and swap the stored T with the new T, if it bitwise matches current.
+    /// Returns Ok(current) if it succeeded, otherwise Err(new).
+    /// As with the standard library, a weak CAS may fail spuriously.
     #[inline]
     pub fn compare_exchange_weak(&self, current: T, new: T) -> Result<T, T> {
         atomic! { T, a = &self.0, unsafe {
@@ -74,6 +85,8 @@ impl<T: Copy> AtomicCell<T> {
         }}
     }
 
+    /// Compare and swap the stored T with the new T, if it bitwise matches current.
+    /// Returns Ok(current) if it succeeded, otherwise Err(new).
     #[inline]
     pub fn compare_exchange(&self, current: T, new: T) -> Result<T, T> {
         atomic! { T, a = &self.0, unsafe {
@@ -84,6 +97,7 @@ impl<T: Copy> AtomicCell<T> {
 }
 
 impl<T: Copy + Default> Default for AtomicCell<T> {
+    /// Construct a new AtomicCell with T::default().
     fn default() -> Self {
         Self::new(T::default())
     }
