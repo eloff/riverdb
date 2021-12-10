@@ -8,6 +8,17 @@ use crate::riverdb::{Error, Result};
 use crate::riverdb::config::config;
 
 
+/// Load configuration settings from riverdb.yaml
+/// Searching in order:
+/// 1) config_path passed as first command line argument
+/// 2) Current directory
+/// 3) Any parent directory of the current directory, up to root
+/// 4) ~/.config/riverdb/
+/// 5) ~/
+/// 6) /etc/riverdb/
+///
+/// This replaces ${ENV_VAR[:DEFAULT]} parameters in the yaml file with values from the environment
+/// variable, if set, otherwise, optionally with the given default value after the :
 pub fn load_config() -> Result<&'static config::Settings> {
     let _span = info_span!("loading config file");
     let config_path = find_config_file("riverdb.yaml")?;

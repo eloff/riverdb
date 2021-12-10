@@ -12,17 +12,23 @@ use crate::riverdb::common::MIN_BUFFER_SPACE;
 
 
 // Things that are not configurable, but might be one day
+/// Size in bytes of a small (pooled) buffer. Not currently used.
 pub const SMALL_BUFFER_SIZE: u32 = (MIN_BUFFER_SPACE as u32) * 2;
+/// Connect timeout when connecting to a backend database. Not currently used.
 pub const CONNECT_TIMEOUT_SECONDS: u32 = 30;
-/// CHECK_TIMEOUTS_INTERVAL the number of seconds between checking for timed-out connections
+/// CHECK_TIMEOUTS_INTERVAL the number of seconds between checking for timed-out connections.
 pub const CHECK_TIMEOUTS_INTERVAL: u64 = 5 * 60;
+/// LISTEN_BACKLOG for the listening server socket.
 pub const LISTEN_BACKLOG: u32 = 1024;
-/// COARSE_CLOCK_GRANULARITY_SECONDS is the number of seconds between ticks of the clock, when it's updated
+/// COARSE_CLOCK_GRANULARITY_SECONDS is the number of seconds between ticks of the coarse clock.
+/// It's updated to the current time after this many seconds.
 pub const COARSE_CLOCK_GRANULARITY_SECONDS: u64 = 5;
-pub const ROW_CHANNEL_NUM_MESSAGES_BUFFER: usize = 32;
 
+/// A mapping of custom String => Yaml Value used to
+/// store plugin-specific configuration values.
 pub type ConfigMap = FnvHashMap<String, Value>;
 
+/// Global settings configured for this server.
 #[derive(Deserialize, Default)]
 pub struct Settings {
     /// config_path is the path of the loaded config file
@@ -80,6 +86,8 @@ thread_local! {
     static TEST_SETTINGS: std::cell::UnsafeCell<Settings> = std::cell::UnsafeCell::new(Settings::default());
 }
 
+/// Get the currently configured settings for this server.
+/// If cfg(test) this returns a threadlocal Settings.
 pub fn conf() -> &'static Settings {
     #[cfg(test)]
     unsafe {
@@ -91,6 +99,7 @@ pub fn conf() -> &'static Settings {
     }
 }
 
+/// Get mutable threadlocal settings, used for test environments only.
 #[cfg(test)]
 pub unsafe fn test_config_mut() -> &'static mut Settings {
     TEST_SETTINGS.with(|settings| {
@@ -103,6 +112,8 @@ pub unsafe fn test_config_mut() -> &'static mut Settings {
 }
 
 impl Settings {
+    /// Validate settings and configure defaults as necessary. Called on startup.
+    /// Do not call this method after the server starts.
     pub fn load(&mut self, path: PathBuf) -> Result<()> {
         self.config_path = path;
         if self.recv_buffer_size < 4096 {
@@ -142,6 +153,7 @@ impl Settings {
         self.postgres.load()
     }
 
+    /// Get the ConfigMap, if any, for the named plugin.
     pub fn get_plugin_config(&'static self, name: &str) -> Option<&'static ConfigMap> {
         if let Some(i) = self.plugins_by_name.get(&name.to_lowercase()) {
             self.plugins.get(*i as usize)
@@ -150,10 +162,12 @@ impl Settings {
         }
     }
 
+    /// Listen address for the HTTPS server
     pub fn listen_address(&self) -> String {
         format!("{}:{}", self.host, self.https_port)
     }
 
+    /// Listen address for the PostgreSQL server
     pub fn postgres_listen_address(&self) -> String {
         format!("{}:{}", self.host, self.postgres.port)
     }

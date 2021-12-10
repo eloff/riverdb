@@ -12,6 +12,9 @@ use crate::riverdb::{Error, Result};
 use crate::riverdb::server::DangerousCertificateNonverifier;
 
 
+/// Configuration for a Postgres cluster where each writable master server can have its own read-only replicas.
+/// Typically you would only have a single server here with a single replica for failover.
+/// But much more complex configurations are possible and can be partitioned transparently with custom plugins.
 #[derive(Deserialize, Default)]
 pub struct PostgresCluster {
     pub servers: Vec<Postgres>,
@@ -81,6 +84,7 @@ pub struct PostgresCluster {
 const fn default_port() -> u16 { 5432 }
 const fn default_max_connections() -> u32 { 10000 }
 
+/// Configuration for a Postgres master and its replicas.
 #[derive(Deserialize, Default)]
 pub struct Postgres {
     /// database to connect to
@@ -129,6 +133,8 @@ const fn default_max_db_connections() -> u32 { 100 }
 const fn default_idle_timeout_seconds() -> u32 { 30 * 60 }
 
 impl PostgresCluster {
+    /// Validate settings and configure defaults as necessary. Called on startup.
+    /// Do not call this method after the server starts.
     pub fn load(&mut self) -> Result<()> {
         match self.client_tls {
             TlsMode::Invalid => {
@@ -220,6 +226,8 @@ impl PostgresCluster {
 }
 
 impl Postgres {
+    /// Validate settings and configure defaults as necessary. Called on startup.
+    /// Do not call this method after the server starts.
     pub fn load(&mut self, cluster: *const PostgresCluster, defaults: &Postgres, is_master: bool) -> Result<()> {
         self.is_master = is_master;
         if self.database.is_empty() {
