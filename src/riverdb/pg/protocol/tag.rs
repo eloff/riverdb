@@ -7,7 +7,8 @@ pub const SSL_NOT_ALLOWED: u8 = 'N' as u8;
 pub const SSL_REQUEST: i32 = 80877103;
 pub const PROTOCOL_VERSION: i32 = 196608;
 
-// Tag defines the Postgres protocol message type tag bytes
+/// Tag defines the Postgres protocol message type tag bytes
+/// It includes constants that define the known protocol tag bytes.
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Tag(u8);
 
@@ -59,6 +60,7 @@ impl Tag {
     pub const NOTICE_RESPONSE: Tag = Tag::new_unchecked('N' as u8);
     pub const NOTIFICATION_RESPONSE: Tag = Tag::new_unchecked('A' as u8);
 
+    /// Create a new Tag from a byte, checking if it's one of the known tag bytes
     pub fn new(b: u8) -> Result<Self> {
         if let Some(name) = TAG_NAMES.get(b as usize) {
             if !name.is_empty() {
@@ -68,10 +70,12 @@ impl Tag {
         Err(Error::new(format!("Unknown message tag '{}'", b as char)))
     }
 
+    /// Create a new tag from a byte without checking if it's known for the protocol
     pub const fn new_unchecked(b: u8) -> Self {
         Tag(b)
     }
 
+    /// Convert the Tag to it's wire protocol representation
     pub fn as_u8(&self) -> u8 {
         self.0
     }
@@ -204,6 +208,7 @@ static TAG_NAMES: [&'static str; ('z' as usize) + 1] = [
 ];
 
 impl Display for Tag {
+    /// Format the Tag byte as a human-readable message type string
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if let Some(name) = TAG_NAMES.get(self.0 as usize) {
             return f.write_str(name);
@@ -213,6 +218,7 @@ impl Display for Tag {
 }
 
 impl Debug for Tag {
+    /// Format the Tag byte as a human-readable message type string
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }

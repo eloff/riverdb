@@ -5,6 +5,7 @@ use crate::riverdb::{Error, Result};
 use crate::riverdb::pg::protocol::{MessageReader, Message, Tag};
 
 
+/// A collection of server parameters as sent in the startup message on connect
 pub struct ServerParams {
     params: Vec<(String, String)>,
 }
@@ -14,6 +15,8 @@ impl ServerParams {
         Self{params: Vec::new()}
     }
 
+    /// Parse the connection parameters from the startup message. Note the startup message
+    /// is the first message sent on connection and doesn't have a tag byte.
     pub fn from_startup_message(msg: &Message<'_>) -> Result<Self> {
         assert_eq!(msg.tag(), Tag::UNTAGGED);
         let mut r = msg.reader();
@@ -48,10 +51,12 @@ impl ServerParams {
         Ok(result)
     }
 
+    /// Add a new parameter to the collection, without checking if it exists first
     pub fn add(&mut self, k: String, v: String) {
         self.params.push((k, v));
     }
 
+    /// Add or overwrite a parameter
     pub fn set(&mut self, k: String, v: String) {
         for (i, (key, _)) in self.params.iter().enumerate() {
             if &k == key {
@@ -63,6 +68,8 @@ impl ServerParams {
         self.add(k, v);
     }
 
+    /// Get a parameter (or None if it doesn't exist in the collection.)
+    /// The passed key is compared case sensitively and should be lower case.
     pub fn get<'a>(&'a self, k: &'_ str) -> Option<&'a str>
     {
         for (key, val) in &self.params {
@@ -73,28 +80,33 @@ impl ServerParams {
         None
     }
 
+    /// Return the number of parameters
     pub fn len(&self) -> usize {
         self.params.len()
     }
 
+    /// Return an iterator over the parameters
     pub fn iter(&self) -> Iter<(String, String)> {
         self.params.iter()
     }
 }
 
 impl Clone for ServerParams {
+    /// Make a deep-copy of the ServerParams collection
     fn clone(&self) -> Self {
         Self{params: self.params.clone()}
     }
 }
 
 impl Default for ServerParams {
+    /// Create a new empty collection
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Debug for ServerParams {
+    /// Format the ServerParams object as a map literal {key: value, ...}
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_char('{')?;
         let mut first = true;

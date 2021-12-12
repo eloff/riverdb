@@ -175,6 +175,7 @@ impl ScramSha256 {
         self.message.as_bytes()
     }
 
+    /// Update the SASL state machine from the received Messages
     pub fn update_from_message(&mut self, msgs: Messages) -> Result<()> {
         let msg = msgs.first().unwrap(); // already checked this in caller
 
