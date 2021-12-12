@@ -4,6 +4,8 @@ use std::any::Any;
 use bytes::{BytesMut, BufMut};
 
 
+/// Verify that all formatting placeholders in the input string have been replaced.
+/// This is public because it's referenced in the generated code from the query! macro.
 pub fn check_formatting_placeholders_consumed(s: &str) {
     let mut open_pos = -1;
     let mut i = 0;
@@ -43,6 +45,8 @@ fn partition_fmt_str(s: &str) -> (&str, &str) {
     panic!("{}", "expected format placeholder {...}");
 }
 
+/// Write a value to out BytesMut buffer using Display::fmt or
+/// escaping it if it's a string.
 pub fn write_escaped<'a, 'b, 'c, T: Any + Display>(out: &'b mut BytesMut, fmt_str: &'a str, value: &'c T) -> &'a str {
     let value_any = value as &dyn Any;
     let (prefix, fmt_remainder) = partition_fmt_str(fmt_str);
@@ -71,6 +75,20 @@ pub fn escape_str(out: &mut BytesMut, s: &str) {
     out.put_u8(SQ);
 }
 
+/// Construct a Messages object containing the query with it's formatted
+/// arguments properly escaped for PostgreSQL. Note that only Strings
+/// and numeric/boolean primitive types are supported. Other types can
+/// be used if they implement Any+Display, but must do their own escaping.
+///
+/// ```
+/// let escaped = query!(
+///     "select * from students where name = {}",
+///     "Robert'); DROP TABLE students;--"
+/// );
+/// let msg = escaped.first().unwrap();
+/// let text = msg.reader().read_str().unwrap();
+/// assert_eq!(text, "select * from students where name = 'Robert''); DROP TABLE students;--'");
+/// ```
 #[macro_export]
 macro_rules! query {
     ($f: expr, $($args: expr),*) => {
@@ -98,8 +116,6 @@ macro_rules! query {
 
 #[cfg(test)]
 mod tests {
-    
-
     #[test]
     fn test_escape() {
         let buf = query!("a {} b {} c {} d {}{} e", "fo'o", "ba'r".to_string(), "no quotes", 42, 12.56);
