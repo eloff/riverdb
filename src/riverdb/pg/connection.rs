@@ -55,19 +55,24 @@ impl RefcountAndFlags {
 }
 
 pub trait Connection: server::Connection {
+    /// Returns true if the backlog is non-empty.
     fn has_backlog(&self) -> bool;
+    /// Set if the backlog is empty or not.
     fn set_has_backlog(&self, value: bool);
+    /// Returns a reference to the backlog, wrapped in a Mutex.
     fn backlog(&self) -> &Mutex<VecDeque<Bytes>>;
+    /// Returns a reference to the underlying Transport.
     fn transport(&self) -> &Transport;
     fn is_closed(&self) -> bool;
     /// Returns Ok(()) if the Message Tag may be received during the
     /// current state of the session, otherwise an error.
     fn msg_is_allowed(&self, tag: Tag) -> Result<()>;
+    /// Returns true if this connection is using TLS (SSL).
     fn is_tls(&self) -> bool {
         self.transport().is_tls()
     }
 
-    /// write_or_buffer writes all the bytes in buf to sender without blocking or buffers it
+    /// Writes all the bytes in buf to sender without blocking or buffers it
     /// (without copying) to send later. Takes ownership of buf in all cases.
     /// Returns the number of bytes actually written (not buffered.)
     fn write_or_buffer(&self, mut buf: Bytes) -> Result<usize> {
@@ -109,7 +114,7 @@ pub trait Connection: server::Connection {
         Ok(bytes_written)
     }
 
-    /// try_write_backlog tries to write some bytes from the backlog to the transport.
+    /// Tries to write some bytes from the backlog to the transport.
     /// Call when the underlying transport is ready for writing. Returns the number of bytes written.
     fn try_write_backlog(&self) -> Result<usize> {
         if !self.has_backlog() {
@@ -120,6 +125,7 @@ pub trait Connection: server::Connection {
         self.write_backlog(backlog)
     }
 
+    /// With the given locked backlog, write as much data from it to the connection as possible.
     fn write_backlog(&self, mut backlog: MutexGuard<VecDeque<Bytes>>) -> Result<usize> {
         let mut write_bytes = 0;
         loop {
@@ -146,7 +152,7 @@ pub trait Connection: server::Connection {
         Ok(write_bytes)
     }
 
-    /// try_read attempts to read some bytes without blocking from transport into buf.
+    /// Attempts to read some bytes without blocking from transport into buf.
     /// appends to buf, does not overwrite existing data.
     fn try_read(&self, buf: &mut BytesMut) -> Result<usize> {
         let start = buf.len();
@@ -159,7 +165,7 @@ pub trait Connection: server::Connection {
     }
 }
 
-/// read_and_flush_backlog reads from transport and optionally flushes pending data for sender
+/// Reads from transport and optionally flushes pending data for sender
 /// these two steps are combined in a single task to reduce synchronization and scheduling overhead.
 /// This is a free-standing function and not part of the Connection trait because traits don't
 /// support async functions yet, and the async_trait crate boxes the returned future.

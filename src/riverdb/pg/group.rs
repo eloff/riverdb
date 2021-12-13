@@ -12,7 +12,9 @@ use crate::riverdb::common::{AtomicRef, Version};
 use crate::riverdb::pg::protocol::ServerParams;
 
 
+/// Represents a Postgres master (writable) database plus optional replicas.
 pub struct PostgresReplicationGroup {
+    /// The configuration for this replication group.
     pub config: &'static config::Postgres,
     master: AtomicRef<'static, ConnectionPool>,
     replicas: Vec<&'static ConnectionPool>,
@@ -20,6 +22,7 @@ pub struct PostgresReplicationGroup {
 }
 
 impl PostgresReplicationGroup {
+    /// Create a new replication group with the given configuration.
     pub fn new(config: &'static config::Postgres) -> Self {
         let replicas = config.replicas.iter().map(|c| &*Box::leak(Box::new(ConnectionPool::new(c)))).collect();
         Self{
@@ -30,14 +33,17 @@ impl PostgresReplicationGroup {
         }
     }
 
+    /// Return a reference to the master of the group (can be None if master failed).
     pub fn master(&self) -> Option<&'static ConnectionPool> {
         self.master.load()
     }
 
+    /// Returns true if there is a replica that we can query (see config.can_query).
     pub fn has_query_replica(&self) -> bool {
         self.replicas.iter().cloned().find(|db| db.config.can_query).is_some()
     }
 
+    /// Return the ConnectionPool for the next one of the replicas (if any) or the master.
     pub fn round_robin(&self, allow_replica: bool) -> &'static ConnectionPool {
         if !allow_replica || !self.has_query_replica() {
             return self.master.load().unwrap();
@@ -53,6 +59,8 @@ impl PostgresReplicationGroup {
         self.replicas.get(cur as usize).unwrap()
     }
 
+    /// Test connecting to the master and each replica. Returns the ServerParams from the master
+    /// merged with the parameters from the replicas. See merge_server_params for details.
     pub async fn test_connection(&self) -> Result<ServerParams> {
         let master = self.master.load().unwrap();
         let conn = master.get("riverdb","", TransactionType::None).await?;
@@ -79,6 +87,10 @@ impl Debug for PostgresReplicationGroup {
     }
 }
 
+/// Merge the second ServerParams into the first.
+/// server_version will be the minimum server_version seen.
+/// Otherwise if both have the same paramter, the first value (master) will be kept.
+/// Logs warnings if parameters or versions differ.
 pub(crate) fn merge_server_params(master: &mut ServerParams, server: &ServerParams) {
     for (key, val) in server.iter() {
         if let Some(master_val) = master.get(key) {

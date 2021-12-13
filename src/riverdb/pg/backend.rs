@@ -35,8 +35,11 @@ const CLIENT_REQUEST: u64 = 1;
 const BACKEND_REQUEST: u64 = 2;
 const REQUEST_TYPE_MASK: u64 = 3;
 
+/// An SPSC queue of pending result messages (each Messages entry may contain one or more messages)
 pub type MessageQueue = SpscQueue<Messages, 32>;
 
+/// BackendConn manages the backend half of a database connection, from riverdb to the database server.
+/// All methods are thread-safe unless otherwise documented.
 pub struct BackendConn {
     stream: Transport,
     parser: UnsafeCell<MessageParser>,
@@ -62,11 +65,13 @@ pub struct BackendConn {
 }
 
 impl BackendConn {
+    /// Connect to the database at address, using the given connections pool
     pub async fn connect(address: &SocketAddr, connections: &'static Connections<Self>) -> Result<Self> {
         let stream = TcpStream::connect(address).await?;
         Ok(Self::new(stream, connections))
     }
 
+    /// Run (service) this backend connection asynchronously.
     #[instrument]
     pub async fn run(&self) -> Result<()> {
         // XXX: This code is very similar to ClientConn::run_inner.
@@ -80,6 +85,8 @@ impl BackendConn {
         }
     }
 
+    /// Return the message parse instance being used by run().
+    /// Safety: this is unsound unless from inside run or a method called by run.
     unsafe fn parser(&self) -> &mut MessageParser {
         &mut *self.parser.get()
     }
@@ -104,6 +111,7 @@ impl BackendConn {
         parse_messages(parser, self, self.client(), true).await
     }
 
+    /// Send Messages to the connected database
     #[inline]
     pub async fn send(&self, msgs: Messages) -> Result<usize> {
         backend_send_messages::run(self, msgs, true).await
@@ -204,6 +212,8 @@ impl BackendConn {
         Ok(sent)
     }
 
+    /// Test authentication with these credentials against the target database.
+    /// For test purposes or for checking credentials or database health.
     pub async fn test_auth<'a, 'b: 'a, 'c: 'a>(&'a self, user: &'b str, password: &'c str, pool: &'static ConnectionPool) -> Result<()> {
         self.start(user, password, pool).await?;
 
@@ -212,12 +222,15 @@ impl BackendConn {
         self.run_until_state(BackendState::Ready).await
     }
 
+    /// Authenticate this connection against the database using pool.config credentials.
     pub async fn authenticate<'a>(&'a self, pool: &'static ConnectionPool) -> Result<()> {
         self.start(&pool.config.user, &pool.config.password, pool).await?;
 
         self.run_until_state(BackendState::Ready).await
     }
 
+    /// Services the connections asynchronously until state is reached.
+    /// Like run() but stops once the desired BackendState has been attained.
     async fn run_until_state(&self, state: BackendState) -> Result<()> {
         while self.state() != state {
             // Safety: This method is not called concurrently with run()
@@ -227,6 +240,8 @@ impl BackendConn {
         Ok(())
     }
 
+    /// Complete the TLS connection if necessary and send the startup message
+    /// via the backend_connected plugins.
     async fn start<'a, 'b: 'a, 'c: 'a>(&'a self, user: &'b str, password: &'c str, pool: &'static ConnectionPool) -> Result<()> {
         self.pool.store(Some(pool));
 
@@ -257,6 +272,7 @@ impl BackendConn {
         return backend_connected::run(self, &mut params).await;
     }
 
+    /// Complete the SSL connection
     pub async fn ssl_handshake(&self, pool: &ConnectionPool, cluster: &config::PostgresCluster) -> Result<()> {
         const SSL_REQUEST_MSG: &[u8] = &[0, 0, 0, 8, 4, 210, 22, 47];
         let ssl_request = Messages::new(Bytes::from_static(SSL_REQUEST_MSG));
@@ -281,12 +297,15 @@ impl BackendConn {
         }
     }
 
+    /// Called when a backend connection is idle
+    /// (no queries pending, no transaction in progress, session clean.)
     pub async fn session_idle(&self, client: &ClientConn) -> Result<()> {
         let conn = client.session_idle().await?;
         Self::return_to_pool(conn).await;
         Ok(())
     }
 
+    /// Return the backend connection to the pool.
     pub async fn return_to_pool(this: Ark<Self>) {
         if let Some(backend) = this.load() {
             backend.client.store(Ark::default());
@@ -308,6 +327,7 @@ impl BackendConn {
         Ok(())
     }
 
+    /// Checks that the database connection is healthy and sets the role and application.
     pub async fn check_health_and_set_role(&self, application_name: &str, role: &str) -> Result<()> {
         if self.state() == BackendState::InPool {
             self.transition(BackendState::Ready)?;
@@ -349,10 +369,12 @@ impl BackendConn {
         rows.finish().await
     }
 
+    /// Return the current BackendState
     pub fn state(&self) -> BackendState {
         self.state.get()
     }
 
+    /// Transition to the new BackendState
     pub fn transition(&self, new_state: BackendState) -> Result<()> {
         self.state.transition(self, new_state)
     }
@@ -367,14 +389,19 @@ impl BackendConn {
         self.client.store(client);
     }
 
+    /// Returns true if this connection was created for use in a transaction.
+    /// (counts against a separate connection limit.)
     pub fn created_for_transaction(&self) -> bool {
         self.for_transaction.load(Relaxed)
     }
 
+    /// Marks this connection as having been created for use in a transaction.
+    /// (counts against a separate connection limit.)
     pub(crate) fn set_created_for_transaction(&self, value: bool) {
         self.for_transaction.store(value, Relaxed)
     }
 
+    /// Returns true if this connection is assigned to the pool (inactive).
     pub fn in_pool(&self) -> bool {
         if let BackendState::InPool = self.state() {
             debug_assert_ne!(self.added_to_pool.load(Relaxed), 0);
@@ -384,6 +411,7 @@ impl BackendConn {
         }
     }
 
+    /// Set the connection state to InPool and update the added_to_pool timestamp.
     pub fn set_in_pool(&self) -> bool {
         // See ConnectionPool::put, which calls reset() before this.
         if let Err(e) = self.state.transition(self,BackendState::InPool) {
@@ -395,18 +423,22 @@ impl BackendConn {
         }
     }
 
+    /// Lock and return the ServerParams collection.
     pub fn params(&self) -> MutexGuard<ServerParams> {
         self.server_params.lock().unwrap()
     }
 
+    /// Return the number of pending requests (queries).
     pub fn pending_requests(&self) -> u32 {
         self.pending_requests.load(Relaxed).count_ones()
     }
 
+    /// Pop and return some Messages from the result queue, "blocking" if
     pub(crate) async fn iterator_messages(&self) -> Messages {
         self.iterator_messages.pop().await
     }
 
+    /// Invoked by the backend_connected plugins to send the startup message.
     #[instrument]
     pub async fn backend_connected(&self, _: &mut backend_connected::Event, params: &mut ServerParams) -> Result<()> {
         let mut mb = MessageBuilder::new(Tag::UNTAGGED);
@@ -420,6 +452,8 @@ impl BackendConn {
         Ok(())
     }
 
+    /// Invoked by the backend_messages plugins when one or more Messages are received.
+    /// Handles or forwards the messages to the associated ClientConn.
     #[instrument]
     pub async fn backend_messages(&self, _: &mut backend_messages::Event, mut msgs: Messages) -> Result<()> {
         while !msgs.is_empty() {
@@ -495,6 +529,8 @@ impl BackendConn {
         Ok(())
     }
 
+    /// Called by the backend_authenticate plugins to authenticate with the database based on
+    /// the auth challenge received in msgs.
     #[instrument]
     pub async fn backend_authenticate(&self, _: &mut backend_authenticate::Event, msgs: Messages) -> Result<()> {
         assert_eq!(msgs.count(), 1);
@@ -560,6 +596,7 @@ impl BackendConn {
         }
     }
 
+    /// Handles the SASL authentication flow from start to end (sends and receives messages).
     pub async fn sasl_auth(&self, msg: Message<'_>, _user: String, password: String) -> Result<()> {
         let mut have_scram_256 = false;
         let mut have_scram_256_plus = false;
@@ -624,6 +661,7 @@ impl BackendConn {
         Ok(())
     }
 
+    /// Called by the backend_send_messages plugins to send msgs to the connected database.
     #[instrument]
     pub async fn backend_send_messages(&self, _: &mut backend_send_messages::Event, msgs: Messages, from_client: bool) -> Result<usize> {
         if msgs.is_empty() {

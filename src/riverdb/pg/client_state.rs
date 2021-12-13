@@ -11,6 +11,7 @@ use crate::riverdb::pg::ClientConn;
 use crate::riverdb::pg::backend_state::{checked_state_transition, StateEnum};
 
 
+/// An enum of possible states for a ClientConn
 #[derive(Display, Debug, Clone, Copy, Eq, PartialEq)]
 #[non_exhaustive]
 #[repr(u16)]
@@ -26,6 +27,7 @@ pub enum ClientState {
 }
 
 impl StateEnum for ClientState {
+    /// Returns true if self == ClientState::Closed
     fn is_final(&self) -> bool {
         if let ClientState::Closed = self {
             true
@@ -34,6 +36,7 @@ impl StateEnum for ClientState {
         }
     }
 
+    /// Returns true if this state represents a transaction in progress or failed.
     fn is_transaction(&self) -> bool {
         match self {
             ClientState::Transaction | ClientState::FailedTransaction => true,
@@ -71,6 +74,7 @@ impl ClientConnState {
         Self(AtomicCell::new(state))
     }
 
+    /// Returns true if the message is permitted for the current ClientState
     pub fn msg_is_allowed(&self, tag: Tag) -> bool {
         if tag == Tag::TERMINATE {
             return true;
@@ -109,6 +113,7 @@ impl ClientConnState {
         }
     }
 
+    /// Transition backend to the new ClientState (only modifies state.)
     pub fn transition(&self, client: &ClientConn, new_state: ClientState) -> Result<()> {
         if new_state == ClientState::Closed {
             self.0.store(new_state);
@@ -138,6 +143,7 @@ impl ClientConnState {
         Ok(())
     }
 
+    /// Return the current ClientState
     pub fn get(&self) -> ClientState {
         self.0.load()
     }

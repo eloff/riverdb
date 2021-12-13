@@ -11,6 +11,7 @@ use crate::riverdb::pg::BackendConn;
 use std::mem::transmute;
 
 
+/// An enum of possible states for a BackendConn
 #[derive(Display, Debug, Clone, Copy, Eq, PartialEq)]
 #[non_exhaustive]
 #[repr(u16)]
@@ -29,15 +30,19 @@ pub enum BackendState {
 
 pub trait StateEnum: Sized + Copy where u32: From<Self>
 {
+    /// Returns the state as an integer (flag) value.
     fn ordinal(&self) -> u32 {
         let i = u32::from(*self);
         debug_assert_ne!(i, 0);
         i.trailing_zeros()
     }
 
+    /// Returns true if the state can no longer be changed.
     fn is_final(&self) -> bool {
         false
     }
+
+    /// Returns true if this state represents a transaction in progress or failed.
     fn is_transaction(&self) -> bool;
 }
 
@@ -80,13 +85,16 @@ impl BackendState {
     }
 }
 
+/// An atomic BackendState
 pub struct BackendConnState(AtomicCell<BackendState>);
 
 impl BackendConnState {
+    /// Create a new BackendState
     pub fn new(state: BackendState) -> Self {
         Self(AtomicCell::new(state))
     }
 
+    /// Returns true if the message is permitted for the current BackendState
     pub fn msg_is_allowed(&self, tag: Tag) -> bool {
         if tag == Tag::ERROR_RESPONSE || tag == Tag::PARAMETER_STATUS || tag == Tag::NOTICE_RESPONSE || tag == Tag::NOTIFICATION_RESPONSE {
             return true;
@@ -133,6 +141,7 @@ impl BackendConnState {
         }
     }
 
+    /// Transition backend to the new BackendState (only modifies state.)
     pub fn transition(&self, backend: &BackendConn, new_state: BackendState) -> Result<()> {
         // Indexed by log2(new_state), this is a list of allowed states that can transition to new_state
         // Indexing by new_state instead of state has fewer data dependencies
@@ -161,6 +170,7 @@ impl BackendConnState {
         Ok(())
     }
 
+    /// Get the current BackendState
     pub fn get(&self) -> BackendState {
         self.0.load()
     }
@@ -178,6 +188,7 @@ impl Debug for BackendConnState {
     }
 }
 
+/// Transition the state if allowed, otherwise return an error.
 #[instrument]
 pub fn checked_state_transition<T: Debug, S: Copy + Debug + Eq + StateEnum>(subject: &T, allowed_transitions: &[u16], state: S, new_state: S) -> Result<()>
     where u32: From<S>
@@ -197,8 +208,6 @@ pub fn checked_state_transition<T: Debug, S: Copy + Debug + Eq + StateEnum>(subj
 
 #[cfg(test)]
 mod tests {
-    
-
     #[test]
     fn test_backend_state_transition() {
         // TODO

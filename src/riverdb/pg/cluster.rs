@@ -22,13 +22,16 @@ use crate::riverdb::pg::protocol::ServerParams;
 /// clusters, you can run multiple riverdb processes. It's also possible to
 /// have multiple Clusters managed in a single process by using custom plugins.
 pub struct PostgresCluster {
+    /// The configuration for this cluster of replication groups.
     pub config: &'static config::PostgresCluster,
+    /// The nodes of the cluster (each node is a replication group which may consist of multiple servers.)
     pub nodes: Vec<PostgresReplicationGroup>,
     startup_params: UnsafeCell<ServerParams>,
     auth_cache: RwLock<FnvHashSet<[u8; 32]>>, // keyed by sha256(user+database+password)
 }
 
 impl PostgresCluster {
+    /// Create a new PostgresCluster from the passed configuration.
     pub fn new(config: &'static config::PostgresCluster) -> Self {
         let nodes = config.servers.iter().map(PostgresReplicationGroup::new).collect();
         Self{
@@ -39,6 +42,10 @@ impl PostgresCluster {
         }
     }
 
+    /// Return the global PostgresCluster instance. It's possible to have multiple PostgresCluster
+    /// in a single server process, but that must be managed through plugins. The typical
+    /// configuration is to have only a single logical cluster. Each node of the cluster
+    /// represents a Postgres master plus optional replicas.
     pub fn singleton() -> &'static Self {
         static SINGLETON_CLUSTER: AtomicPtr<PostgresCluster> = AtomicPtr::new(std::ptr::null_mut());
         unsafe {
@@ -69,6 +76,7 @@ impl PostgresCluster {
         None
     }
 
+    /// Test a connection to each node in the cluster.
     pub async fn test_connection(&self) -> Result<()> {
         let mut params = futures::future::try_join_all(
             self.nodes.iter()
@@ -88,11 +96,14 @@ impl PostgresCluster {
         Ok(())
     }
 
+    /// Get the common/shared ServerParams for the cluster.
     pub fn get_startup_params(&self) -> &ServerParams {
         // Safety: this is not called until after it's initialized (prior to starting the server)
         unsafe { &*self.startup_params.get() }
     }
 
+    /// Authenticate with the given credentials against pool for this cluster and cache the result.
+    /// Returns if the authentication was successful (or if cached, returns the cache result.)
     pub async fn authenticate<'a, 'b: 'a, 'c: 'a>(&'a self, user: &'b str, password: &'c str, pool: &'static ConnectionPool) -> Result<bool> {
         let key = hash_sha256(user, password, &pool.config.database);
         if !self.auth_cache.read().unwrap().contains(&key[..]) {
