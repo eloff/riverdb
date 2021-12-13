@@ -60,7 +60,7 @@ impl<'a> QueryNormalizer<'a> {
     pub fn normalize(mut self) -> Result<(QueryInfo, Vec<QueryTag>)> {
         loop {
             let c = self.next()?;
-            debug!("main loop c='{}'", c);
+            debug!("normalize loop c='{}'", c);
 
             let mut res = Ok(());
             if c == '\0' {

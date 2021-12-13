@@ -1,5 +1,7 @@
 use strum::Display;
 
+/// An enum of SQL query types
+/// (see https://www.postgresql.org/docs/current/sql-commands.html for more info)
 #[derive(Display, Debug, Clone, Copy, Eq, PartialEq)]
 #[repr(u8)]
 pub enum QueryType {
@@ -51,6 +53,8 @@ pub enum QueryType {
 }
 
 impl From<&str> for QueryType {
+    /// Determine the type of SQL query from the normalized query text.
+    /// That's uppercase, whitespace collapsed and trimmed, comments stripped.
     fn from(normalized_query: &str) -> Self {
         if normalized_query.is_empty() {
             return Self::Other;

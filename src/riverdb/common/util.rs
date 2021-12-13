@@ -27,6 +27,11 @@ impl Range32 {
     pub fn as_range(&self) -> Range<usize> {
         self.start as usize .. self.end as usize
     }
+
+    /// Returns true if the range is empty
+    pub fn is_empty(&self) -> bool {
+        self.start == 0 && self.end == 0
+    }
 }
 
 /// change_lifetime extends or shortens a lifetime via std::mem::transmute
