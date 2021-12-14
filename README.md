@@ -1,5 +1,7 @@
-![tests](https://github.com/riverdb/riverdb/actions/workflows/tests.yml/badge.svg | height=50)
-[![codecov](https://codecov.io/gh/riverdb/riverdb/branch/master/graph/badge.svg?token=EjhI1wBhtG | height=50)](https://codecov.io/gh/riverdb/riverdb)
+<img alt="tests" src="https://github.com/riverdb/riverdb/actions/workflows/tests.yml/badge.svg" height=50 />
+<a href="https://codecov.io/gh/riverdb/riverdb">
+  <img alt="code coverage" src="https://codecov.io/gh/riverdb/riverdb/branch/master/graph/badge.svg?token=EjhI1wBhtG" height=50 />
+</a>
 
 ## River DB - Rust Programmable PostgreSQL Proxy
 
