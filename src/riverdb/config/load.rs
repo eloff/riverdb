@@ -19,9 +19,9 @@ use crate::riverdb::config::config;
 ///
 /// This replaces ${ENV_VAR[:DEFAULT]} parameters in the yaml file with values from the environment
 /// variable, if set, otherwise, optionally with the given default value after the :
-pub fn load_config() -> Result<&'static config::Settings> {
+pub fn load_config(config_name: &str) -> Result<&'static config::Settings> {
     let _span = info_span!("loading config file");
-    let config_path = find_config_file("riverdb.yaml")?;
+    let config_path = find_config_file(config_name)?;
     info!(config_path = %config_path.to_string_lossy().into_owned(), "found config file");
     let raw_yaml = std::fs::read_to_string(&config_path)?;
     let yaml_text = replace_env_vars(&raw_yaml)?;

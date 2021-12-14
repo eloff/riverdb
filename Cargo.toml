@@ -2,7 +2,7 @@
 name = "riverdb"
 version = "0.1.0"
 authors = ["Eloff <dan.eloff@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -10,7 +10,16 @@ edition = "2018"
 #main = []
 
 [lib]
+name = "riverdb"
 doctest = true
+path = "src/lib.rs"
+
+# double [] because bin is an array (can have multiple binaries output, but just one lib)
+[[bin]]
+name = "riverdb"
+path = "src/main.rs"
+test = false
+doctest = false
 
 [profile.dev]
 panic = "abort"

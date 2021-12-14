@@ -1,7 +1,7 @@
 /*
 The integration tests are organized into the same binary in this directory.
 
-1) For speed (no external inking required)
+1) For speed (no external linking required)
 2) For access to internals
 3) So we can compile the library crate with cfg(test) - we use that
 
