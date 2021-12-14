@@ -1,3 +1,4 @@
+![tests](https://github.com/riverdb/riverdb/actions/workflows/tests.yml/badge.svg)
 [![codecov](https://codecov.io/gh/riverdb/riverdb/branch/master/graph/badge.svg?token=EjhI1wBhtG)](https://codecov.io/gh/riverdb/riverdb)
 
 ## River DB - Rust Programmable PostgreSQL Proxy
