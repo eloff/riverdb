@@ -4,7 +4,7 @@ use std::fmt::Write; // this is used don't remove it
 use memmem::{TwoWaySearcher, Searcher};
 
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::sql::{QueryType, QueryParam, LiteralType, QueryTag, QueryInfo};
+use crate::riverdb::pg::sql::{QueryType, QueryParam, LiteralType, QueryTag, QueryInfo, ObjectType};
 use crate::riverdb::pg::protocol::{Message};
 use crate::riverdb::common::{decode_utf8_char, Range32};
 
@@ -14,10 +14,11 @@ const TOKENS_WITHOUT_FOLLOWING_WHITESPACE: &'static str = ".([:";
 // A list of operators which we don't format with a preceding space
 const TOKENS_WITHOUT_PRECEDING_WHITESPACE: &'static str = ",.()[]:";
 
-// All characters allowed in operators
-const ALL_OPERATORS: &'static str = "+-*/<>~=!@#%^&|`?";
 // Characters required in an operator if it ends in + or -
 const REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS: &'static str = "~!@#%^&|`?";
+
+// All characters allowed in operators
+// const ALL_OPERATORS: &'static str = "+-*/<>~=!@#%^&|`?";
 
 pub(crate) struct QueryNormalizer<'a> {
     src: &'a [u8],
@@ -115,10 +116,12 @@ impl<'a> QueryNormalizer<'a> {
         }
 
         let ty = QueryType::from(self.normalized_query.as_str());
+        let obj_ty = ObjectType::new(self.normalized_query.as_str(), ty);
         Ok((QueryInfo{
             params_buf: self.params_buf,
             normalized: self.normalized_query,
             ty,
+            object_ty: obj_ty,
             params: self.params
         }, self.tags))
     }
@@ -167,6 +170,7 @@ impl<'a> QueryNormalizer<'a> {
 
     /// current returns the char returned in the most recent call to next()
     /// without changing the position.
+    #[allow(unused)]
     fn current(&self) -> char {
         self.current_char
     }

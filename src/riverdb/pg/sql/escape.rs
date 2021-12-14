@@ -81,6 +81,8 @@ pub fn escape_str(out: &mut BytesMut, s: &str) {
 /// be used if they implement Any+Display, but must do their own escaping.
 ///
 /// ```
+/// use riverdb::query;
+///
 /// let escaped = query!(
 ///     "select * from students where name = {}",
 ///     "Robert'); DROP TABLE students;--"

@@ -7,12 +7,34 @@ use crate::riverdb::pg::sql::QueryType;
 use crate::riverdb::pg::sql::normalize::QueryNormalizer;
 use crate::riverdb::common::Range32;
 
-/// TODO the type of object targeted by ALTER, DROP, CREATE queries
-/// (table, database, schema, index, sequence, function, etc)
-pub enum ObjectType {}
+/// The type of object targeted by DDL queries like ALTER, DROP, CREATE
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum ObjectType {
+    Other,
+    Table,
+    Database,
+    Schema,
+    Index,
+    Sequence,
+    Function,
+}
+
+impl ObjectType {
+    /// Return the ObjectType affected by the query
+    /// given it's normalized form and QueryType.
+    /// Not Implemented (always returns Other.)
+    pub fn new(normalized_query: &str, ty: QueryType) -> ObjectType {
+        match ty {
+            QueryType::Alter | QueryType::Create | QueryType::Drop => ObjectType::Other, // TODO
+            _ => ObjectType::Other, // TODO mostly Table with some exceptions
+        }
+    }
+}
 
 /// Represents type of a SQL literal value (string, null, numeric, integer, boolean)
 #[derive(Eq, PartialEq, Debug, Clone, Copy)]
+#[repr(u8)]
 pub enum LiteralType {
     Null,
     String,
@@ -100,7 +122,7 @@ impl QueryTag {
     pub fn value<'a>(&self, msg_body: &'a [u8]) -> &'a str {
         // Safety: we checked msg was valid utf8 when we normalized it in QUery::new()
         unsafe {
-            std::str::from_utf8_unchecked(&msg_body[self.value.as_range()])
+            std::str::from_utf8_unchecked(&msg_body[self.val.as_range()])
         }
     }
 }
@@ -122,6 +144,7 @@ impl QueryInfo {
             params_buf: String::new(),
             normalized: String::new(),
             ty: QueryType::Other,
+            object_ty: ObjectType::Other,
             params: Vec::new(),
         }
     }
@@ -191,12 +214,10 @@ impl Query {
 
     /// Returns the value of the named tag (ascii case-insensitive) or None
     pub fn tag(&self, name: &str) -> Option<&str> {
-        let bytes = self.msgs.as_slice();
+        let msg_body = self.msgs.as_slice();
         for tag in &self.tags {
-            if tag.key_eq_ignore_ascii_case(bytes, name) {
-                let val = &bytes[tag.value_range()];
-                // Safety: we checked msg was valid utf8 when we normalized it in new()
-                return Some(unsafe { std::str::from_utf8_unchecked(val) });
+            if tag.key_eq_ignore_ascii_case(msg_body, name) {
+                return Some(tag.value(msg_body));
             }
         }
         None
