@@ -1,53 +1,12 @@
 # Modified PolyForm Shield License 1.0.0
 
-This license modifies the terms and conditions
-specified by the PolyForm Shield License. Where these conditions
-conflict with the terms and conditions of the
-PolyForm Shield License, they take precedence,
-but only in the most limited extent necessary to resolve the conflict.
-Any derivative work must include this full license
-including both the PolyForm Shield License and these
-modifications to it.
-
-## Exceptions and Clarifications
+## Exceptions and Clarifications (additional clause #1)
 
 Exceptions to, or clarifications of any conditions in this license may be granted
 at the complete discretion of the licensor, provided they are
-granted in writing. If you feel the terms of this license
+granted in writing. If you feel the terms of this license may
 prevent you from doing something that does not violate the spirit
 of this license, then please contact us to ask for an exception or clarification.
-
-## Competition
-
-A good or service provided free of charge may not compete
-if it does not in theory or practice impact revenue of the licensor.
-Freely redistributing the product with bug or security fixes
-is not competition because it does not in theory or practice
-harm the revenue of the licensor. If there is disagreement about
-whether this clause is violated, the licensor's interpretation will be the one used.
-If in doubt, seek an exception or clarification first.
-
-### Marketplace Competition
-
-Publishing a product in the licensor's marketplace does not compete
-even if it directly substitutes for another marketplace product
-(even one created by the licensor) or a feature of the software. 
-Any product approved by the licensor to be published in the marketplace 
-does not compete. This exemption does not apply to products or services
-provided outside the licensor's marketplace or not approved
-and published by the licensor.
-
-### Piracy
-
-Changes and new works are not permitted if they allow
-free access, or access at lower cost, or otherwise harm revenue,
-to products, services, or features that require purchase or paid subscription.
-It is not permitted to bypass or modify license checks, subscription checks,
-feature checks, or required telemetry regardless of the technical
-nature of such changes. Changes or new works that modify or bypass these restrictions
-are not permitted to be made, distributed, or used. Violation
-of this condition results in the immediate revocation all rights
-and permissions granted under this license.
 
 # PolyForm Shield License 1.0.0
 
@@ -65,15 +24,23 @@ The licensor grants you a copyright license for the
 software to do everything you might do with the software
 that would otherwise infringe the licensor's copyright
 in it for any permitted purpose.  However, you may
-only distribute the software according to [Distribution
+only distribute, the software according to [Distribution
 License](#distribution-license) and make changes or new works
 based on the software according to [Changes and New Works
 License](#changes-and-new-works-license).
 
-## Distribution License
+### Providing the Software as a Service (additional clause #2)
+
+Providing "the program as a service", accessible to
+third-parties is considered both distribution and creating a new work,
+even if no changes are made to the software and subject to the terms of both the
+[Distribution License](#distribution-license) and the
+[Changes and New Works License](#changes-and-new-works-license).
+
+# Distribution License
 
 The licensor grants you an additional copyright license
-to distribute copies of the software.  Your license
+to distribute copies of the software. Your license
 to distribute covers distributing the software with
 changes and new works permitted by [Changes and New Works
 License](#changes-and-new-works-license).
@@ -84,15 +51,27 @@ You must ensure that anyone who gets a copy of any part of
 the software from you also gets a copy of these terms or the
 URL for them above, as well as copies of any plain-text lines
 beginning with `Required Notice:` that the licensor provided
-with the software.  For example:
+with the software. For example:
 
 > Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
 
-## Changes and New Works License
+# Changes and New Works License
 
 The licensor grants you an additional copyright license to
 make changes and new works based on the software for any
 permitted purpose.
+
+### Piracy (additional clause #3)
+
+Changes and new works are not permitted if they allow
+free access, or access at lower cost, or otherwise harm revenue,
+to products, services, or features that require purchase or paid subscription.
+It is not permitted to bypass or modify license checks, subscription checks,
+feature checks, or required telemetry regardless of the technical
+nature of such changes. Changes or new works that modify or bypass these restrictions
+are not permitted to be made, distributed, or used. Violation
+of this condition results in the immediate revocation all rights
+and permissions granted under this license.
 
 ## Patent License
 
@@ -113,10 +92,35 @@ through different kinds of interfaces or for different technical
 platforms.  Applications can compete with services, libraries
 with plugins, frameworks with development tools, and so on,
 even if they're written in different programming languages
-or for different computer architectures.  Goods and services
+or for different computer architectures. Goods and services
 compete even when provided free of charge.  If you market a
 product as a practical substitute for the software or another
 product, it definitely competes.
+
+### Sharing Bug and Security Fixes (additional clause #4)
+
+A good or service provided free of charge may not compete
+if it does not in theory or practice impact revenue of the licensor.
+Freely redistributing the product with bug or security fixes
+is not competition because it does not in theory or practice
+harm the revenue of the licensor. If in doubt, seek an
+exception or clarification first.
+
+### Marketplace Competition (additional clause #5)
+
+Publishing a product in the licensor's marketplace does not compete
+even if it directly substitutes for another marketplace product
+(even one created by the licensor) or a feature of the software.
+Any product approved by the licensor to be published in the marketplace
+does not compete. This exemption does not apply to products or services
+provided outside the licensor's marketplace or not approved
+and published by the licensor.
+
+### Consulting and Support Services (additional clause #6)
+
+Offering consulting or support services for the software
+is not competition even if the licensor generates revenue
+from those activities.
 
 ## New Products
 

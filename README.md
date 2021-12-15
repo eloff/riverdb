@@ -1,15 +1,34 @@
-<img alt="tests" src="https://github.com/riverdb/riverdb/actions/workflows/tests.yml/badge.svg" height=50 />
-<a href="https://codecov.io/gh/riverdb/riverdb">
-  <img alt="code coverage" src="https://codecov.io/gh/riverdb/riverdb/branch/master/graph/badge.svg?token=EjhI1wBhtG" height=50 />
+<img style="display: inline" alt="tests" src="https://github.com/riverdb/riverdb/actions/workflows/tests.yml/badge.svg" height=40 />
+<a style="display: inline" href="https://codecov.io/gh/riverdb/riverdb">
+  <img style="display: inline" alt="code coverage" src="https://codecov.io/gh/riverdb/riverdb/branch/master/graph/badge.svg?token=EjhI1wBhtG" height=40 />
 </a>
 
-## River DB - Rust Programmable PostgreSQL Proxy
+## River DB
+### Programmable PostgreSQL Proxy and Connection Pool
 
-River DB is a Rust replacement for the connection pools / load balancers Pg Pool or PgBouncer.
+River DB is a Rust connection pool and middleware proxy.
 
-What makes it interesting is you can create and mix apps/plugins written in Rust that hook into one or more parts of the PostgreSQL protocol to modify the behavior. Including the replication stream/protocol.
+It offers similar functionality to:
+- Pgpool-II
+- PgBouncer
+- pgagroal
+- Odyssey
 
-You can use this for logging/auditing, query rewriting, fully customizable partitioning, caching with automatic invalidation, high availability/failover, upgrading PostgreSQL without downtime, extending the protocol, joining/querying/merging data from other data sources, basically anything you can do with a programmable middlware between your application and PostgreSQL.
+What makes it uniquely interesting is you can create and mix apps/plugins written in Rust that hook into one or more parts of the PostgreSQL protocol to modify the behavior. Including the replication stream/protocol.
+
+It parses, normalizes, and provides the PostgreSQL AST for queries (using the Postgres parser). It
+does this efficiently by using a high-performance query normalizer and caching the parsed AST
+for the normalized query.
+
+You can use this for logging/auditing, query rewriting, fully customizable multi-master partitioning, caching with automatic invalidation, high availability/failover, upgrading PostgreSQL without downtime, extending the protocol, joining/querying/merging data from other data sources, custom authentication, basically anything you can do with a programmable middlware between your application and PostgreSQL.
+
+We'll be providing a number of paid apps/plugins on top of River DB to make
+using and operating PostgreSQL easier and more enjoyable with an
+emphasis on providing an excellent developer experience.
+
+We will also maintain a list of third-party apps/plugins provided for free
+or profit. If you create an app/plugin for River DB contact us at: 
+info[at]riverdb.com so we can link to it and/or help you monetize it.
 
 ## Alpha Software
 
@@ -21,24 +40,12 @@ We'll update this notice once we've been running it in production ourselves for 
 
 ## Consulting
 
-If you want help building apps for PostgreSQL using River DB contact us at: info[atsymbol]riverdb.com. Nobody knows the platform better.
-
-## Why is it called River DB?
-
-Our long-term aspiration is to create a global, low-latency, high-throughput database on top of good old rock-solid PostgreSQL.
-
-No, not a fancy Cockroach DB, Spanner, or Yugabyte type of thing, just a straightforward single master (or partitioned multi-master) with replicas potentially geographically distributed.
-That might sound boring compared to Spanner with their GPS/atomic clocks, but it may actually perform better
-and cost less in many important use cases.
-
-Something we could use efficiently from Cloudflare Workers or new serverless platforms like it. It should be possible
-to build something like an Uber or an Asana with just partitioned PostgreSQL and Cloudflare Workers. With none of the insane feats of
-software engineering and complexity that currently is the norm to scale applications.
+If you want help building apps for PostgreSQL using River DB contact us at: info[at]riverdb.com. Nobody knows the platform better.
 
 ## License
 
 River DB is source-visible, not OSI open-source. See our [Modified PolyForm Shield License](LICENSE.md).
 
-We welcome contributions, bug reports, and bug fixes! You can't make a cloud service out of River DB for profit though, sorry Amazon.
+We welcome contributions, bug reports, and bug fixes!
 
 
