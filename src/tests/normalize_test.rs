@@ -2,7 +2,7 @@ use bytes::{Bytes};
 
 use crate::riverdb::{Result};
 use crate::riverdb::pg::protocol::{Messages, MessageBuilder, Tag};
-use crate::riverdb::pg::sql::{Query, LiteralType};
+use crate::riverdb::pg::sql::{QueryMessage, LiteralType};
 
 #[derive(Debug)]
 struct QueryParamTest {
@@ -12,11 +12,11 @@ struct QueryParamTest {
     target_type: &'static str,
 }
 
-fn make_query(query: &'static [u8]) -> Result<Query> {
+fn make_query(query: &'static [u8]) -> Result<QueryMessage> {
     let mut mb = MessageBuilder::new(Tag::QUERY);
     mb.write_bytes(query);
     let msgs = mb.finish();
-    Query::new(msgs)
+    QueryMessage::new(msgs)
 }
 
 #[test]
@@ -261,11 +261,41 @@ fn test_normalize_ok() {
     for (query, normalized, params) in tests {
         println!("{} of len {}", query, query.len());
         let res = make_query(query.as_bytes()).expect("expected Ok(Query)");
-        assert_eq!(res.normalized(), *normalized);
-        for (param, expected) in res.params().iter().zip(params) {
+        let query = res.query();
+        assert_eq!(query.normalized(), *normalized);
+        for (param, expected) in query.params().iter().zip(params) {
             assert_eq!(param.ty, expected.ty);
             assert_eq!(param.negated, expected.negated);
-            assert_eq!(res.param(param), expected.value);
+            assert_eq!(query.param(param), expected.value);
+        }
+    }
+}
+
+#[test]
+fn test_normalize_many_ok() {
+    let tests = &[
+        (
+            "select (-1)",
+            vec![(
+                "SELECT($1)",
+                vec![
+                    QueryParamTest { value: "1", ty: LiteralType::Integer, negated: true, target_type: "" },
+                ],
+            )],
+        ),
+    ];
+
+    for (query, expected_vec) in tests {
+        println!("{} of len {}", query, query.len());
+        let res = make_query(query.as_bytes()).expect("expected Ok(Query)");
+        let mut query = res.query();
+        for (normalized, params) in expected_vec {
+            assert_eq!(query.normalized(), *normalized);
+            for (param, expected) in query.params.iter().zip(params) {
+                assert_eq!(param.ty, expected.ty);
+                assert_eq!(param.negated, expected.negated);
+                assert_eq!(query.param(param), expected.value);
+            }
         }
     }
 }
@@ -275,16 +305,28 @@ fn test_normalize_tags() {
     let tests = &[
         (
             "SELECT /* foo=bar dotted.and-dashed_baz=1 */ 1",
-            "SELECT $1",
+            vec!["SELECT $1"],
             vec![("FOO", "bar"), ("DOTTED.AND-DASHED_BAZ", "1")],
+        ),
+        (
+            "SELECT /* foo=bar */ 1; -- baz=12\n SELECT /* mux=3.3e9 */ 'str';",
+            vec!["SELECT $1", "SELECT $1"],
+            vec![("FOO", "bar"), ("MUX", "3.3e9")],
         ),
     ];
 
-    for (query, normalized, tags) in tests {
+    for (query, normalized_vec, tags) in tests {
         let res = make_query(query.as_bytes()).expect("expected Ok(Query)");
-        assert_eq!(res.normalized(), *normalized);
         for &(key, val) in tags {
             assert_eq!(res.tag(key), Some(val));
+        }
+
+        let mut query = res.query();
+        for normalized in normalized_vec {
+            assert_eq!(query.normalized.as_str(), *normalized);
+            if let Some(next_query) = query.next.as_deref() {
+                query = next_query;
+            }
         }
     }
 }

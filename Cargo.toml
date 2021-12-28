@@ -11,7 +11,7 @@ edition = "2021"
 
 [lib]
 name = "riverdb"
-doctest = true
+doctest = false
 path = "src/lib.rs"
 
 # double [] because bin is an array (can have multiple binaries output, but just one lib)

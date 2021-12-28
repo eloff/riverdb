@@ -24,7 +24,7 @@ impl ObjectType {
     /// Return the ObjectType affected by the query
     /// given it's normalized form and QueryType.
     /// Not Implemented (always returns Other.)
-    pub fn new(normalized_query: &str, ty: QueryType) -> ObjectType {
+    pub fn parse(normalized_query: &str, ty: QueryType) -> ObjectType {
         match ty {
             QueryType::Alter | QueryType::Create | QueryType::Drop => ObjectType::Other, // TODO
             _ => ObjectType::Other, // TODO mostly Table with some exceptions
@@ -127,17 +127,25 @@ impl QueryTag {
     }
 }
 
+impl Default for QueryTag {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Represents info about a parsed SQL query.
 /// It's normalized form, parameters, and type.
-pub struct QueryInfo {
+pub struct Query {
     pub params_buf: String,
     pub normalized: String,
     pub ty: QueryType,
+    /// Not Implemented (always is set to Other.)
     pub object_ty: ObjectType,
-    pub params: Vec<QueryParam>
+    pub params: Vec<QueryParam>,
+    pub next: Option<Box<Query>>
 }
 
-impl QueryInfo {
+impl Query {
     /// Create a new, empty QueryInfo
     pub const fn new() -> Self {
         Self{
@@ -146,48 +154,17 @@ impl QueryInfo {
             ty: QueryType::Other,
             object_ty: ObjectType::Other,
             params: Vec::new(),
+            next: None,
         }
-    }
-}
-
-/// Represents a message containing a SQL query
-pub struct Query {
-    msgs: Messages,
-    query: QueryInfo,
-    pub tags: Vec<QueryTag>, // indices that point into msgs.as_slice()
-}
-
-impl Query {
-    /// Create a new Query object from a Messages buffer where the first
-    /// message contains the SQL query.
-    pub fn new(msgs: Messages) -> Result<Self> {
-        debug_assert_eq!(msgs.count(), 1);
-
-        let msg = msgs.first().unwrap();
-        let (query, tags) = if msg.tag() == Tag::QUERY {
-            let normalizer = QueryNormalizer::new(&msg);
-            normalizer.normalize()?
-        } else {
-            (QueryInfo::new(), Vec::new())
-        };
-
-        Ok(Self{msgs, query, tags })
     }
 
     /// Return the query type.
-    pub fn query_type(&self) -> QueryType {
-        self.query.ty
-    }
+    pub fn query_type(&self) -> QueryType { self.ty }
 
     /// Returns the object type affected for ALTER, CREATE, or DROP queries
-    /// Not Implemented.
+    /// Not Implemented (always returns Other.)
     pub fn object_type(&self) -> ObjectType {
-        todo!()
-    }
-
-    /// Return the underlying Messages buffer containing the query
-    pub fn into_messages(self) -> Messages {
-        self.msgs
+        self.object_ty
     }
 
     /// Returns the normalized query. Keywords are made uppercase
@@ -199,17 +176,59 @@ impl Query {
     /// a unary - with subtraction in some cases if whitespace is unusual.
     /// These are known limitations that will be addressed in a future release.
     pub fn normalized(&self) -> &str {
-        &self.query.normalized
+        &self.normalized
     }
 
     /// Get a Vec of the QueryParams for the query parameters and constants
     pub fn params(&self) -> &Vec<QueryParam> {
-        &self.query.params
+        &self.params
     }
 
     /// Returns the value of the specified QueryParam which must have been returned by self.params()
     pub fn param(&self, param: &QueryParam) -> &str {
-        param.value(self.query.params_buf.as_str())
+        param.value(self.params_buf.as_str())
+    }
+}
+
+/// Represents a single wire message containing one or more SQL queries
+pub struct QueryMessage {
+    msgs: Messages,
+    query: Query,
+    pub tags: Vec<QueryTag>, // indices that point into msgs.as_slice()
+}
+
+impl QueryMessage {
+    /// Create a new Query object from a Messages buffer where the first
+    /// message contains the SQL query.
+    pub fn new(msgs: Messages) -> Result<Self> {
+        debug_assert_eq!(msgs.count(), 1);
+
+        let msg = msgs.first().unwrap();
+        let mut tags: Vec<QueryTag> = Vec::new();
+        let query = if msg.tag() == Tag::QUERY {
+            let normalizer = QueryNormalizer::new(&msg);
+            normalizer.normalize(&mut tags)?
+        } else {
+            Query::new()
+        };
+
+        Ok(Self{msgs, query, tags})
+    }
+
+    /// Return true if this query is actually multiple queries separated by ;
+    /// See 53.2.2.1 in https://www.postgresql.org/docs/current/protocol-flow.html#id-1.10.5.7.4
+    pub fn is_multi_query(&self) -> bool {
+        self.query.next.is_some()
+    }
+
+    /// Return the query.
+    pub fn query(&self) -> &Query {
+        &self.query
+    }
+
+    /// Return the underlying Messages buffer containing the query
+    pub fn into_messages(self) -> Messages {
+        self.msgs
     }
 
     /// Returns the value of the named tag (ascii case-insensitive) or None
@@ -224,7 +243,7 @@ impl Query {
     }
 }
 
-impl Debug for Query {
+impl Debug for QueryMessage {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Debug::fmt(&self.msgs, f)
     }

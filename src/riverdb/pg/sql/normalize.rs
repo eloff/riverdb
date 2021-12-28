@@ -4,7 +4,7 @@ use std::fmt::Write; // this is used don't remove it
 use memmem::{TwoWaySearcher, Searcher};
 
 use crate::riverdb::{Error, Result};
-use crate::riverdb::pg::sql::{QueryType, QueryParam, LiteralType, QueryTag, QueryInfo, ObjectType};
+use crate::riverdb::pg::sql::{QueryType, QueryParam, LiteralType, QueryTag, Query, ObjectType};
 use crate::riverdb::pg::protocol::{Message};
 use crate::riverdb::common::{decode_utf8_char, Range32};
 
@@ -28,11 +28,7 @@ pub(crate) struct QueryNormalizer<'a> {
     current_char_size: u8,
     last_char_size: u8,
     comment_level: u8,
-    query_type: QueryType,
-    params_buf: String,
-    normalized_query: String,
-    params: Vec<QueryParam>,
-    tags: Vec<QueryTag>,
+    query: Query,
 }
 
 impl<'a> QueryNormalizer<'a> {
@@ -41,27 +37,26 @@ impl<'a> QueryNormalizer<'a> {
         let start_offset_in_msg = reader.tell();
         let src = msg.as_slice();
 
+        Self::new_at(src, start_offset_in_msg as usize)
+    }
+
+    pub const fn new_at(src: &'a [u8], offset: usize) -> Self {
         Self {
             src,
-            pos: start_offset_in_msg as usize,
+            pos: offset,
             last_char: '\0',
             last_char_size: 0,
             current_char: '\0',
             current_char_size: 0,
             comment_level: 0,
-            query_type: QueryType::Other,
-            params_buf: String::new(),
-            normalized_query: String::new(),
-            params: Vec::new(),
-            tags: Vec::new(),
-
+            query: Query::new(),
         }
     }
 
-    pub fn normalize(mut self) -> Result<(QueryInfo, Vec<QueryTag>)> {
+    pub fn normalize(mut self, tags: &mut Vec<QueryTag>) -> Result<Query> {
         loop {
-            let c = self.next()?;
-            debug!("normalize loop c='{}'", c);
+            let mut c = self.next()?;
+            //println!("c {}", c);
 
             let mut res = Ok(());
             if c == '\0' {
@@ -89,7 +84,7 @@ impl<'a> QueryNormalizer<'a> {
             } else if (c == 'F' || c == 'f') && self.match_fold("alse") {
                 self.bool(false);
             } else if c == '/' && self.peek() == '*' {
-                res = self.c_style_comment(c);
+                res = self.c_style_comment(c, tags);
             } else if c == '-' && self.peek() == '-' {
                 res = self.sql_comment(c);
             } else if c.is_alphabetic() || c == '_' {
@@ -97,15 +92,8 @@ impl<'a> QueryNormalizer<'a> {
             } else if c == '(' || c == ')' || c == '[' || c == ']' || c == ',' {
                 self.append_char(c);
             } else if c == ';' {
-                // Ignore ; if it occurs at the end of the query
-                let c2 = self.next()?;
-                self.consume_whitespace(c2)?;
-                if self.peek() == '\0' {
-                    break;
-                } else {
-                    // TODO verify this is correct and add test case for this too
-                    res = self.operator(c);
-                }
+                self.end_of_query(c, tags)?;
+                break;
             } else if c < (128 as char) {
                 res = self.operator(c);
             } else {
@@ -115,15 +103,9 @@ impl<'a> QueryNormalizer<'a> {
             res?;
         }
 
-        let ty = QueryType::from(self.normalized_query.as_str());
-        let obj_ty = ObjectType::new(self.normalized_query.as_str(), ty);
-        Ok((QueryInfo{
-            params_buf: self.params_buf,
-            normalized: self.normalized_query,
-            ty,
-            object_ty: obj_ty,
-            params: self.params
-        }, self.tags))
+        self.query.ty = QueryType::from(self.query.normalized.as_str());
+        self.query.object_ty = ObjectType::parse(self.query.normalized.as_str(), self.query.ty);
+        Ok(self.query)
     }
 
     fn peek(&mut self) -> char {
@@ -185,7 +167,7 @@ impl<'a> QueryNormalizer<'a> {
         if !TOKENS_WITHOUT_PRECEDING_WHITESPACE.contains(c) {
             self.write_space();
         }
-        self.normalized_query.push(c);
+        self.query.normalized.push(c);
     }
 
     /// append a token to the normalized query, inserting a space first, if required
@@ -194,7 +176,7 @@ impl<'a> QueryNormalizer<'a> {
             self.append_char(*tok.get(0).unwrap() as char);
         } else {
             self.write_space();
-            self.normalized_query.push_str(
+            self.query.normalized.push_str(
                 // Safety: we already parsed this as valid utf8
                 unsafe { std::str::from_utf8_unchecked(tok) }
             );
@@ -207,7 +189,7 @@ impl<'a> QueryNormalizer<'a> {
         self.write_space();
         // Safety: we already parsed this as valid utf8
         for c in unsafe { std::str::from_utf8_unchecked(tok) }.chars() {
-            self.normalized_query.push(c.to_ascii_uppercase());
+            self.query.normalized.push(c.to_ascii_uppercase());
         }
     }
 
@@ -230,10 +212,10 @@ impl<'a> QueryNormalizer<'a> {
 
     /// appends a space to the normalized query, if it doesn't end in TOKENS_WITHOUT_FOLLOWING_WHITESPACE
     fn write_space(&mut self) {
-        if !self.normalized_query.is_empty() {
-            let last_byte = self.normalized_query.as_bytes()[self.normalized_query.len()-1];
+        if !self.query.normalized.is_empty() {
+            let last_byte = self.query.normalized.as_bytes()[self.query.normalized.len()-1];
             if !TOKENS_WITHOUT_FOLLOWING_WHITESPACE.as_bytes().contains(&last_byte) {
-                self.normalized_query.push(' ');
+                self.query.normalized.push(' ');
             }
         }
     }
@@ -273,22 +255,22 @@ impl<'a> QueryNormalizer<'a> {
     /// Converts NULL and BOOLEAN literals to uppercase.
     fn replace_literal(&mut self, start: usize, ty: LiteralType) {
         let tok = &self.src[start..self.pos];
-        let param_start = self.params_buf.len();
+        let param_start = self.query.params_buf.len();
 
         // Any string except a dollar string may be combined with a plain string literal
         // if separated with only whitespace including at least one newline.
-        if ty == LiteralType::String && !self.params.is_empty() {
-            match self.params.last().unwrap().ty {
+        if ty == LiteralType::String && !self.query.params.is_empty() {
+            match self.query.params.last().unwrap().ty {
                 LiteralType::String | LiteralType::EscapeString | LiteralType::UnicodeString | LiteralType::BitString => {
                     // Check that there is only whitespace separating them, and it includes a newline
                     if self.look_behind_for_string_continuation(start) {
                         // Cut off the terminating single quote
-                        assert_eq!(self.params_buf.pop(), Some('\''));
+                        assert_eq!(self.query.params_buf.pop(), Some('\''));
                         // Append the string token, minus the starting single quote
                         // Safety: We already decoded this as utf8.
                         let continued_s = unsafe { std::str::from_utf8_unchecked(&tok[1..]) };
-                        self.params_buf.push_str(continued_s);
-                        self.params.last_mut().unwrap().value.end += continued_s.len() as u32 - 1;
+                        self.query.params_buf.push_str(continued_s);
+                        self.query.params.last_mut().unwrap().value.end += continued_s.len() as u32 - 1;
                         return
                     }
                 },
@@ -303,13 +285,13 @@ impl<'a> QueryNormalizer<'a> {
             // We believe it to be part of the numeric literal.
             if negated {
                 // Remove the - from the end of the normalized string
-                assert_eq!(self.normalized_query.pop(), Some('-'));
+                assert_eq!(self.query.normalized.pop(), Some('-'));
                 // Remove the space we added too
-                match self.normalized_query.pop() {
+                match self.query.normalized.pop() {
                     Some(' ') => (),
                     Some(c) => {
                         // Whoops, it wasn't a space, put it back
-                        self.normalized_query.push(c);
+                        self.query.normalized.push(c);
                     },
                     None => (),
                 }
@@ -322,18 +304,18 @@ impl<'a> QueryNormalizer<'a> {
             if ascii_uppercase {
                 c = c.to_ascii_uppercase();
             }
-            self.params_buf.push(c);
+            self.query.params_buf.push(c);
         }
 
-        self.params.push(QueryParam{
-            value: Range32::new(param_start, self.params_buf.len()),
+        self.query.params.push(QueryParam{
+            value: Range32::new(param_start, self.query.params_buf.len()),
             ty,
             negated,
             target_type: Range32::default()
         });
 
         self.append_char('$');
-        write!(&mut self.normalized_query, "{}", self.params.len()).unwrap();
+        write!(&mut self.query.normalized, "{}", self.query.params.len()).unwrap();
     }
 
     /// appends a NULL literal to params
@@ -348,18 +330,6 @@ impl<'a> QueryNormalizer<'a> {
             start += 1;
         }
         self.replace_literal(start, LiteralType::Boolean);
-    }
-
-    fn append_tag(&mut self, tag: &mut QueryTag) {
-        debug_assert_ne!(tag.key_len(), 0);
-        debug_assert!(tag.val.start > tag.key.end);
-
-        if tag.val.end == 0 {
-            // pos points after the char that's after the value
-            tag.val.end = self.pos as u32 - 1;
-        }
-        self.tags.push(*tag);
-        *tag = QueryTag::new();
     }
 
     /// parses the numeric literal and adds it to params
@@ -429,15 +399,40 @@ impl<'a> QueryNormalizer<'a> {
         // If it was an integer but ended in ., then strip the ending . from the literal value
         if decimal && prev == '.' {
             // We just pushed to params in replace_literal so it's not empty
-            assert_eq!(self.params_buf.pop().unwrap(), '.');
-            self.params.last_mut().unwrap().value.end -= 1;
+            assert_eq!(self.query.params_buf.pop().unwrap(), '.');
+            self.query.params.last_mut().unwrap().value.end -= 1;
         }
 
         Ok(())
     }
 
+    /// parses ; followed optionally by whitespace, /* c-style */ or sql -- comment(s), or additional queries.
+    fn end_of_query(&mut self, mut c: char, tags: &mut Vec<QueryTag>) -> Result<()> {
+        debug_assert_eq!(c, ';');
+        loop {
+            c = self.next()?;
+            if c == '\0' {
+                break;
+            } else if c.is_ascii_whitespace() {
+                self.consume_whitespace(c)
+            } else if c == '/' && self.peek() == '*' {
+                self.c_style_comment(c, tags)
+            } else if c == '-' && self.peek() == '-' {
+                self.sql_comment(c)
+            } else {
+                // Normalize the next query, and link to it from this one
+                // This process continues recursively until the entire query has been parsed.
+                self.backup();
+                let next = Self::new_at(self.src, self.pos);
+                self.query.next = Some(Box::new(next.normalize(tags)?));
+                break;
+            }?;
+        }
+        Ok(())
+    }
+
     /// parses the c-style /* comment */ including possible tags
-    fn c_style_comment(&mut self, mut c: char) -> Result<()> {
+    fn c_style_comment(&mut self, mut c: char, tags: &mut Vec<QueryTag>) -> Result<()> {
         debug_assert_eq!(c, '/', "c must start a c-style comment");
 
         let start = self.pos;
@@ -447,14 +442,16 @@ impl<'a> QueryNormalizer<'a> {
             if c == '/' && self.peek() == '*' {
                 // A tag can never legitimately start at index 0, since it must be inside a comment
                 if tag.val.start != 0 {
-                    self.append_tag(&mut tag);
+                    tag.val.end = self.pos as u32 - 1;
+                    append_tag(tags, &mut tag);
                 }
                 self.next().unwrap();
                 self.comment_level += 1;
             } else if c == '*' && self.peek() == '/' {
                 // A tag can never legitimately start at index 0, since it must be inside a comment
                 if tag.val.start != 0 {
-                    self.append_tag(&mut tag);
+                    tag.val.end = self.pos as u32 - 1;
+                    append_tag(tags, &mut tag);
                 }
                 self.next().unwrap();
                 self.comment_level -= 1;
@@ -483,7 +480,8 @@ impl<'a> QueryNormalizer<'a> {
                 // Don't permit double-quotes in a tag, we may want to allow quoted values later
                 // A tag can never legitimately start at index 0, since it must be inside a comment
                 if tag.val.start != 0 {
-                    self.append_tag(&mut tag);
+                    tag.val.end = self.pos as u32 - 1;
+                    append_tag(tags, &mut tag);
                 }
             }
 
@@ -809,4 +807,12 @@ impl<'a> QueryNormalizer<'a> {
 
         false
     }
+}
+
+fn append_tag(tags: &mut Vec<QueryTag>, tag: &mut QueryTag) {
+    debug_assert_ne!(tag.key_len(), 0);
+    debug_assert!(tag.val.start > tag.key.end);
+    debug_assert!(tag.val.end >= tag.val.start);
+
+    tags.push(std::mem::take(tag));
 }

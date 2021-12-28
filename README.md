@@ -1,6 +1,6 @@
-<img style="display: inline" alt="tests" src="https://github.com/riverdb/riverdb/actions/workflows/tests.yml/badge.svg" height=40 />
-<a style="display: inline" href="https://codecov.io/gh/riverdb/riverdb">
-  <img style="display: inline" alt="code coverage" src="https://codecov.io/gh/riverdb/riverdb/branch/master/graph/badge.svg?token=EjhI1wBhtG" height=40 />
+<img alt="tests" src="https://github.com/riverdb/riverdb/actions/workflows/tests.yml/badge.svg" height=30 />
+<a href="https://codecov.io/gh/riverdb/riverdb">
+  <img alt="code coverage" src="https://codecov.io/gh/riverdb/riverdb/branch/master/graph/badge.svg?token=EjhI1wBhtG" height=30 />
 </a>
 
 ## River DB

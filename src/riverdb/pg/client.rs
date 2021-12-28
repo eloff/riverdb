@@ -22,7 +22,7 @@ use crate::riverdb::server::{Transport, Connections, Connection as ServerConnect
 use crate::riverdb::pg::{PostgresCluster, ConnectionPool, parse_messages};
 use crate::riverdb::pg::connection::{Backlog, RefcountAndFlags};
 use crate::riverdb::pg::client_state::ClientState;
-use crate::riverdb::pg::sql::{Query, QueryType};
+use crate::riverdb::pg::sql::{QueryMessage, QueryType};
 use crate::riverdb::pg::PostgresReplicationGroup;
 use crate::riverdb::common::{AtomicCell, AtomicRef, Ark, AtomicRefCounted, ErrorKind};
 use crate::riverdb::config::{conf, TlsMode};
@@ -172,9 +172,8 @@ impl ClientConn {
         for msg in msgs.iter(0) {
             match msg.tag() {
                 Tag::QUERY => {
-                    // TODO we could implement Query<'a> with Message instead?
-                    // TODO can we still issue a bulk send here if Query is unaltered? This is the performance sensitive part
-                    let query = Query::new(msgs.split_message(&msg))?;
+                    // TODO can we still issue a bulk send here if Query is unaltered?
+                    let query = QueryMessage::new(msgs.split_message(&msg))?;
                     client_query::run(self, query).await?;
                 },
                 Tag::TERMINATE => {
@@ -218,7 +217,7 @@ impl ClientConn {
         Ark::default()
     }
 
-    fn begins_transaction(&self, query: &Query) -> Result<bool> {
+    fn begins_transaction(&self, query: &QueryMessage) -> Result<bool> {
         match query.query_type() {
             QueryType::Begin | QueryType::SetTransaction => {
                 let tx_type = TransactionType::parse_from_query(query.normalized());
@@ -300,7 +299,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_query(&self, _: &mut client_query::Event, mut query: Query) -> Result<()> {
+    pub async fn client_query(&self, _: &mut client_query::Event, mut query: QueryMessage) -> Result<()> {
         let begins_tx = self.begins_transaction(&query)?;
         let backend = self.backend();
 
@@ -369,7 +368,7 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_connect_backend<'a>(&'a self, _: &'a mut client_connect_backend::Event, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut Query) -> Result<Ark<BackendConn>> {
+    pub async fn client_connect_backend<'a>(&'a self, _: &'a mut client_connect_backend::Event, cluster: &'static PostgresCluster, application_name: &'a str, user: &'a str, database: &'a str, tx_type: TransactionType, query: &'a mut QueryMessage) -> Result<Ark<BackendConn>> {
         let mut error_code = error_codes::CANNOT_CONNECT_NOW;
         let group = client_partition::run(self, cluster, application_name, user, database, tx_type, query).await?;
         if let Some(group) = group {
@@ -397,12 +396,12 @@ impl ClientConn {
     }
 
     #[instrument]
-    pub async fn client_partition<'a>(&'a self, _: &'a mut client_partition::Event, cluster: &'static PostgresCluster, _application_name: &'a str, _user: &'a str, database: &'a str, _tx_type: TransactionType, _query: &'a mut Query) -> Result<Option<&'static PostgresReplicationGroup>> {
+    pub async fn client_partition<'a>(&'a self, _: &'a mut client_partition::Event, cluster: &'static PostgresCluster, _application_name: &'a str, _user: &'a str, database: &'a str, _tx_type: TransactionType, _query: &'a mut QueryMessage) -> Result<Option<&'static PostgresReplicationGroup>> {
         Ok(cluster.get_by_database(database))
     }
 
     #[instrument]
-    pub async fn client_route_query<'a>(&'a self, _: &'a mut client_route_query::Event, group: &'static PostgresReplicationGroup, _tx_type: TransactionType, _query: &'a mut Query) -> Result<Option<&'static ConnectionPool>> {
+    pub async fn client_route_query<'a>(&'a self, _: &'a mut client_route_query::Event, group: &'static PostgresReplicationGroup, _tx_type: TransactionType, _query: &'a mut QueryMessage) -> Result<Option<&'static ConnectionPool>> {
         Ok(group.master())
     }
 
@@ -705,7 +704,7 @@ define_event! {
 define_event! {
     /// TODO
     client_query,
-    (client: &'a ClientConn, query: Query) -> Result<()>
+    (client: &'a ClientConn, query: QueryMessage) -> Result<()>
 }
 
 define_event! {
@@ -753,7 +752,7 @@ define_event! {
         user: &'a str,
         database: &'a str,
         tx_type: TransactionType,
-        query: &'a mut Query
+        query: &'a mut QueryMessage
     ) -> Result<Ark<BackendConn>>
 }
 
@@ -767,7 +766,7 @@ define_event! {
         user: &'a str,
         database: &'a str,
         tx_type: TransactionType,
-        query: &'a mut Query
+        query: &'a mut QueryMessage
     ) -> Result<Option<&'static PostgresReplicationGroup>>
 }
 
@@ -778,7 +777,7 @@ define_event! {
         client: &'a ClientConn,
         group: &'static PostgresReplicationGroup,
         tx_type: TransactionType,
-        query: &'a mut Query
+        query: &'a mut QueryMessage
     ) -> Result<Option<&'static ConnectionPool>>
 }
 
