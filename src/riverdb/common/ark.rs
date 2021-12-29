@@ -99,6 +99,13 @@ impl<T: AtomicRefCounted> Ark<T> {
         obj.ptr.store(r, Release);
         obj
     }
+
+    /// Swap this Ark with default. Returns this Ark. Does not modify reference counts.
+    /// Acquire + Release ordering.
+    #[inline]
+    pub fn take(&self) -> Self {
+        self.swap(Self::default())
+    }
 }
 
 impl<T: AtomicRefCounted> Deref for Ark<T> {

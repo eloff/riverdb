@@ -45,7 +45,6 @@ pub struct ClientConn {
     cluster: AtomicRef<'static, PostgresCluster>,
     replication_group: AtomicRef<'static, PostgresReplicationGroup>, // the last PostgresReplicationGroup used
     pool: AtomicRef<'static, ConnectionPool>, // the last ConnectionPool used
-    buffered: Mutex<Option<Messages>>,
     connect_params: UnsafeCell<ServerParams>,
     salt: i32,
     connections: &'static Connections<ClientConn>,
@@ -203,43 +202,11 @@ impl ClientConn {
     pub fn release_backend(&self) -> Ark<BackendConn> {
         match self.state.get() {
             ClientState::Ready | ClientState::Closed => {
-                return self.backend.swap(Ark::default());
-            },
-            ClientState::Transaction => {
-                // If we're in a transaction, we can only release the backend
-                // if defer_begin is enabled and we still have the begin statement buffered.
-                if conf().postgres.defer_begin && self.buffered.lock().unwrap().is_some() {
-                    return self.backend.swap(Ark::default());
-                }
+                return self.backend.take();
             },
             _ => (),
         }
         Ark::default()
-    }
-
-    fn begins_transaction(&self, query: &QueryMessage) -> Result<bool> {
-        match query.query_type() {
-            QueryType::Begin | QueryType::SetTransaction => {
-                let tx_type = TransactionType::parse_from_query(query.normalized());
-                if tx_type == TransactionType::Default {
-                    // TODO use the highest default isolation level for the master nodes of the cluster
-                }
-                self.tx_type.store(tx_type);
-                self.transition(ClientState::Transaction)?;
-                Ok(true)
-            },
-            QueryType::Commit => {
-                if query.normalized().contains("AND CHAIN") {
-                    // Stay in the Transaction state
-                    Ok(true)
-                } else {
-                    self.tx_type.store(TransactionType::None);
-                    self.transition(ClientState::Ready)?;
-                    Ok(false)
-                }
-            }
-            _ => Ok(false),
-        }
     }
 
     /// Sends a COMMAND_COMPLETE message. Command should usually be a single word that identifies the completed SQL command.
@@ -300,44 +267,7 @@ impl ClientConn {
 
     #[instrument]
     pub async fn client_query(&self, _: &mut client_query::Event, mut query: QueryMessage) -> Result<()> {
-        let begins_tx = self.begins_transaction(&query)?;
         let backend = self.backend();
-
-        let state = self.state.get();
-        match state {
-            ClientState::Transaction | ClientState::Ready | ClientState::FailedTransaction => {
-                if backend.is_none() && begins_tx {
-                    let mut warn_already_in_tx = false;
-                    {
-                        let mut buffered = self.buffered.lock().unwrap();
-                        if buffered.is_none() {
-                            *buffered = Some(query.into_messages());
-                        } else {
-                            warn_already_in_tx = true;
-                        }
-                    }
-
-                    // Note: We can send a response to the client here and not worry about it being out of order
-                    // because there is no backend yet.
-
-                    // There shouldn't have been anything buffered, we received two begin statements back to back
-                    // Behave the same as Postgres, give a warning and ignore the second one.
-                    if warn_already_in_tx {
-                        let msg = Messages::new_warning(error_codes::ACTIVE_SQL_TRANSACTION, "there is already a transaction in progress");
-                        self.send(msg).await?;
-                    }
-                    debug!("buffered begin statement");
-                    self.send_command_successful("BEGIN", 'T').await?;
-                    return Ok(());
-                } else if query.query_type() == QueryType::Commit || query.query_type() == QueryType::Rollback {
-                    debug!("end transaction: {:?}", query.query_type());
-                    if query.query_type() == QueryType::Rollback || !query.normalized().contains("AND CHAIN") {
-                        self.transition(ClientState::Ready)?;
-                    }
-                }
-            },
-            _ => panic!("forward called in unexpected state {:?}", state)
-        };
 
         if backend.is_none() {
             let cluster = self.cluster.load().expect("missing cluster");
@@ -347,19 +277,7 @@ impl ClientConn {
             let application_name = params.get("application_name").unwrap_or("riverdb");
             let tx_type = self.tx_type.load();
             let backend_ark = client_connect_backend::run(self, cluster, application_name, user, database, tx_type, &mut query).await?;
-            // If we have buffered messages, flush them now
-            // TODO not necessarily if defer_begin is enabled
-            let msgs = self.buffered.lock().unwrap().take();
-            if let Some(msgs) = msgs {
-                // Pipeline the begin statement with msgs
-                debug!("flush buffered {} to db", msgs);
-                futures::try_join!(
-                    backend_ark.execute(msgs),
-                    backend_ark.send(query.into_messages())
-                )?;
-            } else {
-                backend_ark.send(query.into_messages()).await?;
-            }
+            backend_ark.send(query.into_messages()).await?;
             self.set_backend(backend_ark);
         } else {
             backend.unwrap().send(query.into_messages()).await?;
@@ -548,7 +466,12 @@ impl ClientConn {
     pub async fn client_send_messages(&self, _: &mut client_send_messages::Event, msgs: Messages) -> Result<usize> {
         for msg in msgs.iter(0) {
             if msg.tag() == Tag::READY_FOR_QUERY {
-
+                match msg.reader().read_byte() as char {
+                    'I' => self.transition(ClientState::Ready),
+                    'T' => self.transition(ClientState::Transaction),
+                    'E' => self.transition(ClientState::FailedTransaction),
+                    _ => Ok(()),
+                }?;
             }
         }
         self.write_or_buffer(msgs.into_bytes())
@@ -595,7 +518,6 @@ impl ServerConnection for ClientConn {
             cluster: AtomicRef::default(),
             replication_group: AtomicRef::default(),
             pool: AtomicRef::default(),
-            buffered: Mutex::new(None),
             connect_params: UnsafeCell::new(ServerParams::new()),
             salt: Worker::get().rand32() as i32,
             connections,
