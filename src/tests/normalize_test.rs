@@ -275,13 +275,38 @@ fn test_normalize_ok() {
 fn test_normalize_many_ok() {
     let tests = &[
         (
-            "select (-1)",
-            vec![(
-                "SELECT($1)",
-                vec![
-                    QueryParamTest { value: "1", ty: LiteralType::Integer, negated: true, target_type: "" },
-                ],
-            )],
+            "select 1; select -2",
+            vec![
+                (
+                    "SELECT $1",
+                    vec![
+                        QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" },
+                    ],
+                ), (
+                     "SELECT $1",
+                     vec![
+                         QueryParamTest { value: "2", ty: LiteralType::Integer, negated: true, target_type: "" },
+                     ],
+                )
+            ],
+        ),
+        (
+            "select 1*2; -- foo\nselect 2+-2; /* comment */\n",
+            vec![
+                (
+                    "SELECT $1 * $2",
+                    vec![
+                        QueryParamTest { value: "1", ty: LiteralType::Integer, negated: false, target_type: "" },
+                        QueryParamTest { value: "2", ty: LiteralType::Integer, negated: false, target_type: "" },
+                    ],
+                ), (
+                    "SELECT $1 + $2",
+                    vec![
+                        QueryParamTest { value: "2", ty: LiteralType::Integer, negated: false, target_type: "" },
+                        QueryParamTest { value: "2", ty: LiteralType::Integer, negated: true, target_type: "" },
+                    ],
+                )
+            ],
         ),
     ];
 
@@ -295,6 +320,9 @@ fn test_normalize_many_ok() {
                 assert_eq!(param.ty, expected.ty);
                 assert_eq!(param.negated, expected.negated);
                 assert_eq!(query.param(param), expected.value);
+            }
+            if let Some(next_query) = query.next.as_deref() {
+                query = next_query;
             }
         }
     }
@@ -365,11 +393,9 @@ fn test_normalize_err() {
         ("select /* foo *", "unexpected eof while parsing c-style comment"),
         ("select /* /* foo */", "unexpected eof while parsing c-style comment"),
         ("select 1e+", "numeric constant cannot end in exponent '+'"),
-        ("select 1+1", "unexpected '+' in numeric value following '1'"),
         ("select 1x1", "unexpected 'x' in numeric value"),
         ("select 1..1", "cannot have two decimals in numeric value"),
         ("select $", "invalid char '$' for operator"),
-        ("select *+1", "an operator cannot end in + or - unless it includes one of \"~!@#%^&|`?\""),
     ];
 
     for &(query, err) in TESTS {

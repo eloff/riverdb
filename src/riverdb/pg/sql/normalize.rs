@@ -14,11 +14,12 @@ const TOKENS_WITHOUT_FOLLOWING_WHITESPACE: &'static str = ".([:";
 // A list of operators which we don't format with a preceding space
 const TOKENS_WITHOUT_PRECEDING_WHITESPACE: &'static str = ",.()[]:";
 
-// Characters required in an operator if it ends in + or -
-const REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS: &'static str = "~!@#%^&|`?";
-
 // All characters allowed in operators
-// const ALL_OPERATORS: &'static str = "+-*/<>~=!@#%^&|`?";
+const ALL_OPERATORS: &'static str = "+-*<>/=~!@#%^&|`?";
+// Characters that must be present in an operator if it ends in + or -
+const REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_OR_MINUS: &'static str = "~!@#%^&|`?";
+// OTHER_OPERATOR_CHARS = ALL_OPERATORS - REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_OR_MINUS
+const OTHER_OPERATOR_CHARS: &'static str = "+-*<>/=";
 
 pub(crate) struct QueryNormalizer<'a> {
     src: &'a [u8],
@@ -289,11 +290,11 @@ impl<'a> QueryNormalizer<'a> {
                 // Remove the space we added too
                 match self.query.normalized.pop() {
                     Some(' ') => (),
+                    None => (),
                     Some(c) => {
                         // Whoops, it wasn't a space, put it back
                         self.query.normalized.push(c);
                     },
-                    None => (),
                 }
             }
         }
@@ -345,7 +346,8 @@ impl<'a> QueryNormalizer<'a> {
                 '+' | '-' => {
                     let prev = self.second_last();
                     if prev.to_ascii_lowercase() != 'e' {
-                        return Err(Error::new(format!("unexpected '{}' in numeric value following '{}'", c, prev)));
+                        // This must be an binary + operator
+                        break;
                     }
                 },
                 '.' => {
@@ -676,16 +678,8 @@ impl<'a> QueryNormalizer<'a> {
         //
         //    For example, @- is an allowed operator name, but *- is not. This restriction allows PostgreSQL to parse SQL-compliant queries without requiring spaces between tokens.
 
-        let mut can_end_in_plus_or_minus = false;
         let start = self.pos - 1;
-        loop {
-            match c {
-                '~' | '!' | '@' | '#' | '%' | '^' | '&' | '|' | '`' | '?' => {
-                    can_end_in_plus_or_minus = true;
-                },
-                '+' | '-' | '*' | '/' | '<' | '>' | '=' => (),
-                _ => break,
-            }
+        while ALL_OPERATORS.as_bytes().contains(&(c as u8)) {
             c = self.next()?;
         }
 
@@ -697,11 +691,12 @@ impl<'a> QueryNormalizer<'a> {
             return Err(Error::new(format!("invalid char '{}' for operator", c)));
         }
 
-        if self.pos - start > 1 && (prev_c == '+' || prev_c == '-') {
-            if !can_end_in_plus_or_minus {
-                return Err(Error::new(format!("an operator cannot end in + or - unless it includes one of \"{}\"", REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_MINUS)));
-            }
-        }
+        // Technically if an operator ends in a + or _ it should contain one of ~!@#%^&|`?
+        // However, we can't tell if a + or - is actually a unary + or -, so it's
+        // Possible to have a valid query that breaks that rule but which Postgres will accept.
+        // It's better that we accept an invalid query than reject a valid one, so we ignore this.
+        // As per the notes in is_negative_number, when we lookup the actual AST
+        // We'll replace this normalized query with the actual normalized query from the AST.
 
         self.append_token(&self.src[start..self.pos]);
         Ok(())
@@ -741,7 +736,7 @@ impl<'a> QueryNormalizer<'a> {
         Ok(())
     }
 
-    /// isNegativeNumber checks if there is a '-' preceded the numeric constant
+    /// isNegativeNumber checks if a '-' preceded the numeric constant
     /// and returns true if it is believed to be a unary -, the start of a negative number.
     /// This is not 100% accurate, so we have to verify it after using the normalized query to load the AST.
     fn is_negative_number(&self, start: usize) -> bool {
@@ -762,21 +757,30 @@ impl<'a> QueryNormalizer<'a> {
         // with a version of the query with or without the - sign in front of the parameter.
         // If you have N paramters like that in one query, you have 2^N possible distinct queries.
         //
-        // We just ignore a unary +, since it's meaningless. For -, we use these heuristics:
-        //  a) If there's a space before the -, but not between the - and the constant, assume it's unary -.
-        //  b) If there's a space between both, assume binary.
-        //  c) If there's a ( or [ before the -, it's unary.
-        //  d) If there's an alpha-numeric char, ), or ] before the -, assume binary
-        //  e) It's not a -, it's an empty -- comment on the preceding line
+        // We just ignore a unary +, since it's meaningless and unlikely to be common.
+        // For -, we use these heuristics:
+        //  a) If there's a space before the -, but not between the - and the constant, assume it's unary -
+        //  b) If there's a space between both, assume binary
+        //  c) If there's no space before or after, and it's preceded by other operator chars,
+        //     assume unary unless it includes one of ~!@#%^&|`?
+        //  d) If there's a ( or [ before the -, it's unary
+        //  e) If there's an alpha-numeric char, ), or ] before the -, assume binary
+        //  f) It's not a -, it's an empty -- comment on the preceding line
+        //  otherwise assume it's a binary -
 
         let mut signed = false;
         let mut whitespace_after = false;
+        let mut operator = false;
         let mut i = start - 1;
         loop {
             // Safety: We check the bounds here ourself
             let c = unsafe { *self.src.get_unchecked(i) } as char;
             if c.is_ascii_whitespace() {
                 if signed {
+                    // Case c if operator (but wasn't allowed to end in -) assume unary
+                    if operator {
+                        return true;
+                    }
                     // Case b if whitespace after (binary), otherwise case a (unary)
                     return !whitespace_after;
                 } else {
@@ -787,16 +791,27 @@ impl<'a> QueryNormalizer<'a> {
                 // Otherwise, if it's an actual second '-', there had to be whitespace between them, so the case
                 // above for a or b was triggered and execution never reached here. So it can only have been an empty comment.
                 if signed {
-                    // Case e, not a '-' at all
+                    // Case f, not a '-' at all
                     break;
                 }
                 signed = true;
             } else if c == '(' || c == '[' {
-                // Case c, this is unary - (if there was a -, otherwise we return false)
+                // Case d, this is unary - (if there was a -, otherwise we return false)
                 return signed;
+            } else if signed {
+                if REQUIRED_IF_OPERATOR_ENDS_IN_PLUS_OR_MINUS.as_bytes().contains(&(c as u8)) {
+                    // Case c, assume the - is part of a multiple character operator
+                    break;
+                } else if OTHER_OPERATOR_CHARS.as_bytes().contains(&(c as u8)) {
+                    operator = true;
+                } else if operator {
+                    return true;
+                } else {
+                    // Case e), assume binary -
+                    break;
+                }
             } else {
-                // Case d, this binary -
-                // Or there wasn't a -, either way we return false
+                // There wasn't a -, return false
                 break;
             }
             if i == 0 {
