@@ -44,6 +44,8 @@ If you want help building apps for PostgreSQL using River DB contact us at: info
 
 River DB is source-visible, not OSI open-source. See our [Modified PolyForm Shield License](LICENSE.md).
 
+Your freedoms are similar, but you can't use our software to compete with us.
+
 We welcome contributions, bug reports, and bug fixes!
 
 

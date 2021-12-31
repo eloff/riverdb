@@ -58,6 +58,7 @@ impl TransactionPlugin {
         }
 
         let prev_count = self.transactions.fetch_add(1, Relaxed);
+        // The initial connection idle after committing the transaction in client_complete_startup
         if prev_count == 0 {
             {
                 let mut reader = self.stdout.lock().unwrap();
@@ -81,6 +82,7 @@ impl TransactionPlugin {
             stdin.write_all("rollback;\n".as_bytes())?;
             stdin.flush()?;
         } else if prev_count == 1 {
+            // Connection idle after executing and rolling back the transaction above
             {
                 let mut reader = self.stdout.lock().unwrap();
                 let mut out = String::new();
@@ -128,7 +130,9 @@ async fn test_proxy_transactions() -> std::result::Result<(), Box<dyn std::error
 
     assert_eq!(client.run().await, Err(Error::closed()));
     assert_eq!(client.state(), ClientState::Closed);
-    assert_eq!(plugin.transactions.load(Relaxed), 2);
+    // This could be 2 or 3 depending on the race condition between
+    // calling session_idle and processing terminate message.
+    assert!(plugin.transactions.load(Relaxed) >= 2);
 
     Ok(())
 }

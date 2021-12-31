@@ -195,7 +195,11 @@ impl ClientConn {
     }
 
     pub async fn session_idle(&self) -> Result<Ark<BackendConn>> {
-        client_idle::run(self).await
+        if self.state() == ClientState::Closed {
+            Ok(Ark::default())
+        } else {
+            client_idle::run(self).await
+        }
     }
 
     #[instrument]

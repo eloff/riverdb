@@ -308,7 +308,7 @@ impl BackendConn {
     /// Return the backend connection to the pool.
     pub async fn return_to_pool(this: Ark<Self>) {
         if let Some(backend) = this.load() {
-            backend.client.store(Ark::default());
+            backend.client.take();
             backend.pool.load().unwrap().put(this).await;
         }
     }
