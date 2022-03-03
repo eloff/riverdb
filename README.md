@@ -22,7 +22,7 @@ does this efficiently by using a high-performance query normalizer and caching t
 for the normalized query.
 -->
 
-You can use this for logging/auditing, query rewriting, fully customizable multi-master partitioning, caching with automatic invalidation, high availability/failover, upgrading PostgreSQL without downtime, extending the protocol, joining/querying/merging data from other data sources, custom authentication, basically anything you can do with a programmable middlware between your application and PostgreSQL.
+You can use this for logging/auditing, query rewriting, fully customizable multi-master partitioning, caching with automatic invalidation, real-time functionality based on the PostgreSQL replication stream, high availability/failover, upgrading PostgreSQL without downtime, extending the protocol, joining/querying/merging data from other data sources, custom authentication, basically anything you can do with a programmable middlware between your application and PostgreSQL.
 
 We'll be providing a number of paid apps/plugins on top of River DB to make
 using and operating PostgreSQL easier and more enjoyable with an
@@ -38,13 +38,13 @@ We'll update this notice once we've been running it in production ourselves for 
 
 ## Consulting
 
-If you want help building apps for PostgreSQL using River DB contact us at: info[at]riverdb.com. Nobody knows the platform better.
+If you want help building apps for PostgreSQL using River DB contact us at: dan [dot] eloff at gmail.com. Nobody knows the platform better.
 
 ## License
 
 River DB is source-visible, not OSI open-source. See our [Modified PolyForm Shield License](LICENSE.md).
 
-Your freedoms are similar, but you can't use our software to compete with us.
+Your freedoms are similar, with the exception that you can't use our own software to compete with us.
 
 We welcome contributions, bug reports, and bug fixes!
 
